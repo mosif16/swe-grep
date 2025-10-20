@@ -56,8 +56,14 @@
 - [x] Supply sample cycle JSON outputs, CLI usage examples, and integration snippets.
 - [x] Maintain a troubleshooting guide for common failure modes (missing binaries, large repos).
 
-## Phase 7: Future Extensions
-- [ ] Explore adaptive query rewriting guided by accumulated rewards.
-- [ ] Fingerprint repositories to preload specialized heuristics.
-- [ ] Produce optional WASI builds for sandboxed environments.
-- [ ] Develop shared cache services for multi-agent deployments.
+## Phase 7: Low-Latency Core
+- [x] Profile cold and warm search cycles to identify dominant latency contributors (runtime init, fd, rg, ast-grep, telemetry).
+- [x] Keep discovery/probe tools hot (process pools, cached handles) and reuse fd results between rewrites.
+- [x] Trim orchestration overhead by eliminating redundant ripgrep invocations and batching JSON serialization.
+- [x] Implement a literal fast path that bypasses AST/rga when context features are unnecessary while preserving top-hit enrichment.
+
+## Phase 8: Performance Guardrails
+- [x] Build an automated benchmark harness comparing `swe-grep` vs `rg` across representative repositories and symbols.
+- [x] Track cold/warm latency, throughput, and reward via CI dashboards with regression thresholds.
+- [x] Make telemetry/logging overhead configurable so performance modes stay within target budgets.
+- [x] Document tuning guidelines for maintaining rich context with sub-`rg` latency in production environments.

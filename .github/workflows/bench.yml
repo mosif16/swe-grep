@@ -1,0 +1,37 @@
+name: Benchmark
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ["main", "master"]
+  pull_request:
+
+jobs:
+  rg-vs-sweg:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+      - name: Install tool dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y fd-find ripgrep
+          cargo install ast-grep --locked
+      - name: Build swe-grep (release)
+        run: cargo build --release -p swe-grep
+      - name: Warm run benchmark
+        run: |
+          python scripts/bench_rg_vs_sweg.py \
+            --repo fixtures/multi_lang \
+            --symbol login_user \
+            --runs 20 \
+            --swegrep-bin target/release/swe-grep \
+            --output bench-results.json
+      - name: Evaluate results
+        run: python scripts/evaluate_bench.py --input bench-results.json --max-gap-ms 6
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: bench-results
+          path: bench-results.json
