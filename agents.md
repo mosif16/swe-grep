@@ -2,6 +2,8 @@
 
 ## Phase 0: Governance & Vision
 - [x] Enforce the strict tracking rule: update this checklist and the CLI plan tool immediately after each sub-task.
+- [ ] Every benchmark run must be recorded in `docs/benchmark.md` before the task is marked complete.
+- [ ] After completing any phase checklist, run the benchmark suite and log the results in `docs/benchmark.md` before checking off the phase.
 - [ ] Deliver a Rust-native search agent that returns exact file and line spans within a 4-second reasoning loop.
 - [ ] Operate without large language models or embeddings, relying on deterministic Rust tooling plus heuristic feedback.
 - [ ] Serve as the search backbone for higher-level coding agents by streaming precise retrieval contexts.
@@ -37,12 +39,12 @@
 - [x] Persist symbol-to-path hints and high-value directory caches between runs.
 
 ## Phase 5: Evaluation & Benchmarking
-- [ ] Log search cycle data for offline analysis and regression tracking.
-- [ ] Build a SWE-Bench-style benchmark harness capturing queries/sec and recall@line.
-- [ ] Prepare reinforcement-learning tooling for policy updates.
-- [ ] Create synthetic repository fixtures spanning Rust, Swift, TypeScript, and config files.
-- [ ] Add regression tests for query routing, timeout handling, and JSON parsing.
-- [ ] Implement benchmark suites tracking latency to first hit, precision@5, and dedup effectiveness.
+- [x] Log search cycle data for offline analysis and regression tracking.
+- [x] Build a SWE-Bench-style benchmark harness capturing queries/sec and recall@line.
+- [x] Prepare reinforcement-learning tooling for policy updates.
+- [x] Create synthetic repository fixtures spanning Rust, Swift, TypeScript, and config files.
+- [x] Add regression tests for query routing, timeout handling, and JSON parsing.
+- [x] Implement benchmark suites tracking latency to first hit, precision@5, and dedup effectiveness.
 
 ## Phase 6: API, Ops & Developer Experience
 - [ ] Expose a gRPC/HTTP service alongside the CLI.

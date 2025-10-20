@@ -15,6 +15,8 @@ pub struct Cli {
 pub enum Commands {
     /// Search the repository for occurrences of a symbol.
     Search(SearchArgs),
+    /// Run benchmark scenarios and collect performance metrics.
+    Bench(BenchArgs),
 }
 
 /// Arguments for the `search` subcommand.
@@ -59,4 +61,40 @@ pub struct SearchArgs {
     /// Directory used to persist symbol hints and directory cache data.
     #[arg(long)]
     pub cache_dir: Option<PathBuf>,
+
+    /// Directory to append structured search logs (JSON Lines).
+    #[arg(long)]
+    pub log_dir: Option<PathBuf>,
+}
+
+/// Arguments for the `bench` subcommand.
+#[derive(clap::Args, Debug)]
+pub struct BenchArgs {
+    /// Path to a benchmark scenario file (JSON). Defaults to benchmarks/default.json.
+    #[arg(long)]
+    pub scenario: Option<PathBuf>,
+
+    /// Optional file to append the benchmark summary as JSON.
+    #[arg(long)]
+    pub output: Option<PathBuf>,
+
+    /// Number of iterations per scenario (averaged in the summary).
+    #[arg(long, default_value_t = 1)]
+    pub iterations: usize,
+
+    /// Enable Tantivy-backed indexing during benchmarks.
+    #[arg(long, default_value_t = false)]
+    pub enable_index: bool,
+
+    /// Enable ripgrep-all fallback during benchmarks.
+    #[arg(long, default_value_t = false)]
+    pub enable_rga: bool,
+
+    /// Directory used for caching during benchmarks.
+    #[arg(long)]
+    pub cache_dir: Option<PathBuf>,
+
+    /// Directory to write per-run cycle logs during benchmarks.
+    #[arg(long)]
+    pub log_dir: Option<PathBuf>,
 }

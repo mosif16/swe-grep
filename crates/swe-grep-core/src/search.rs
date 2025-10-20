@@ -4,11 +4,13 @@ use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
-use serde_json;
+use serde_json::{self, json};
+use tokio::fs::OpenOptions;
+use tokio::io::AsyncWriteExt;
 use tokio::sync::Semaphore;
 use tokio::task::JoinSet;
 use tokio::time::Instant;
@@ -39,6 +41,7 @@ struct SearchConfig {
     index_dir: PathBuf,
     enable_rga: bool,
     cache_dir: PathBuf,
+    log_dir: Option<PathBuf>,
 }
 
 impl SearchConfig {
@@ -63,6 +66,13 @@ impl SearchConfig {
             .cache_dir
             .clone()
             .unwrap_or_else(|| root.join(".swe-grep-cache"));
+        let log_dir = args.log_dir.map(|dir| {
+            if dir.is_absolute() {
+                dir
+            } else {
+                root.join(dir)
+            }
+        });
 
         let mut enable_index = args.enable_index;
         if enable_index && !cfg!(feature = "indexing") {
@@ -81,6 +91,7 @@ impl SearchConfig {
             index_dir,
             enable_rga: args.enable_rga,
             cache_dir,
+            log_dir,
         })
     }
 }
@@ -251,8 +262,9 @@ impl SearchEngine {
             eprintln!("warn: failed to persist cache state: {err}");
         }
 
-        Ok(SearchSummary {
+        let summary = SearchSummary {
             cycle: 1,
+            symbol: self.config.symbol.clone(),
             queries: rewrites,
             top_hits: verification.top_hits,
             deduped: verification.dedup_count,
@@ -261,7 +273,49 @@ impl SearchEngine {
             ast_hits: verification.ast_hits,
             stage_stats,
             reward: round_two(self.reward_total),
-        })
+        };
+
+        self.log_summary(&summary).await?;
+
+        Ok(summary)
+    }
+
+    async fn log_summary(&self, summary: &SearchSummary) -> Result<()> {
+        let Some(dir) = &self.config.log_dir else {
+            return Ok(());
+        };
+
+        tokio::fs::create_dir_all(dir)
+            .await
+            .with_context(|| format!("failed to create log directory {}", dir.display()))?;
+
+        let log_path = dir.join("search.log.jsonl");
+        let mut file = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&log_path)
+            .await
+            .with_context(|| format!("failed to open log file {}", log_path.display()))?;
+
+        let timestamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs_f64();
+
+        let entry = json!({
+            "timestamp": timestamp,
+            "root": self.config.root,
+            "symbol": self.config.symbol,
+            "enable_index": self.config.enable_index,
+            "enable_rga": self.config.enable_rga,
+            "summary": summary,
+        });
+
+        let mut line = serde_json::to_vec(&entry)?;
+        line.push(b'\n');
+        file.write_all(&line).await?;
+
+        Ok(())
     }
 
     async fn discover(&self) -> Vec<PathBuf> {
@@ -936,6 +990,7 @@ pub struct StageStats {
 #[derive(Serialize)]
 pub struct SearchSummary {
     pub cycle: u32,
+    pub symbol: String,
     pub queries: Vec<String>,
     pub top_hits: Vec<TopHit>,
     pub deduped: usize,
@@ -948,7 +1003,7 @@ pub struct SearchSummary {
     pub reward: f32,
 }
 
-#[derive(Serialize)]
+#[derive(Clone, Serialize)]
 pub struct TopHit {
     pub path: String,
     pub line: usize,
