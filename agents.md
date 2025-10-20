@@ -24,17 +24,17 @@
 - [x] Implement the Verify & Summarize stage to rank hits, compute rewards, and surface next actions.
 
 ## Phase 3: Parallel Scheduler & Heuristic Refinement
-- [ ] Introduce a Tokio worker pool with cancellation and latency caps.
-- [ ] Expose configurable concurrency controls (default eight workers).
-- [ ] Enrich cycle summaries with latency, reward, and precision metrics.
-- [ ] Implement precision, density, and clustering metrics for scoring.
-- [ ] Add reward accumulation per reasoning cycle.
-- [ ] Build a deduplication cache that reuses past high-value hits across cycles.
+- [x] Introduce a Tokio worker pool with cancellation and latency caps.
+- [x] Expose configurable concurrency controls (default eight workers).
+- [x] Enrich cycle summaries with latency, reward, and precision metrics.
+- [x] Implement precision, density, and clustering metrics for scoring.
+- [x] Add reward accumulation per reasoning cycle.
+- [x] Build a deduplication cache that reuses past high-value hits across cycles.
 
 ## Phase 4: Advanced Tools & Caching
-- [ ] Integrate optional `tantivy` micro-indices for hot repositories.
-- [ ] Add a heuristic-driven `rga` fallback for documentation and config searches.
-- [ ] Persist symbol-to-path hints and high-value directory caches between runs.
+- [x] Integrate optional `tantivy` micro-indices for hot repositories.
+- [x] Add a heuristic-driven `rga` fallback for documentation and config searches.
+- [x] Persist symbol-to-path hints and high-value directory caches between runs.
 
 ## Phase 5: Evaluation & Benchmarking
 - [ ] Log search cycle data for offline analysis and regression tracking.

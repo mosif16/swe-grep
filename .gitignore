@@ -1,2 +1,4 @@
 /target
 .fastembed_cache
+.swe-grep-cache
+.DS_Store

@@ -1,0 +1,10 @@
+[package]
+name = "swe-grep-indexer"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+anyhow = "1.0"
+ignore = "0.4"
+tokio = { version = "1.38", features = ["rt-multi-thread"] }
+tantivy = { version = "0.18", default-features = false, features = ["lz4-compression", "mmap"] }

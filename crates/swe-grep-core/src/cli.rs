@@ -39,4 +39,24 @@ pub struct SearchArgs {
     /// Maximum number of ripgrep matches to collect per query rewrite.
     #[arg(long, default_value_t = 20)]
     pub max_matches: usize,
+
+    /// Maximum number of concurrent tool invocations (defaults to 8 workers).
+    #[arg(long, default_value_t = 8)]
+    pub concurrency: usize,
+
+    /// Enable Tantivy-backed micro-indexing for the current repository.
+    #[arg(long, default_value_t = false)]
+    pub enable_index: bool,
+
+    /// Override the default path for the Tantivy index directory.
+    #[arg(long)]
+    pub index_dir: Option<PathBuf>,
+
+    /// Enable the ripgrep-all fallback for documentation and config files.
+    #[arg(long, default_value_t = false)]
+    pub enable_rga: bool,
+
+    /// Directory used to persist symbol hints and directory cache data.
+    #[arg(long)]
+    pub cache_dir: Option<PathBuf>,
 }
