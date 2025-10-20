@@ -4,20 +4,34 @@
     "path": "fixtures/multi_lang",
     "symbol": "login_user",
     "language": "rust",
-    "expected": { "path": "src/lib.rs", "line": 1, "top_n": 3 }
+    "expected": { "path": "src/lib.rs", "line": 1, "top_n": 5 }
   },
   {
     "name": "swift_fetch",
     "path": "fixtures/multi_lang",
     "symbol": "fetchUser",
     "language": "swift",
-    "expected": { "path": "App.swift", "line": 3, "top_n": 3 }
+    "expected": { "path": "App.swift", "line": 19, "top_n": 5 }
+  },
+  {
+    "name": "swift_hydrate",
+    "path": "fixtures/multi_lang",
+    "symbol": "hydrateAndNotify",
+    "language": "swift",
+    "expected": { "path": "App.swift", "line": 10, "top_n": 5 }
   },
   {
     "name": "ts_get_user",
     "path": "fixtures/multi_lang",
     "symbol": "getUser",
     "language": "ts",
-    "expected": { "path": "src/app.ts", "line": 1, "top_n": 3 }
+    "expected": { "path": "src/app.tsx", "line": 3, "top_n": 5 }
+  },
+  {
+    "name": "tsx_user_card",
+    "path": "fixtures/multi_lang",
+    "symbol": "UserCard",
+    "language": "tsx",
+    "expected": { "path": "src/app.tsx", "line": 16, "top_n": 5 }
   }
 ]

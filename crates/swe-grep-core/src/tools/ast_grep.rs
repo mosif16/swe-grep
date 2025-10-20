@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -29,7 +30,44 @@ impl AstGrepTool {
         paths: &[PathBuf],
     ) -> Result<Vec<AstGrepMatch>> {
         let lang = language.unwrap_or("rust");
-        let pattern = format!("(identifier) @id (#eq? @id \"{symbol}\")");
+        let patterns = patterns_for_language(symbol, lang);
+        let mut aggregated: Vec<AstGrepMatch> = Vec::new();
+        let mut seen: HashSet<(PathBuf, usize)> = HashSet::new();
+
+        for pattern in patterns {
+            if aggregated.len() >= self.max_matches {
+                break;
+            }
+            let remaining = self.max_matches.saturating_sub(aggregated.len());
+            let matches = self
+                .run_pattern(root, lang, &pattern, paths, remaining)
+                .await?;
+
+            for m in matches {
+                let key = (m.path.clone(), m.line);
+                if seen.insert(key) {
+                    aggregated.push(m);
+                    if aggregated.len() >= self.max_matches {
+                        break;
+                    }
+                }
+            }
+        }
+
+        Ok(aggregated)
+    }
+
+    async fn run_pattern(
+        &self,
+        root: &Path,
+        lang: &str,
+        pattern: &str,
+        paths: &[PathBuf],
+        limit: usize,
+    ) -> Result<Vec<AstGrepMatch>> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
 
         let mut cmd = Command::new("ast-grep");
         cmd.arg("--json")
@@ -77,8 +115,6 @@ impl AstGrepTool {
                 }
             }
 
-            // ast-grep emits either a JSON array or newline-delimited objects depending on version.
-            // Try to parse both.
             let text = String::from_utf8_lossy(&buffer);
             let mut matches = Vec::new();
 
@@ -87,7 +123,7 @@ impl AstGrepTool {
             }
 
             if let Ok(parsed) = serde_json::from_str::<Vec<AstGrepMessage>>(&text) {
-                for msg in parsed.into_iter().take(self.max_matches) {
+                for msg in parsed.into_iter().take(limit) {
                     matches.push(msg.into());
                 }
                 return Ok(matches);
@@ -96,7 +132,7 @@ impl AstGrepTool {
             for line in text.lines() {
                 match serde_json::from_str::<AstGrepMessage>(line) {
                     Ok(msg) => {
-                        if matches.len() >= self.max_matches {
+                        if matches.len() >= limit {
                             break;
                         }
                         matches.push(msg.into());
@@ -148,5 +184,24 @@ impl From<AstGrepMessage> for AstGrepMatch {
             path: PathBuf::from(value.path),
             line: value.range.start.line,
         }
+    }
+}
+
+fn patterns_for_language(symbol: &str, language: &str) -> Vec<String> {
+    let needle = symbol.trim();
+    if needle.is_empty() {
+        return vec![String::from("(identifier) @id")];
+    }
+
+    match language.to_ascii_lowercase().as_str() {
+        "swift" => vec![
+            format!("(function_declaration name: (identifier) @id (#eq? @id \"{needle}\"))"),
+            format!("(protocol_declaration name: (identifier) @id (#eq? @id \"{needle}\"))"),
+            format!(
+                "(protocol_member_declaration (function_declaration name: (identifier) @id) (#eq? @id \"{needle}\"))"
+            ),
+            format!("(initializer_declaration name: (identifier) @id (#eq? @id \"{needle}\"))"),
+        ],
+        _ => vec![format!("(identifier) @id (#eq? @id \"{needle}\")")],
     }
 }

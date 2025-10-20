@@ -166,7 +166,8 @@ impl SearchEngine {
 
         tracing::info!(symbol = %self.config.symbol, "search_cycle_start");
 
-        let rewrites = QueryRewriter::for_symbol(&self.config.symbol).build();
+        let rewrites =
+            QueryRewriter::for_symbol(&self.config.symbol, self.config.language.as_deref()).build();
         if let Some(summary) = self.try_fast_path(&rewrites).await? {
             return Ok(summary);
         }
@@ -674,7 +675,8 @@ impl SearchEngine {
                 line: hit.line,
                 score: round_two(hit.score),
                 origin: hit.origin.as_str().to_string(),
-                snippet: Some(hit.snippet.trim().to_string()),
+                origin_label: format_origin_label(&hit.origin, &hit.path),
+                snippet: format_snippet(&hit.path, &hit.snippet),
             })
             .collect();
 
@@ -930,24 +932,38 @@ impl SearchCache {
 #[derive(Debug)]
 struct QueryRewriter {
     symbol: String,
+    language: Option<String>,
 }
 
 impl QueryRewriter {
-    fn for_symbol(symbol: &str) -> Self {
+    fn for_symbol(symbol: &str, language: Option<&str>) -> Self {
         Self {
             symbol: symbol.to_string(),
+            language: language.map(|lang| lang.to_string()),
         }
     }
 
     fn build(&self) -> Vec<String> {
         let s = self.symbol.trim();
         let type_hint = self.derive_type_hint();
-        vec![
+
+        let mut queries = vec![
             s.to_string(),
             format!("{s} {type_hint}"),
             format!("{s} error"),
             format!("{type_hint}.{s}"),
-        ]
+        ];
+
+        if let Some(lang) = &self.language {
+            if matches!(
+                lang.to_ascii_lowercase().as_str(),
+                "typescript" | "ts" | "tsx"
+            ) {
+                queries.extend(self.build_typescript_variants(s));
+            }
+        }
+
+        dedup_queries(queries)
     }
 
     fn derive_type_hint(&self) -> String {
@@ -970,6 +986,32 @@ impl QueryRewriter {
         }
 
         capitalize(s)
+    }
+
+    fn build_typescript_variants(&self, symbol: &str) -> Vec<String> {
+        let mut variants = Vec::new();
+        if symbol.is_empty() {
+            return variants;
+        }
+
+        variants.push(format!("{symbol}<"));
+        variants.push(format!("{symbol} <"));
+        variants.push(format!("<{symbol}"));
+        variants.push(format!("</{symbol}"));
+        variants.push(format!("{symbol} extends"));
+        variants.push(format!("type {symbol}"));
+        variants.push(format!("interface {symbol}"));
+
+        if symbol
+            .chars()
+            .next()
+            .map(|c| c.is_uppercase())
+            .unwrap_or(false)
+        {
+            variants.push(format!("<{symbol} "));
+        }
+
+        variants
     }
 }
 
@@ -1024,6 +1066,147 @@ fn capitalize(segment: &str) -> String {
         return result;
     }
     segment.to_string()
+}
+
+fn dedup_queries<I>(queries: I) -> Vec<String>
+where
+    I: IntoIterator<Item = String>,
+{
+    let mut seen = HashSet::new();
+    let mut deduped = Vec::new();
+    for query in queries {
+        if seen.insert(query.clone()) {
+            deduped.push(query);
+        }
+    }
+    deduped
+}
+
+fn format_origin_label(origin: &HitOrigin, path: &Path) -> String {
+    let tool = origin.as_str();
+    match detect_language_from_path(path) {
+        Some(language) => format!("{tool} [{language}]"),
+        None => tool.to_string(),
+    }
+}
+
+fn detect_language_from_path(path: &Path) -> Option<&'static str> {
+    let ext = path.extension()?.to_str()?;
+    match ext.to_ascii_lowercase().as_str() {
+        "rs" => Some("rust"),
+        "swift" => Some("swift"),
+        "ts" => Some("typescript"),
+        "tsx" => Some("tsx"),
+        "js" => Some("javascript"),
+        "jsx" => Some("jsx"),
+        "py" => Some("python"),
+        "kt" => Some("kotlin"),
+        "kts" => Some("kotlin"),
+        _ => None,
+    }
+}
+
+fn format_snippet(path: &Path, raw: &str) -> Option<String> {
+    let ext = path
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .map(|ext| ext.to_ascii_lowercase());
+    match ext.as_deref() {
+        Some("swift") => format_swift_snippet(raw),
+        Some("ts") | Some("tsx") => format_typescript_snippet(raw),
+        _ => format_default_snippet(raw),
+    }
+}
+
+fn format_swift_snippet(raw: &str) -> Option<String> {
+    let mut candidate = None;
+    for line in raw.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        if trimmed.starts_with("func ")
+            || trimmed.starts_with("protocol ")
+            || trimmed.starts_with("extension ")
+            || trimmed.starts_with("struct ")
+            || trimmed.starts_with("class ")
+        {
+            candidate = Some(trimmed.to_string());
+            break;
+        }
+    }
+
+    let selected = candidate.or_else(|| {
+        raw.lines()
+            .map(|line| line.trim().to_string())
+            .find(|line| !line.is_empty())
+    })?;
+
+    let mut formatted = collapse_whitespace(&selected);
+    if selected.contains("async") {
+        formatted.push_str(" [async]");
+    }
+    Some(formatted)
+}
+
+fn format_typescript_snippet(raw: &str) -> Option<String> {
+    let mut candidate: Option<String> = None;
+    for line in raw.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with("//") {
+            continue;
+        }
+        if trimmed.starts_with("<") || trimmed.starts_with("</") {
+            return Some(collapse_whitespace(trimmed));
+        }
+        if trimmed.contains('<') && trimmed.contains('>') {
+            candidate = Some(trimmed.to_string());
+            break;
+        }
+        if trimmed.starts_with("export")
+            || trimmed.starts_with("type ")
+            || trimmed.starts_with("interface ")
+            || trimmed.contains("=>")
+        {
+            candidate = Some(trimmed.to_string());
+        }
+    }
+
+    let selected = candidate.or_else(|| {
+        raw.lines()
+            .map(|line| line.trim().to_string())
+            .find(|line| !line.is_empty())
+    })?;
+
+    let mut formatted = collapse_whitespace(&selected);
+    if selected.contains("async") {
+        formatted.push_str(" [async]");
+    }
+    Some(formatted)
+}
+
+fn format_default_snippet(raw: &str) -> Option<String> {
+    raw.lines()
+        .map(|line| line.trim())
+        .find(|line| !line.is_empty())
+        .map(collapse_whitespace)
+}
+
+fn collapse_whitespace(input: &str) -> String {
+    let mut result = String::with_capacity(input.len());
+    let mut last_was_space = false;
+    for ch in input.chars() {
+        if ch.is_whitespace() {
+            if !last_was_space {
+                result.push(' ');
+                last_was_space = true;
+            }
+        } else {
+            result.push(ch);
+            last_was_space = false;
+        }
+    }
+    result.trim().to_string()
 }
 
 fn language_to_extensions(language: &str) -> Option<&'static [&'static str]> {
@@ -1139,6 +1322,7 @@ pub struct TopHit {
     pub line: usize,
     pub score: f32,
     pub origin: String,
+    pub origin_label: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub snippet: Option<String>,
 }

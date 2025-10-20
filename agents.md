@@ -2,6 +2,7 @@
 
 ## Phase 0: Governance & Vision
 - [x] Enforce the strict tracking rule: update this checklist and the CLI plan tool immediately after each sub-task.
+- [ ] Run `scripts/bench_rg_vs_sweg.py` locally before declaring any performance-focused phase complete.
 - [ ] Every benchmark run must be recorded in `docs/benchmark.md` before the task is marked complete.
 - [ ] After completing any phase checklist, run the benchmark suite and log the results in `docs/benchmark.md` before checking off the phase.
 - [ ] Deliver a Rust-native search agent that returns exact file and line spans within a 4-second reasoning loop.
@@ -67,3 +68,15 @@
 - [x] Track cold/warm latency, throughput, and reward via CI dashboards with regression thresholds.
 - [x] Make telemetry/logging overhead configurable so performance modes stay within target budgets.
 - [x] Document tuning guidelines for maintaining rich context with sub-`rg` latency in production environments.
+
+## Phase 9: Swift & TypeScript Depth
+- [x] Expand Swift AST-grep patterns to capture method receivers, protocols, and async contexts.
+- [x] Enhance TypeScript structural search (generics, JSX) with language-aware rewrites.
+- [x] Add language-specific snippet formatting and origin labels in summaries.
+- [x] Update fixtures and benchmarks to include mixed Swift/TypeScript repositories.
+
+## Phase 10: Strict Governance & Release Rules
+- [ ] Require local benchmark sign-off (`bench_rg_vs_sweg.py` + `evaluate_bench.py`) before tagging a release.
+- [ ] Document agent usage expectations in `docs/agent-use.md` and keep them versioned per release.
+- [ ] Establish a manual release checklist covering binary build, PATH publication, and telemetry configuration.
+- [ ] Audit adherence to feature toggles (fd/ast-grep/index/rga) prior to shipping.

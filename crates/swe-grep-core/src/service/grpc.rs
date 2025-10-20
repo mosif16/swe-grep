@@ -126,6 +126,7 @@ impl From<SearchSummary> for proto::SearchSummary {
                     line: hit.line as u32,
                     score: hit.score,
                     origin: hit.origin,
+                    origin_label: hit.origin_label,
                     snippet: hit.snippet.unwrap_or_default(),
                 })
                 .collect(),

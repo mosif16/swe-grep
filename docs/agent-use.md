@@ -106,7 +106,7 @@ Disable telemetry via environment variables if needed:
 
 ## 6. Benchmarking
 
-Use `scripts/bench_rg_vs_sweg.py` to evaluate regressions:
+Use `scripts/bench_rg_vs_sweg.py` locally to evaluate regressions:
 
 ```
 python scripts/bench_rg_vs_sweg.py \
@@ -117,4 +117,5 @@ python scripts/bench_rg_vs_sweg.py \
 ```
 
 Compare `mean_ms` and `p95_ms` for `rg` vs `swe_grep`. Production budgets target
-`swe_grep` ≤ `rg` + ~6 ms for literal queries.
+`swe_grep` ≤ `rg` + ~6 ms for literal queries. Run this benchmark locally before
+publishing a new release.
