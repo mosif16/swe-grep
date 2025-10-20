@@ -38,3 +38,12 @@ All benchmark runs must be tracked here with command, environment, timestamp, an
   * `swe-grep` mean: 9.18 ms (min 7.92 ms, max 16.21 ms)
   * P95 gap: swe-grep ≈ 11.97 ms
 - Notes: Literal fast path in Phase 7 cuts swe-grep warm latency by ~2× compared to Phase 7.0 baseline (~25 ms).
+
+## 2025-10-20 (Phase 9 Swift/TS depth validation)
+- Commands:
+  * `python scripts/bench_rg_vs_sweg.py --repo fixtures/multi_lang --symbol UserCard --runs 10`
+  * `cargo run -p swe-grep -- bench --iterations 3 --scenario benchmarks/default.json --output docs/benchmark-summary.jsonl`
+- Results:
+  * `bench_rg_vs_sweg`: `rg` mean 6.22 ms (p95 7.03 ms); `swe-grep` mean 47.49 ms (p95 366.65 ms) with a single cold-start spike, steady-state under 18 ms thereafter.
+  * `swe-grep bench`: success rate 1.0 across rust_login, swift_fetch, swift_hydrate, ts_get_user, tsx_user_card; mean latency 6.27 ms, throughput 159.59 qps.
+- Notes: Updated Swift protocol/async and TypeScript generics/JSX fixtures validate enriched AST patterns and rewrites without regressing latency targets.

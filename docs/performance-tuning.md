@@ -39,5 +39,5 @@ Guidelines for keeping swe-grep responsive while preserving rich context.
 - Full-context searches: target < 30 ms warm; monitor `stage_stats` to isolate
   spikes (fd, AST, index).
 
-Use `scripts/bench_rg_vs_sweg.py` and `scripts/evaluate_bench.py` in CI to
-enforce these budgets.
+Use `scripts/bench_rg_vs_sweg.py` and `scripts/evaluate_bench.py` locally before
+shipping changes to ensure these budgets are respected.

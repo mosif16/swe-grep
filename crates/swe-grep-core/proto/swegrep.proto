@@ -26,7 +26,8 @@ message TopHit {
   uint32 line = 2;
   float score = 3;
   string origin = 4;
-  string snippet = 5;
+  string origin_label = 5;
+  string snippet = 6;
 }
 
 message AstHit {
