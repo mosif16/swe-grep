@@ -1,8 +1,8 @@
-# SWE-Grep MCP Workspace Guide
+# SWE-Grep Workspace Guide
 
 ## Workspace Layout
 
-- `crates/swe-grep-core`: main binary that drives the SWE-grep search workflow (fd/rg/ast-grep, rga fallback, persistent hints, telemetry).
+- `crates/swe-grep-core`: main binary crate that drives the SWE-grep search workflow (fd/rg/ast-grep, rga fallback, persistent hints, telemetry).
 - `crates/swe-grep-indexer`: optional Tantivy-powered indexer that can accelerate fallback discovery.
 - `Cargo.toml` (root): declares the workspace and lets you target each crate with standard `cargo` commands.
 
@@ -10,7 +10,7 @@
 
 ```bash
 cargo check
-cargo run -p swe-grep-mcp -- search --symbol foo --timeout-secs 2
+cargo run -p swe-grep -- search --symbol foo --timeout-secs 2
 ```
 
 - The default build does **not** pull in Tantivy, so compilation stays fast and dependency-light.
@@ -21,7 +21,7 @@ cargo run -p swe-grep-mcp -- search --symbol foo --timeout-secs 2
 To enable the Tantivy indexer:
 
 ```bash
-cargo run -p swe-grep-mcp --features indexing -- \
+cargo run -p swe-grep --features indexing -- \
   search --symbol foo --enable-index
 ```
 
@@ -32,7 +32,7 @@ cargo run -p swe-grep-mcp --features indexing -- \
 ## ripgrep-all Fallback
 
 ```bash
-cargo run -p swe-grep-mcp -- search --symbol foo --enable-rga
+cargo run -p swe-grep -- search --symbol foo --enable-rga
 ```
 
 - Falls back to `rga` when scoped `rg` searches miss.
@@ -40,14 +40,14 @@ cargo run -p swe-grep-mcp -- search --symbol foo --enable-rga
 
 ## Testing Targets
 
-- `cargo check -p swe-grep-mcp` — compile just the core agent.
+- `cargo check -p swe-grep` — compile just the core agent.
 - `cargo check -p swe-grep-indexer` — compile the indexer crate.
 - `cargo fmt` — format across the workspace.
 
 ## Benchmarking
 
-- `cargo run -p swe-grep-mcp -- bench` — execute the default scenarios under `benchmarks/default.json`.
-- `cargo run -p swe-grep-mcp --features indexing -- bench --enable-index --enable-rga --output docs/benchmark-summary.jsonl` — run with indexing + rga enabled and append results to a log file.
+- `cargo run -p swe-grep -- bench` — execute the default scenarios under `benchmarks/default.json`.
+- `cargo run -p swe-grep --features indexing -- bench --enable-index --enable-rga --output docs/benchmark-summary.jsonl` — run with indexing + rga enabled and append results to a log file.
 - All benchmark runs must also be summarised in `docs/benchmark.md` to track progress across phases.
 
 ## Notes

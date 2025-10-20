@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
-use swe_grep_mcp::cli::SearchArgs;
-use swe_grep_mcp::search;
+use swe_grep::cli::SearchArgs;
+use swe_grep::search;
 use tempfile::tempdir;
 
 fn fixture_root() -> PathBuf {
