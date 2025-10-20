@@ -1,9 +1,9 @@
 use anyhow::Result;
 use clap::Parser;
 
-use swe_grep_mcp::bench;
-use swe_grep_mcp::cli::{Cli, Commands};
-use swe_grep_mcp::search;
+use swe_grep::bench;
+use swe_grep::cli::{Cli, Commands};
+use swe_grep::search;
 
 #[tokio::main]
 async fn main() -> Result<()> {
