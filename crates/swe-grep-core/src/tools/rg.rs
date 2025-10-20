@@ -21,12 +21,16 @@ impl RipgrepTool {
         }
     }
 
-    pub async fn search(
+    pub async fn search_union(
         &self,
         root: &Path,
-        query: &str,
+        queries: &[String],
         paths: &[PathBuf],
     ) -> Result<Vec<RipgrepMatch>> {
+        if queries.is_empty() {
+            return Ok(Vec::new());
+        }
+
         let mut cmd = Command::new("rg");
         cmd.arg("--json")
             .arg("--line-number")
@@ -34,7 +38,12 @@ impl RipgrepTool {
             .arg("--max-columns")
             .arg("200")
             .arg("--smart-case")
-            .arg(query);
+            .arg("--max-count")
+            .arg(self.max_matches.to_string());
+
+        for query in queries {
+            cmd.arg("-e").arg(query);
+        }
 
         if paths.is_empty() {
             cmd.arg(".");
@@ -66,10 +75,11 @@ impl RipgrepTool {
             .context("ripgrep did not produce stdout pipe")?;
         let mut reader = BufReader::new(stdout).lines();
         let mut matches = Vec::new();
+        let max_matches = self.max_matches;
 
         let collect = async {
             while let Some(line) = reader.next_line().await? {
-                if matches.len() >= self.max_matches {
+                if matches.len() >= max_matches {
                     break;
                 }
                 let parsed: RgMessage = match serde_json::from_str(&line) {

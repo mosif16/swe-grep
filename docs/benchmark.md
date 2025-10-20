@@ -30,3 +30,11 @@ All benchmark runs must be tracked here with command, environment, timestamp, an
   * Throughput: 51.25 queries/sec
   * Success rate: 0.67 (swift expectation still outside top-3 hits)
 - Notes: Structured logging and Prometheus counters validated during the run.
+
+## 2025-10-20 (Phase 8 warm-run baseline)
+- Command: `python scripts/bench_rg_vs_sweg.py --repo fixtures/multi_lang --symbol login_user --runs 20`
+- Results (debug build):
+  * `rg` mean: 4.12 ms (min 3.11 ms, max 6.00 ms)
+  * `swe-grep` mean: 9.18 ms (min 7.92 ms, max 16.21 ms)
+  * P95 gap: swe-grep ≈ 11.97 ms
+- Notes: Literal fast path in Phase 7 cuts swe-grep warm latency by ~2× compared to Phase 7.0 baseline (~25 ms).

@@ -2,8 +2,6 @@ use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result};
@@ -11,8 +9,6 @@ use serde::{Deserialize, Serialize};
 use serde_json::{self, json};
 use tokio::fs::OpenOptions;
 use tokio::io::AsyncWriteExt;
-use tokio::sync::Semaphore;
-use tokio::task::JoinSet;
 use tokio::time::Instant;
 
 use crate::cli::SearchArgs;
@@ -37,6 +33,7 @@ struct SearchConfig {
     language: Option<String>,
     timeout: Duration,
     max_matches: usize,
+    #[allow(dead_code)]
     concurrency: usize,
     use_index: bool,
     index_dir: PathBuf,
@@ -169,6 +166,11 @@ impl SearchEngine {
 
         tracing::info!(symbol = %self.config.symbol, "search_cycle_start");
 
+        let rewrites = QueryRewriter::for_symbol(&self.config.symbol).build();
+        if let Some(summary) = self.try_fast_path(&rewrites).await? {
+            return Ok(summary);
+        }
+
         // --- Discover ---
         let discover_start = Instant::now();
         let discover_candidates = self.discover().await;
@@ -177,7 +179,6 @@ impl SearchEngine {
         let discover_set: HashSet<PathBuf> = discover_candidates.iter().cloned().collect();
 
         // --- Probe (Scoped) ---
-        let rewrites = QueryRewriter::for_symbol(&self.config.symbol).build();
         let probe_start = Instant::now();
         let (mut hits, scoped_hits_count) = self
             .probe(&rewrites, &discover_candidates, ProbeKind::Scoped)
@@ -317,6 +318,100 @@ impl SearchEngine {
         Ok(summary)
     }
 
+    async fn try_fast_path(&mut self, rewrites: &[String]) -> Result<Option<SearchSummary>> {
+        if !self.is_literal_symbol() {
+            return Ok(None);
+        }
+
+        crate::telemetry::record_tool_invocation("rg");
+        let probe_start = Instant::now();
+        let matches = match self
+            .rg_tool
+            .search_union(&self.config.root, rewrites, &[])
+            .await
+        {
+            Ok(matches) => matches,
+            Err(err) => {
+                eprintln!("warn: fast-path ripgrep failed: {err}");
+                return Ok(None);
+            }
+        };
+        crate::telemetry::record_tool_results("rg", matches.len());
+
+        if matches.is_empty() {
+            return Ok(None);
+        }
+
+        let probe_ms = elapsed_ms(probe_start);
+        let mut hits: Vec<SearchHit> = matches
+            .into_iter()
+            .map(|m| SearchHit::from_ripgrep(&self.config.root, m, ProbeKind::Global))
+            .collect();
+        let total_hits = hits.len();
+
+        let verify_start = Instant::now();
+        let verification = self
+            .verify(
+                std::mem::take(&mut hits),
+                Vec::new(),
+                HashSet::new(),
+                Vec::new(),
+            )
+            .await?;
+        let verify_ms = elapsed_ms(verify_start);
+
+        let mut stage_stats = StageStats::default();
+        stage_stats.probe_ms = probe_ms;
+        stage_stats.probe_hits = total_hits;
+        stage_stats.verify_ms = verify_ms;
+        stage_stats.cycle_latency_ms = probe_ms + verify_ms;
+        stage_stats.precision = round_two(verification.metrics.precision);
+        stage_stats.density = round_two(verification.metrics.density);
+        stage_stats.clustering = round_two(verification.metrics.cluster_score);
+        stage_stats.reward = round_two(verification.metrics.reward);
+
+        self.reward_total += verification.metrics.reward;
+
+        if let Err(err) = self.state.save() {
+            eprintln!("warn: failed to persist cache state: {err}");
+        }
+
+        let summary = SearchSummary {
+            cycle: 1,
+            symbol: self.config.symbol.clone(),
+            queries: rewrites.to_vec(),
+            top_hits: verification.top_hits,
+            deduped: verification.dedup_count,
+            next_actions: verification.next_actions,
+            fd_candidates: Vec::new(),
+            ast_hits: Vec::new(),
+            stage_stats,
+            reward: round_two(self.reward_total),
+        };
+
+        crate::telemetry::record_reward(verification.metrics.reward);
+        crate::telemetry::record_cycle_latency(summary.stage_stats.cycle_latency_ms);
+
+        let top_hit_path = summary.top_hits.first().map(|hit| hit.path.clone());
+        tracing::info!(
+            symbol = %summary.symbol,
+            latency_ms = summary.stage_stats.cycle_latency_ms,
+            reward = summary.reward,
+            deduped = summary.deduped,
+            top_hit = ?top_hit_path,
+            "search_cycle_complete"
+        );
+
+        self.log_summary(&summary).await?;
+
+        Ok(Some(summary))
+    }
+
+    fn is_literal_symbol(&self) -> bool {
+        let s = self.config.symbol.trim();
+        !s.is_empty() && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+    }
+
     async fn log_summary(&self, summary: &SearchSummary) -> Result<()> {
         let Some(dir) = &self.config.log_dir else {
             return Ok(());
@@ -445,57 +540,30 @@ impl SearchEngine {
         scope: &[PathBuf],
         kind: ProbeKind,
     ) -> (Vec<SearchHit>, usize) {
-        let semaphore = Arc::new(Semaphore::new(self.config.concurrency));
-        let cancel_flag = Arc::new(AtomicBool::new(false));
-        let scope_arc = Arc::new(scope.to_vec());
-        let mut workers = JoinSet::new();
-
-        for query in rewrites.iter().cloned() {
-            crate::telemetry::record_tool_invocation("rg");
-            let tool = self.rg_tool.clone();
-            let root = self.config.root.clone();
-            let scope_clone = scope_arc.clone();
-            let semaphore = semaphore.clone();
-            let cancel = cancel_flag.clone();
-            workers.spawn(async move {
-                let permit = semaphore.acquire_owned().await.expect("semaphore closed");
-                if cancel.load(Ordering::Relaxed) {
-                    drop(permit);
-                    return (query, Ok(Vec::new()));
-                }
-                let result = tool.search(&root, &query, scope_clone.as_ref()).await;
-                drop(permit);
-                (query, result)
-            });
+        if rewrites.is_empty() {
+            return (Vec::new(), 0);
         }
 
-        let mut hits = Vec::new();
-        let mut total_matches = 0usize;
-
-        while let Some(res) = workers.join_next().await {
-            match res {
-                Ok((_query, Ok(matches))) => {
-                    crate::telemetry::record_tool_results("rg", matches.len());
-                    total_matches += matches.len();
-                    for m in matches {
-                        hits.push(SearchHit::from_ripgrep(&self.config.root, m, kind.clone()));
-                    }
-                    if hits.len() >= self.config.max_matches {
-                        cancel_flag.store(true, Ordering::Relaxed);
-                        workers.shutdown().await;
-                        break;
-                    }
-                }
-                Ok((query, Err(err))) => {
-                    eprintln!("warn: ripgrep query `{query}` failed: {err}");
-                }
-                Err(join_err) => {
-                    eprintln!("warn: ripgrep worker task failed: {join_err}");
-                }
+        crate::telemetry::record_tool_invocation("rg");
+        match self
+            .rg_tool
+            .search_union(&self.config.root, rewrites, scope)
+            .await
+        {
+            Ok(matches) => {
+                crate::telemetry::record_tool_results("rg", matches.len());
+                let hits = matches
+                    .into_iter()
+                    .map(|m| SearchHit::from_ripgrep(&self.config.root, m, kind.clone()))
+                    .collect::<Vec<_>>();
+                let hit_count = hits.len();
+                (hits, hit_count)
+            }
+            Err(err) => {
+                eprintln!("warn: ripgrep invocation failed: {err}");
+                (Vec::new(), 0)
             }
         }
-
-        (hits, total_matches)
     }
 
     async fn disambiguate(&self, scope: &[PathBuf]) -> Vec<AstGrepMatch> {
