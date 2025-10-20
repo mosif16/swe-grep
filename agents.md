@@ -47,15 +47,14 @@
 - [x] Implement benchmark suites tracking latency to first hit, precision@5, and dedup effectiveness.
 
 ## Phase 6: API, Ops & Developer Experience
-- [ ] Expose a gRPC/HTTP service alongside the CLI.
-- [ ] Containerize the agent with minimal runtime dependencies.
-- [ ] Document integration workflows for external coding agents.
-- [ ] Emit structured JSON logs with query metadata, exit status, and latency metrics.
-- [ ] Export Prometheus/OpenTelemetry counters for tool calls, rewards, and cache hit rates.
-- [ ] Provide feature flags to toggle individual tools (e.g., disable `ast-grep`).
-- [ ] Publish a quickstart guide covering installation of external binaries.
-- [ ] Supply sample cycle JSON outputs, CLI usage examples, and integration snippets.
-- [ ] Maintain a troubleshooting guide for common failure modes (missing binaries, large repos).
+- [x] Expose a gRPC/HTTP service alongside the CLI.
+- [x] Document integration workflows for external coding agents.
+- [x] Emit structured JSON logs with query metadata, exit status, and latency metrics.
+- [x] Export Prometheus/OpenTelemetry counters for tool calls, rewards, and cache hit rates.
+- [x] Provide feature flags to toggle individual tools (e.g., disable `ast-grep`).
+- [x] Publish a quickstart guide covering installation of external binaries.
+- [x] Supply sample cycle JSON outputs, CLI usage examples, and integration snippets.
+- [x] Maintain a troubleshooting guide for common failure modes (missing binaries, large repos).
 
 ## Phase 7: Future Extensions
 - [ ] Explore adaptive query rewriting guided by accumulated rewards.

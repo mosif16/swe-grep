@@ -1,6 +1,7 @@
+use std::net::SocketAddr;
 use std::path::PathBuf;
 
-use clap::{Parser, Subcommand};
+use clap::{ArgAction, Parser, Subcommand};
 
 /// Top-level CLI definition for swe-grep.
 #[derive(Parser, Debug)]
@@ -17,6 +18,8 @@ pub enum Commands {
     Search(SearchArgs),
     /// Run benchmark scenarios and collect performance metrics.
     Bench(BenchArgs),
+    /// Serve the SWE-Grep API over HTTP and gRPC.
+    Serve(ServeArgs),
 }
 
 /// Arguments for the `search` subcommand.
@@ -65,6 +68,14 @@ pub struct SearchArgs {
     /// Directory to append structured search logs (JSON Lines).
     #[arg(long)]
     pub log_dir: Option<PathBuf>,
+
+    /// Disable fd-based discovery for this search.
+    #[arg(long = "disable-fd", action = ArgAction::SetFalse, default_value_t = true)]
+    pub use_fd: bool,
+
+    /// Disable AST-Grep disambiguation for this search.
+    #[arg(long = "disable-ast-grep", action = ArgAction::SetFalse, default_value_t = true)]
+    pub use_ast_grep: bool,
 }
 
 /// Arguments for the `bench` subcommand.
@@ -97,4 +108,60 @@ pub struct BenchArgs {
     /// Directory to write per-run cycle logs during benchmarks.
     #[arg(long)]
     pub log_dir: Option<PathBuf>,
+}
+
+/// Arguments for the `serve` subcommand.
+#[derive(clap::Args, Debug)]
+pub struct ServeArgs {
+    /// Address to bind the HTTP API server.
+    #[arg(long, default_value = "127.0.0.1:8080")]
+    pub http_addr: SocketAddr,
+
+    /// Address to bind the gRPC server.
+    #[arg(long, default_value = "127.0.0.1:50051")]
+    pub grpc_addr: SocketAddr,
+
+    /// Root directory of the repository to index; defaults to the current working directory.
+    #[arg(long)]
+    pub path: Option<PathBuf>,
+
+    /// Timeout applied per tool invocation (seconds).
+    #[arg(long, default_value_t = 3)]
+    pub timeout_secs: u64,
+
+    /// Maximum number of ripgrep matches to collect per query rewrite.
+    #[arg(long, default_value_t = 20)]
+    pub max_matches: usize,
+
+    /// Maximum number of concurrent tool invocations (defaults to 8 workers).
+    #[arg(long, default_value_t = 8)]
+    pub concurrency: usize,
+
+    /// Enable Tantivy-backed micro-indexing by default.
+    #[arg(long, default_value_t = false)]
+    pub enable_index: bool,
+
+    /// Enable the ripgrep-all fallback by default.
+    #[arg(long, default_value_t = false)]
+    pub enable_rga: bool,
+
+    /// Override the default path for the Tantivy index directory.
+    #[arg(long)]
+    pub index_dir: Option<PathBuf>,
+
+    /// Directory used to persist symbol hints and directory cache data.
+    #[arg(long)]
+    pub cache_dir: Option<PathBuf>,
+
+    /// Directory to append structured search logs (JSON Lines).
+    #[arg(long)]
+    pub log_dir: Option<PathBuf>,
+
+    /// Disable fd-based discovery by default.
+    #[arg(long = "disable-fd", action = ArgAction::SetFalse, default_value_t = true)]
+    pub use_fd: bool,
+
+    /// Disable AST-Grep disambiguation by default.
+    #[arg(long = "disable-ast-grep", action = ArgAction::SetFalse, default_value_t = true)]
+    pub use_ast_grep: bool,
 }

@@ -1,0 +1,81 @@
+syntax = "proto3";
+
+package swegrep.v1;
+
+message SearchRequest {
+  string symbol = 1;
+  string language = 2;
+  string root = 3;
+  uint32 timeout_secs = 4;
+  uint32 max_matches = 5;
+  uint32 concurrency = 6;
+  bool enable_index = 7;
+  bool enable_rga = 8;
+  string index_dir = 9;
+  string cache_dir = 10;
+  string log_dir = 11;
+  map<string, bool> tool_flags = 12;
+}
+
+message SearchResponse {
+  SearchSummary summary = 1;
+}
+
+message TopHit {
+  string path = 1;
+  uint32 line = 2;
+  float score = 3;
+  string origin = 4;
+  string snippet = 5;
+}
+
+message AstHit {
+  string path = 1;
+  uint32 line = 2;
+}
+
+message StageStats {
+  uint32 discover_candidates = 1;
+  uint64 discover_ms = 2;
+  uint32 probe_hits = 3;
+  uint64 probe_ms = 4;
+  uint32 escalate_hits = 5;
+  uint64 escalate_ms = 6;
+  uint32 index_candidates = 7;
+  uint32 index_probe_hits = 8;
+  uint64 index_ms = 9;
+  uint32 rga_hits = 10;
+  uint64 rga_ms = 11;
+  uint32 ast_matches = 12;
+  uint64 disambiguate_ms = 13;
+  uint64 verify_ms = 14;
+  uint64 cycle_latency_ms = 15;
+  float precision = 16;
+  float density = 17;
+  float clustering = 18;
+  float reward = 19;
+}
+
+message SearchSummary {
+  uint32 cycle = 1;
+  string symbol = 2;
+  repeated string queries = 3;
+  repeated TopHit top_hits = 4;
+  uint32 deduped = 5;
+  repeated string next_actions = 6;
+  repeated string fd_candidates = 7;
+  repeated AstHit ast_hits = 8;
+  StageStats stage_stats = 9;
+  float reward = 10;
+}
+
+message HealthCheckRequest {}
+
+message HealthCheckResponse {
+  string status = 1;
+}
+
+service SweGrepService {
+  rpc Search(SearchRequest) returns (SearchResponse);
+  rpc Health(HealthCheckRequest) returns (HealthCheckResponse);
+}

@@ -185,6 +185,8 @@ fn build_search_args(repo_root: &Path, scenario: &Scenario, bench: &BenchArgs) -
         enable_rga,
         cache_dir,
         log_dir,
+        use_fd: true,
+        use_ast_grep: true,
     }
 }
 

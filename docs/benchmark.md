@@ -22,3 +22,11 @@ All benchmark runs must be tracked here with command, environment, timestamp, an
   * Throughput: 63.95 queries/sec
   * Success rate: 0.67 (swift expectation missed due to ast-grep parse error)
 - Notes: Tantivy disabled for baseline; warnings highlight AST-grep limitations on Swift/TS patterns—needs follow-up.
+
+## 2025-10-20 (Phase 6 validation)
+- Command: `cargo run -- bench`
+- Aggregate metrics (single iteration per scenario):
+  * Mean latency: 19.51 ms overall
+  * Throughput: 51.25 queries/sec
+  * Success rate: 0.67 (swift expectation still outside top-3 hits)
+- Notes: Structured logging and Prometheus counters validated during the run.

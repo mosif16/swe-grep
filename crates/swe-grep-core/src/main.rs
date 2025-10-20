@@ -4,9 +4,12 @@ use clap::Parser;
 use swe_grep::bench;
 use swe_grep::cli::{Cli, Commands};
 use swe_grep::search;
+use swe_grep::service;
+use swe_grep::telemetry;
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    telemetry::init()?;
     let cli = Cli::parse();
     match cli.command {
         Commands::Search(args) => {
@@ -16,6 +19,9 @@ async fn main() -> Result<()> {
         }
         Commands::Bench(args) => {
             bench::run(args).await?;
+        }
+        Commands::Serve(args) => {
+            service::serve(args).await?;
         }
     }
     Ok(())
