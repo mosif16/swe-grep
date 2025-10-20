@@ -26,6 +26,8 @@ async fn finds_rust_symbol() {
         enable_rga: false,
         cache_dir: None,
         log_dir: None,
+        use_fd: true,
+        use_ast_grep: true,
     };
 
     let summary = search::execute(args).await.expect("search should succeed");
@@ -56,6 +58,8 @@ async fn writes_log_when_requested() {
         enable_rga: false,
         cache_dir: None,
         log_dir: Some(log_dir.clone()),
+        use_fd: true,
+        use_ast_grep: true,
     };
 
     let _summary = search::execute(args).await.expect("search should succeed");

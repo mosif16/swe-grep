@@ -25,6 +25,7 @@ use swe_grep_indexer::{IndexConfig, TantivyIndex};
 
 /// Execute a single SWE-grep cycle using the phase-3 workflow.
 pub async fn execute(args: SearchArgs) -> Result<SearchSummary> {
+    crate::telemetry::init()?;
     let config = SearchConfig::try_from_args(args)?;
     let mut engine = SearchEngine::new(config)?;
     engine.run_cycle().await
@@ -37,9 +38,11 @@ struct SearchConfig {
     timeout: Duration,
     max_matches: usize,
     concurrency: usize,
-    enable_index: bool,
+    use_index: bool,
     index_dir: PathBuf,
-    enable_rga: bool,
+    use_rga: bool,
+    use_fd: bool,
+    use_ast: bool,
     cache_dir: PathBuf,
     log_dir: Option<PathBuf>,
 }
@@ -74,10 +77,13 @@ impl SearchConfig {
             }
         });
 
-        let mut enable_index = args.enable_index;
-        if enable_index && !cfg!(feature = "indexing") {
+        let use_fd = args.use_fd;
+        let use_ast = args.use_ast_grep;
+
+        let mut use_index = args.enable_index;
+        if use_index && !cfg!(feature = "indexing") {
             eprintln!("warn: indexing support not compiled; ignoring --enable-index");
-            enable_index = false;
+            use_index = false;
         }
 
         Ok(Self {
@@ -87,9 +93,11 @@ impl SearchConfig {
             timeout,
             max_matches: usize::max(1, args.max_matches),
             concurrency,
-            enable_index,
+            use_index,
             index_dir,
-            enable_rga: args.enable_rga,
+            use_rga: args.enable_rga,
+            use_fd,
+            use_ast,
             cache_dir,
             log_dir,
         })
@@ -98,10 +106,10 @@ impl SearchConfig {
 
 struct SearchEngine {
     config: SearchConfig,
-    fd_tool: FdTool,
+    fd_tool: Option<FdTool>,
     rg_tool: RipgrepTool,
     rga_tool: Option<RgaTool>,
-    ast_tool: AstGrepTool,
+    ast_tool: Option<AstGrepTool>,
     #[cfg(feature = "indexing")]
     index: Option<TantivyIndex>,
     dedup_cache: SearchCache,
@@ -111,10 +119,18 @@ struct SearchEngine {
 
 impl SearchEngine {
     fn new(config: SearchConfig) -> Result<Self> {
-        let fd_tool = FdTool::new(config.timeout, 200);
+        let fd_tool = if config.use_fd {
+            Some(FdTool::new(config.timeout, 200))
+        } else {
+            None
+        };
         let rg_tool = RipgrepTool::new(config.timeout, config.max_matches);
-        let ast_tool = AstGrepTool::new(config.timeout, config.max_matches);
-        if config.enable_index {
+        let ast_tool = if config.use_ast {
+            Some(AstGrepTool::new(config.timeout, config.max_matches))
+        } else {
+            None
+        };
+        if config.use_index {
             fs::create_dir_all(&config.index_dir).with_context(|| {
                 format!(
                     "failed to create index directory {}",
@@ -129,7 +145,7 @@ impl SearchEngine {
             )
         })?;
         let state = PersistentState::load(&config.root, &config.cache_dir)?;
-        let rga_tool = if config.enable_rga {
+        let rga_tool = if config.use_rga {
             Some(RgaTool::new(config.timeout, config.max_matches))
         } else {
             None
@@ -150,6 +166,8 @@ impl SearchEngine {
 
     async fn run_cycle(&mut self) -> Result<SearchSummary> {
         let mut stage_stats = StageStats::default();
+
+        tracing::info!(symbol = %self.config.symbol, "search_cycle_start");
 
         // --- Discover ---
         let discover_start = Instant::now();
@@ -178,25 +196,29 @@ impl SearchEngine {
         }
 
         #[cfg(feature = "indexing")]
-        if hits.is_empty() && self.config.enable_index {
+        if hits.is_empty() && self.config.use_index {
             let index_stage_start = Instant::now();
             let symbol = self.config.symbol.clone();
             let max_matches = self.config.max_matches;
             match self.ensure_index().await {
-                Ok(index) => match index.search(&symbol, max_matches).await {
-                    Ok(candidates) => {
-                        stage_stats.index_candidates = candidates.len();
-                        if !candidates.is_empty() {
-                            let (indexed_hits, indexed_count) =
-                                self.probe(&rewrites, &candidates, ProbeKind::Indexed).await;
-                            stage_stats.index_probe_hits = indexed_count;
-                            hits.extend(indexed_hits);
+                Ok(index) => {
+                    crate::telemetry::record_tool_invocation("index");
+                    match index.search(&symbol, max_matches).await {
+                        Ok(candidates) => {
+                            stage_stats.index_candidates = candidates.len();
+                            crate::telemetry::record_tool_results("index", candidates.len());
+                            if !candidates.is_empty() {
+                                let (indexed_hits, indexed_count) =
+                                    self.probe(&rewrites, &candidates, ProbeKind::Indexed).await;
+                                stage_stats.index_probe_hits = indexed_count;
+                                hits.extend(indexed_hits);
+                            }
+                        }
+                        Err(err) => {
+                            eprintln!("warn: tantivy search failed: {err}");
                         }
                     }
-                    Err(err) => {
-                        eprintln!("warn: tantivy search failed: {err}");
-                    }
-                },
+                }
                 Err(err) => {
                     eprintln!("warn: failed to initialize index: {err}");
                 }
@@ -207,12 +229,14 @@ impl SearchEngine {
         if hits.is_empty() {
             if let Some(rga_tool) = &self.rga_tool {
                 let rga_start = Instant::now();
+                crate::telemetry::record_tool_invocation("rga");
                 match rga_tool
                     .search(&self.config.root, &self.config.symbol)
                     .await
                 {
                     Ok(matches) => {
                         stage_stats.rga_hits = matches.len();
+                        crate::telemetry::record_tool_results("rga", matches.len());
                         for m in matches {
                             hits.push(SearchHit::from_rga(&self.config.root, m));
                         }
@@ -275,6 +299,19 @@ impl SearchEngine {
             reward: round_two(self.reward_total),
         };
 
+        crate::telemetry::record_reward(verification.metrics.reward);
+        crate::telemetry::record_cycle_latency(summary.stage_stats.cycle_latency_ms);
+
+        let top_hit_path = summary.top_hits.first().map(|hit| hit.path.clone());
+        tracing::info!(
+            symbol = %summary.symbol,
+            latency_ms = summary.stage_stats.cycle_latency_ms,
+            reward = summary.reward,
+            deduped = summary.deduped,
+            top_hit = ?top_hit_path,
+            "search_cycle_complete"
+        );
+
         self.log_summary(&summary).await?;
 
         Ok(summary)
@@ -306,8 +343,12 @@ impl SearchEngine {
             "timestamp": timestamp,
             "root": self.config.root,
             "symbol": self.config.symbol,
-            "enable_index": self.config.enable_index,
-            "enable_rga": self.config.enable_rga,
+            "use_index": self.config.use_index,
+            "use_rga": self.config.use_rga,
+            "use_fd": self.config.use_fd,
+            "use_ast_grep": self.config.use_ast,
+            "status": "ok",
+            "latency_ms": summary.stage_stats.cycle_latency_ms,
             "summary": summary,
         });
 
@@ -327,14 +368,19 @@ impl SearchEngine {
         let mut candidates: Vec<PathBuf> = Vec::new();
         let mut seen: HashSet<PathBuf> = HashSet::new();
 
-        let fd_results = self
-            .fd_tool
-            .run(&self.config.root, &self.config.symbol)
-            .await
-            .unwrap_or_else(|err| {
-                eprintln!("warn: fd invocation failed: {err}");
-                Vec::new()
-            });
+        let fd_results = if let Some(fd_tool) = &self.fd_tool {
+            crate::telemetry::record_tool_invocation("fd");
+            fd_tool
+                .run(&self.config.root, &self.config.symbol)
+                .await
+                .unwrap_or_else(|err| {
+                    eprintln!("warn: fd invocation failed: {err}");
+                    Vec::new()
+                })
+        } else {
+            Vec::new()
+        };
+        crate::telemetry::record_tool_results("fd", fd_results.len());
 
         for path in fd_results {
             if let Ok(normalized) = normalize_path(&self.config.root, &path) {
@@ -346,13 +392,17 @@ impl SearchEngine {
             }
         }
 
-        for hint in self.state.hints_for_symbol(&self.config.symbol) {
+        let symbol_hints = self.state.hints_for_symbol(&self.config.symbol);
+        crate::telemetry::record_cache_hits("symbol_hints", symbol_hints.len());
+        for hint in symbol_hints {
             if passes_extension_filter(&hint, extensions) && seen.insert(hint.clone()) {
                 candidates.push(hint);
             }
         }
 
-        for dir in self.state.top_directories(3) {
+        let directory_hints = self.state.top_directories(3);
+        crate::telemetry::record_cache_hits("directory_hints", directory_hints.len());
+        for dir in directory_hints {
             let dir_path = self.config.root.join(&dir);
             if !dir_path.is_dir() {
                 continue;
@@ -401,6 +451,7 @@ impl SearchEngine {
         let mut workers = JoinSet::new();
 
         for query in rewrites.iter().cloned() {
+            crate::telemetry::record_tool_invocation("rg");
             let tool = self.rg_tool.clone();
             let root = self.config.root.clone();
             let scope_clone = scope_arc.clone();
@@ -424,6 +475,7 @@ impl SearchEngine {
         while let Some(res) = workers.join_next().await {
             match res {
                 Ok((_query, Ok(matches))) => {
+                    crate::telemetry::record_tool_results("rg", matches.len());
                     total_matches += matches.len();
                     for m in matches {
                         hits.push(SearchHit::from_ripgrep(&self.config.root, m, kind.clone()));
@@ -447,7 +499,13 @@ impl SearchEngine {
     }
 
     async fn disambiguate(&self, scope: &[PathBuf]) -> Vec<AstGrepMatch> {
-        self.ast_tool
+        let Some(ast_tool) = &self.ast_tool else {
+            return Vec::new();
+        };
+
+        crate::telemetry::record_tool_invocation("ast-grep");
+
+        ast_tool
             .search_identifier(
                 &self.config.root,
                 &self.config.symbol,
@@ -455,6 +513,10 @@ impl SearchEngine {
                 scope,
             )
             .await
+            .map(|matches| {
+                crate::telemetry::record_tool_results("ast-grep", matches.len());
+                matches
+            })
             .unwrap_or_else(|err| {
                 eprintln!("warn: ast-grep invocation failed: {err}");
                 Vec::new()
