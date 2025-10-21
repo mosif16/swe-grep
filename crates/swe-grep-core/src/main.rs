@@ -9,8 +9,10 @@ use swe_grep::telemetry;
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    telemetry::init()?;
     let cli = Cli::parse();
+    if !cli.disable_telemetry {
+        telemetry::init()?;
+    }
     match cli.command {
         Commands::Search(args) => {
             let summary = search::execute(args).await?;

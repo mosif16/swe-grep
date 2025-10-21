@@ -26,6 +26,7 @@ struct MetricsHandles {
     cache_hits: Counter<u64>,
     reward_histogram: Histogram<f64>,
     cycle_latency_histogram: Histogram<f64>,
+    stage_latency_histogram: Histogram<f64>,
 }
 
 /// Initialize tracing and metrics exporters. Safe to call multiple times.
@@ -84,6 +85,10 @@ fn configure_metrics() -> Result<&'static TelemetryState> {
             .f64_histogram("swegrep_cycle_latency_ms")
             .with_description("End-to-end latency of a reasoning cycle in milliseconds")
             .init();
+        let stage_latency_histogram = meter
+            .f64_histogram("swegrep_stage_latency_ms")
+            .with_description("Latency of individual pipeline stages in milliseconds")
+            .init();
 
         METRICS
             .set(MetricsHandles {
@@ -92,6 +97,7 @@ fn configure_metrics() -> Result<&'static TelemetryState> {
                 cache_hits,
                 reward_histogram,
                 cycle_latency_histogram,
+                stage_latency_histogram,
             })
             .map_err(|_| anyhow!("metrics handles already initialized"))?;
 
@@ -160,6 +166,18 @@ pub fn record_cycle_latency(latency_ms: u64) {
         metrics
             .cycle_latency_histogram
             .record(latency_ms as f64, &[]);
+    }
+}
+
+/// Record the latency for a named stage in milliseconds.
+pub fn record_stage_latency(stage: &'static str, latency_ms: u64) {
+    if latency_ms == 0 {
+        return;
+    }
+    if let Some(metrics) = metrics() {
+        metrics
+            .stage_latency_histogram
+            .record(latency_ms as f64, &[KeyValue::new("stage", stage)]);
     }
 }
 

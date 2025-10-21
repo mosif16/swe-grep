@@ -47,3 +47,42 @@ All benchmark runs must be tracked here with command, environment, timestamp, an
   * `bench_rg_vs_sweg`: `rg` mean 6.22 ms (p95 7.03 ms); `swe-grep` mean 47.49 ms (p95 366.65 ms) with a single cold-start spike, steady-state under 18 ms thereafter.
   * `swe-grep bench`: success rate 1.0 across rust_login, swift_fetch, swift_hydrate, ts_get_user, tsx_user_card; mean latency 6.27 ms, throughput 159.59 qps.
 - Notes: Updated Swift protocol/async and TypeScript generics/JSX fixtures validate enriched AST patterns and rewrites without regressing latency targets.
+
+## 2025-10-21 (Startup instrumentation baseline)
+- Commands:
+  * `python scripts/bench_startup.py --repo fixtures/multi_lang --symbol fetchUser --language swift --runs 5 --swegrep-bin target/debug/swe-grep`
+  * `python scripts/bench_startup.py --repo fixtures/multi_lang --symbol UserCard --language tsx --runs 5 --swegrep-bin target/debug/swe-grep`
+- Measurements:
+  * Swift `fetchUser`: process mean 10.49 ms (p95 11.25 ms); time-to-first-output mean 3.40 ms (p95 4.22 ms); cycle latency mean 6 ms (p95 7 ms).
+  * TSX `UserCard`: process mean 11.59 ms (p95 13.28 ms); time-to-first-output mean 3.52 ms (p95 4.37 ms); cycle latency mean 6.8 ms (p95 7 ms).
+- Notes: `startup_stats` currently reports `init_ms=0` because tool constructors complete in <1 ms—telemetry wiring validated for future regression tracking.
+
+## 2025-10-21 (Swift search enrichment)
+- Commands:
+  * `cargo run -p swe-grep -- bench --iterations 5 --scenario benchmarks/default.json --output docs/benchmark-summary.jsonl`
+  * `python scripts/bench_startup.py --repo fixtures/multi_lang --symbol fetchUser --language swift --runs 5 --swegrep-bin target/debug/swe-grep`
+- Measurements:
+  * Bench defaults: `swift_fetch` mean 7.03 ms (success 1.0); `swift_hydrate` mean 8.16 ms (success 1.0); snippets now include receiver context (e.g., `extension UserService :: func hydrateAndNotify…`).
+  * Startup repeat: `fetchUser` process mean 10.93 ms (p95 13.20 ms); `time_to_first_output` mean 3.74 ms (p95 5.68 ms); startup histograms report `init/fd/rg/cache/state` ≈ 1 ms after rounding.
+- Notes: Swift heuristics (query rewrites + AST patterns) eliminate previous benchmark misses; context formatting prepends declaring scope for async methods.
+
+## 2025-10-21 (TypeScript/TSX tuning)
+- Command: `cargo run -p swe-grep -- bench --iterations 5 --scenario benchmarks/default.json --output docs/benchmark-summary.jsonl`
+- Measurements:
+  * `ts_get_user` mean 8.41 ms (success 1.0) with snippets annotating async/promise semantics.
+  * `tsx_user_card` mean 7.72 ms (success 1.0) with `[component] [arrow]` context markers applied to React components.
+- Notes: TypeScript rewrites cover const/exports/hooks/JSX tags; AST-grep now inspects class/interface/method nodes without regressing latency.
+
+## 2025-10-21 (Startup optimizations)
+- Commands:
+  * `python scripts/bench_startup.py --repo fixtures/multi_lang --symbol fetchUser --language swift --runs 5 --swegrep-bin target/debug/swe-grep`
+  * `cargo run -p swe-grep -- bench --iterations 3 --scenario benchmarks/default.json --output docs/benchmark-summary.jsonl --disable-telemetry`
+- Measurements:
+  * Warm startup (`fetchUser`): process mean 10.51 ms, TTFB mean 4.17 ms; startup stats now defer `fd/ast/rga` initialization until first use (fields remain 0 ms when unused).
+  * Bench with telemetry disabled: overall mean latency 7.11 ms (success 1.0 across scenarios); TypeScript queries drop to <5 ms with `[promise]` / `[component]` annotations intact.
+- Notes: Added `--disable-telemetry` flag and lazy tool factories (`fd`, `ast-grep`, `rga`); language labels cached per path to avoid repeated extension checks.
+
+## 2025-10-21 (Benchmark guardrails)
+- Command: `python scripts/check_bench_regression.py --summary docs/benchmark-summary.jsonl --max-latency-ms 20 --min-success 0.99`
+- Result: `Benchmarks OK (<= 20.0 ms mean latency, >= 0.99 success)`
+- Notes: Script added to enforce latency/success thresholds in CI; fails fast when a new summary breaches budgets.
