@@ -7,7 +7,7 @@ use tonic::async_trait;
 use tonic::transport::Server;
 use tonic::{Request, Response, Status};
 
-use crate::search::{SearchSummary, StageStats};
+use crate::search::{SearchSummary, StageStats, StartupStats};
 
 use super::proto::{
     self,
@@ -113,6 +113,7 @@ fn zeroable_usize(value: u32) -> Option<usize> {
 impl From<SearchSummary> for proto::SearchSummary {
     fn from(summary: SearchSummary) -> Self {
         let stage_stats = Some(convert_stage_stats(summary.stage_stats));
+        let startup_stats = summary.startup_stats.map(convert_startup_stats);
 
         proto::SearchSummary {
             cycle: summary.cycle,
@@ -147,6 +148,7 @@ impl From<SearchSummary> for proto::SearchSummary {
                 .collect(),
             stage_stats,
             reward: summary.reward,
+            startup_stats,
         }
     }
 }
@@ -172,5 +174,18 @@ fn convert_stage_stats(stats: StageStats) -> proto::StageStats {
         density: stats.density,
         clustering: stats.clustering,
         reward: stats.reward,
+    }
+}
+
+fn convert_startup_stats(stats: StartupStats) -> proto::StartupStats {
+    proto::StartupStats {
+        init_ms: stats.init_ms,
+        fd_ms: stats.fd_ms,
+        rg_ms: stats.rg_ms,
+        ast_ms: stats.ast_ms,
+        rga_ms: stats.rga_ms,
+        cache_ms: stats.cache_ms,
+        state_ms: stats.state_ms,
+        index_ms: stats.index_ms,
     }
 }

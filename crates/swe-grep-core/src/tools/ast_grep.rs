@@ -201,6 +201,42 @@ fn patterns_for_language(symbol: &str, language: &str) -> Vec<String> {
                 "(protocol_member_declaration (function_declaration name: (identifier) @id) (#eq? @id \"{needle}\"))"
             ),
             format!("(initializer_declaration name: (identifier) @id (#eq? @id \"{needle}\"))"),
+            format!(
+                "(class_declaration body: (member_declaration_list (member_declaration (function_declaration name: (identifier) @id (#eq? @id \"{needle}\")))))"
+            ),
+            format!(
+                "(struct_declaration body: (member_declaration_list (member_declaration (function_declaration name: (identifier) @id (#eq? @id \"{needle}\")))))"
+            ),
+            format!(
+                "(extension_declaration body: (member_declaration_list (member_declaration (function_declaration name: (identifier) @id (#eq? @id \"{needle}\")))))"
+            ),
+            format!(
+                "(actor_declaration body: (member_declaration_list (member_declaration (function_declaration name: (identifier) @id (#eq? @id \"{needle}\")))))"
+            ),
+            format!("(member_access_expression name: (identifier) @id (#eq? @id \"{needle}\"))"),
+            format!(
+                "(function_call_expression function: (identifier) @id (#eq? @id \"{needle}\"))"
+            ),
+            format!(
+                "(await_expression (function_call_expression function: (identifier) @id (#eq? @id \"{needle}\")))"
+            ),
+        ],
+        "typescript" | "ts" | "tsx" => vec![
+            format!("(identifier) @id (#eq? @id \"{needle}\")"),
+            format!("(call_expression function: (identifier) @id (#eq? @id \"{needle}\"))"),
+            format!(
+                "(call_expression function: (member_expression property: (property_identifier) @id (#eq? @id \"{needle}\")))"
+            ),
+            format!("(class_declaration name: (identifier) @id (#eq? @id \"{needle}\"))"),
+            format!("(interface_declaration name: (identifier) @id (#eq? @id \"{needle}\"))"),
+            format!("(interface_declaration name: (type_identifier) @id (#eq? @id \"{needle}\"))"),
+            format!("(type_alias_declaration name: (identifier) @id (#eq? @id \"{needle}\"))"),
+            format!("(type_alias_declaration name: (type_identifier) @id (#eq? @id \"{needle}\"))"),
+            format!("(method_definition name: (property_identifier) @id (#eq? @id \"{needle}\"))"),
+            format!(
+                "(lexical_declaration (variable_declarator name: (identifier) @id (#eq? @id \"{needle}\"))))"
+            ),
+            format!("(jsx_opening_element name: (identifier) @id (#eq? @id \"{needle}\"))"),
         ],
         _ => vec![format!("(identifier) @id (#eq? @id \"{needle}\")")],
     }

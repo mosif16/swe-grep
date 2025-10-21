@@ -13,6 +13,7 @@ cargo check
 cargo run -p swe-grep -- search --symbol foo --timeout-secs 2
 ```
 
+- Disable telemetry if you are running in minimal environments: `cargo run -p swe-grep -- --disable-telemetry search --symbol foo`.
 - The default build does **not** pull in Tantivy, so compilation stays fast and dependency-light.
 - Persistent hints are stored under `.swe-grep-cache/` (already ignored by git).
 
@@ -49,6 +50,18 @@ cargo run -p swe-grep -- search --symbol foo --enable-rga
 - `cargo run -p swe-grep -- bench` — execute the default scenarios under `benchmarks/default.json`.
 - `cargo run -p swe-grep --features indexing -- bench --enable-index --enable-rga --output docs/benchmark-summary.jsonl` — run with indexing + rga enabled and append results to a log file.
 - All benchmark runs must also be summarised in `docs/benchmark.md` to track progress across phases.
+- `python scripts/bench_startup.py --repo <path> --symbol <name> [--language swift]` — measures cold/warm start, stage timings, and startup stats for a single query.
+- `python scripts/check_bench_regression.py --summary docs/benchmark-summary.jsonl --max-latency-ms 20 --min-success 0.99` — CI-friendly guard that fails if latency or success rate drifts beyond the stated thresholds.
+
+## Serving the API
+
+```bash
+cargo run -p swe-grep -- serve --http-addr 127.0.0.1:8080 --grpc-addr 127.0.0.1:50051
+```
+
+- Add `--path /absolute/repo/root` to pin the server to a repository from the CLI.
+- Combine with `--disable-telemetry` when exposing the service in environments without Prometheus/OpenTelemetry collectors.
+- HTTP endpoints: `/healthz`, `/search`, `/metrics`. gRPC exposes `swegrep.v1.SweGrepService` with the same search payloads (including startup/stage stats).
 
 ## Notes
 

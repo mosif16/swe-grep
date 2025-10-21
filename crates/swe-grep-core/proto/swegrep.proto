@@ -57,6 +57,17 @@ message StageStats {
   float reward = 19;
 }
 
+message StartupStats {
+  uint64 init_ms = 1;
+  uint64 fd_ms = 2;
+  uint64 rg_ms = 3;
+  uint64 ast_ms = 4;
+  uint64 rga_ms = 5;
+  uint64 cache_ms = 6;
+  uint64 state_ms = 7;
+  uint64 index_ms = 8;
+}
+
 message SearchSummary {
   uint32 cycle = 1;
   string symbol = 2;
@@ -68,6 +79,7 @@ message SearchSummary {
   repeated AstHit ast_hits = 8;
   StageStats stage_stats = 9;
   float reward = 10;
+  StartupStats startup_stats = 11;
 }
 
 message HealthCheckRequest {}

@@ -8,6 +8,10 @@ use clap::{ArgAction, Parser, Subcommand};
 #[command(name = "swe-grep")]
 #[command(about = "Rust-native search agent for blazing-fast code retrieval", long_about = None)]
 pub struct Cli {
+    /// Disable telemetry exporters for this invocation.
+    #[arg(long, global = true, action = ArgAction::SetTrue)]
+    pub disable_telemetry: bool,
+
     #[command(subcommand)]
     pub command: Commands,
 }
