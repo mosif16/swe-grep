@@ -37,8 +37,8 @@ pub struct SearchArgs {
     #[arg(long)]
     pub path: Option<PathBuf>,
 
-    /// Optional explicit language hint for AST-Grep (e.g. rust, tsx, swift).
-    #[arg(long)]
+    /// Optional explicit language hint for AST-Grep (e.g. rust, tsx, swift, auto-swift-ts).
+    #[arg(long, value_name = "LANGUAGE")]
     pub language: Option<String>,
 
     /// Timeout applied per tool invocation (seconds).

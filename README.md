@@ -16,6 +16,7 @@ cargo run -p swe-grep -- search --symbol foo --timeout-secs 2
 - Disable telemetry if you are running in minimal environments: `cargo run -p swe-grep -- --disable-telemetry search --symbol foo`.
 - The default build does **not** pull in Tantivy, so compilation stays fast and dependency-light.
 - Persistent hints are stored under `.swe-grep-cache/` (already ignored by git).
+- Language-aware rewrites can now be pre-seeded from the CLI: pass `--language swift`, `--language tsx`, or multi-language presets such as `--language auto-swift-ts` to hydrate Swift/TypeScript heuristics simultaneously (snippets, AST-grep, cache hints).
 
 ## Optional Tantivy Indexing
 
@@ -67,3 +68,4 @@ cargo run -p swe-grep -- serve --http-addr 127.0.0.1:8080 --grpc-addr 127.0.0.1:
 
 - The AST pattern emitted by `ast-grep` currently prints a warning when no matches are found; it’s benign but worth revisiting while hardening the pattern.
 - Keep `.swe-grep-cache/` out of version control; it is safe to delete if you want a clean slate for heuristics.
+- Per-language telemetry (discover/probe/ast/verify counters + latency) is emitted with every cycle in `SearchSummary`; consume the `stage_stats.language_metrics` map to track Swift/TypeScript/Rust coverage in benchmarks and regression dashboards.
