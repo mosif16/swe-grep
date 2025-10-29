@@ -13,7 +13,7 @@ use tokio::io::AsyncWriteExt;
 use tokio::time::Instant;
 
 use crate::cli::SearchArgs;
-use crate::tools::ast_grep::{AstGrepMatch, AstGrepTool};
+use crate::tools::ast_grep::{AstGrepMatch, AstGrepTool, AstPatternError};
 use crate::tools::fd::FdTool;
 use crate::tools::rg::{RipgrepMatch, RipgrepTool};
 use crate::tools::rga::{RgaMatch, RgaTool};
@@ -22,6 +22,8 @@ use swe_grep_indexer::{IndexConfig, TantivyIndex};
 
 const DEFAULT_MAX_COLUMNS: usize = 200;
 const DEFAULT_MAX_BODY_BYTES: usize = 512 * 1024;
+const DEFAULT_INLINE_CONTEXT: usize = 2;
+const TRUNCATED_INLINE_CONTEXT: usize = 4;
 
 /// Execute a single SWE-grep cycle using the phase-3 workflow.
 pub async fn execute(args: SearchArgs) -> Result<SearchSummary> {
@@ -594,6 +596,42 @@ impl SearchEngine {
         !s.is_empty() && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
     }
 
+    fn should_run_ast(&self) -> bool {
+        if !self.config.use_ast {
+            return false;
+        }
+        let s = self.config.symbol.trim();
+        if s.is_empty() {
+            return false;
+        }
+        s.chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '$'))
+    }
+
+    fn context_padding(&self, hit: &SearchHit) -> (usize, usize, bool) {
+        let mut before = self.config.context_before;
+        let mut after = self.config.context_after;
+        let mut auto_expanded = false;
+
+        if before == 0 && after == 0 {
+            before = DEFAULT_INLINE_CONTEXT;
+            after = DEFAULT_INLINE_CONTEXT;
+            auto_expanded = true;
+        }
+
+        if hit.raw_snippet_truncated {
+            let adjusted_before = before.max(TRUNCATED_INLINE_CONTEXT);
+            let adjusted_after = after.max(TRUNCATED_INLINE_CONTEXT);
+            if adjusted_before != before || adjusted_after != after {
+                auto_expanded = true;
+                before = adjusted_before;
+                after = adjusted_after;
+            }
+        }
+
+        (before, after, auto_expanded)
+    }
+
     async fn log_summary(&self, summary: &SearchSummary) -> Result<()> {
         let Some(dir) = &self.config.log_dir else {
             return Ok(());
@@ -798,6 +836,10 @@ impl SearchEngine {
     }
 
     async fn disambiguate(&mut self, scope: &[PathBuf]) -> Vec<AstGrepMatch> {
+        if !self.should_run_ast() {
+            return Vec::new();
+        }
+
         let root = self.config.root.clone();
         let symbol = self.config.symbol.clone();
         let language_tokens = self.config.language_tokens.clone();
@@ -815,7 +857,15 @@ impl SearchEngine {
                 matches
             })
             .unwrap_or_else(|err| {
-                eprintln!("warn: ast-grep invocation failed: {err}");
+                if let Some(pattern_err) = err.downcast_ref::<AstPatternError>() {
+                    tracing::debug!(
+                        symbol = %symbol,
+                        pattern = %pattern_err.pattern(),
+                        "ast-grep pattern invalid; falling back to literal search"
+                    );
+                } else {
+                    eprintln!("warn: ast-grep invocation failed: {err}");
+                }
                 Vec::new()
             })
     }
@@ -897,17 +947,22 @@ impl SearchEngine {
             .map(|hit| {
                 let formatted_snippet =
                     format_snippet(&self.config.root, &hit.path, hit.line, &hit.snippet);
+                let (context_before, context_after, auto_expanded_context) =
+                    self.context_padding(hit);
                 let context_window = gather_expanded_snippet(
                     &self.config.root,
                     &hit.path,
                     hit.line,
-                    self.config.context_before,
-                    self.config.context_after,
+                    context_before,
+                    context_after,
                 );
-                let (expanded_snippet, context_start, context_end) = match context_window {
-                    Some((snippet, start, end)) => (Some(snippet), Some(start), Some(end)),
-                    None => (None, None, None),
-                };
+                let (expanded_snippet, context_start, context_end, auto_context_flag) =
+                    match context_window {
+                        Some((snippet, start, end)) => {
+                            (Some(snippet), Some(start), Some(end), auto_expanded_context)
+                        }
+                        None => (None, None, None, false),
+                    };
 
                 let (body, body_retrieved) = if self.config.body {
                     let payload = self.fetch_body(&hit.path);
@@ -929,6 +984,7 @@ impl SearchEngine {
                     expanded_snippet,
                     context_start,
                     context_end,
+                    auto_expanded_context: auto_context_flag,
                     body,
                     body_retrieved,
                 }
@@ -2201,6 +2257,8 @@ pub struct TopHit {
     pub context_start: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub context_end: Option<usize>,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub auto_expanded_context: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub body: Option<String>,
     #[serde(default, skip_serializing_if = "is_false")]

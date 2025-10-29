@@ -47,6 +47,7 @@ response now includes enriched hit metadata:
       "expanded_snippet": "017 fn login_user_allows_admin() {\n018 ...",
       "context_start": 17,
       "context_end": 19,
+      "auto_expanded_context": false,
       "body": "pub fn login_user(...",
       "body_retrieved": true
     }
@@ -71,6 +72,11 @@ Agents typically:
    is `true`, the full source is already embedded in the hit and can be cached.
 3. Inspect `stage_stats` to detect degraded runs (e.g., non-zero `discover_ms`
    means fast path was bypassed).
+
+`swe-grep` automatically widens context windows when the caller omits
+`--context-before/--context-after`. Literal runs now ship with ±2 lines of
+context (±4 when ripgrep truncates the match), and the `auto_expanded_context`
+flag records when this fallback kicked in.
 
 ## 3. HTTP/gRPC use
 

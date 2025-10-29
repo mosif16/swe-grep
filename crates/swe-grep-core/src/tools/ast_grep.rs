@@ -1,12 +1,13 @@
 use std::collections::HashSet;
+use std::fmt;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use anyhow::{Context, Result};
 use serde::Deserialize;
-use tokio::io::{AsyncReadExt, BufReader};
 use tokio::process::Command;
 use tokio::time::timeout;
+use tracing::{debug, warn};
 
 #[derive(Clone, Debug)]
 pub struct AstGrepTool {
@@ -102,29 +103,44 @@ impl AstGrepTool {
             }
         }
         cmd.current_dir(root);
-        cmd.stdout(std::process::Stdio::piped());
-
-        let mut child = cmd
-            .spawn()
-            .with_context(|| "failed to spawn ast-grep; is it installed and on PATH?")?;
-
-        let stdout = child
-            .stdout
-            .take()
-            .context("ast-grep did not produce stdout pipe")?;
-        let mut reader = BufReader::new(stdout);
-        let mut buffer = Vec::new();
 
         let collect = async {
-            reader.read_to_end(&mut buffer).await?;
-            let status = child.wait().await?;
-            if !status.success() {
-                if status.code() != Some(1) {
-                    anyhow::bail!("ast-grep exited with status {}", status);
-                }
+            let output = cmd
+                .output()
+                .await
+                .with_context(|| "failed to spawn ast-grep; is it installed and on PATH?")?;
+
+            let stderr_text = String::from_utf8_lossy(&output.stderr);
+            if let Some(diagnostic) = stderr_text
+                .lines()
+                .find(|line| line.contains("Pattern contains an ERROR node"))
+            {
+                return Err(AstPatternError::new(
+                    pattern.to_string(),
+                    diagnostic.trim().to_string(),
+                )
+                .into());
             }
 
-            let text = String::from_utf8_lossy(&buffer);
+            if !output.status.success() && output.status.code() != Some(1) {
+                let trimmed = stderr_text.trim();
+                if !trimmed.is_empty() {
+                    warn!(
+                        target: "swe_grep::tools::ast_grep",
+                        "ast-grep stderr: {trimmed}"
+                    );
+                }
+                anyhow::bail!("ast-grep exited with status {}", output.status);
+            }
+
+            if let Some(line) = stderr_text.lines().map(str::trim).find(|s| !s.is_empty()) {
+                debug!(
+                    target: "swe_grep::tools::ast_grep",
+                    "ast-grep diagnostic: {line}"
+                );
+            }
+
+            let text = String::from_utf8_lossy(&output.stdout);
             let mut matches = Vec::new();
 
             if text.trim().is_empty() {
@@ -195,6 +211,38 @@ impl From<AstGrepMessage> for AstGrepMatch {
         }
     }
 }
+
+#[derive(Debug)]
+pub struct AstPatternError {
+    pattern: String,
+    message: String,
+}
+
+impl AstPatternError {
+    pub fn new(pattern: String, message: String) -> Self {
+        Self { pattern, message }
+    }
+
+    pub fn pattern(&self) -> &str {
+        &self.pattern
+    }
+
+    pub fn message(&self) -> &str {
+        &self.message
+    }
+}
+
+impl fmt::Display for AstPatternError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "ast-grep pattern error for '{}': {}",
+            self.pattern, self.message
+        )
+    }
+}
+
+impl std::error::Error for AstPatternError {}
 
 fn patterns_for_language(symbol: &str, language: &str) -> Vec<String> {
     let needle = symbol.trim();
