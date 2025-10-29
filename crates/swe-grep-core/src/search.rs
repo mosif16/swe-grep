@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
 use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
@@ -29,7 +29,9 @@ pub async fn execute(args: SearchArgs) -> Result<SearchSummary> {
 struct SearchConfig {
     root: PathBuf,
     symbol: String,
+    #[allow(dead_code)]
     language: Option<String>,
+    language_tokens: Vec<String>,
     timeout: Duration,
     max_matches: usize,
     #[allow(dead_code)]
@@ -82,10 +84,17 @@ impl SearchConfig {
             use_index = false;
         }
 
+        let language = args
+            .language
+            .map(|lang| lang.trim().to_string())
+            .filter(|s| !s.is_empty());
+        let language_tokens = expand_language_hint(language.as_deref());
+
         Ok(Self {
             root,
             symbol: args.symbol,
-            language: args.language,
+            language,
+            language_tokens,
             timeout,
             max_matches: usize::max(1, args.max_matches),
             concurrency,
@@ -247,7 +256,7 @@ impl SearchEngine {
         tracing::info!(symbol = %self.config.symbol, "search_cycle_start");
 
         let rewrites =
-            QueryRewriter::for_symbol(&self.config.symbol, self.config.language.as_deref()).build();
+            QueryRewriter::for_symbol(&self.config.symbol, &self.config.language_tokens).build();
         if let Some(summary) = self.try_fast_path(&rewrites).await? {
             return Ok(summary);
         }
@@ -257,6 +266,7 @@ impl SearchEngine {
         let discover_candidates = self.discover().await;
         stage_stats.discover_ms = elapsed_ms(discover_start);
         stage_stats.discover_candidates = discover_candidates.len();
+        stage_stats.record_discover_languages(&discover_candidates, stage_stats.discover_ms);
         let discover_set: HashSet<PathBuf> = discover_candidates.iter().cloned().collect();
 
         // --- Probe (Scoped) ---
@@ -266,6 +276,7 @@ impl SearchEngine {
             .await;
         stage_stats.probe_ms = elapsed_ms(probe_start);
         stage_stats.probe_hits = scoped_hits_count;
+        stage_stats.record_probe_languages(&hits, stage_stats.probe_ms);
 
         // --- Escalate to global if needed ---
         if hits.is_empty() {
@@ -274,6 +285,7 @@ impl SearchEngine {
                 self.probe(&rewrites, &[], ProbeKind::Global).await;
             stage_stats.escalate_ms = elapsed_ms(escalate_start);
             stage_stats.escalate_hits = global_hits_count;
+            stage_stats.record_escalate_languages(&global_hits, stage_stats.escalate_ms);
             hits = global_hits;
         }
 
@@ -314,8 +326,7 @@ impl SearchEngine {
             if let Some(rga_tool) = self.ensure_rga_tool() {
                 let rga_start = Instant::now();
                 crate::telemetry::record_tool_invocation("rga");
-                match rga_tool.search(&root_clone, symbol_clone.as_str()).await
-                {
+                match rga_tool.search(&root_clone, symbol_clone.as_str()).await {
                     Ok(matches) => {
                         stage_stats.rga_hits = matches.len();
                         crate::telemetry::record_tool_results("rga", matches.len());
@@ -342,6 +353,7 @@ impl SearchEngine {
         let ast_matches = self.disambiguate(&ast_scope).await;
         stage_stats.disambiguate_ms = elapsed_ms(disambiguate_start);
         stage_stats.ast_matches = ast_matches.len();
+        stage_stats.record_disambiguate_languages(&ast_matches, stage_stats.disambiguate_ms);
 
         // --- Verify & Summarize ---
         let verify_start = Instant::now();
@@ -349,6 +361,7 @@ impl SearchEngine {
             .verify(hits, ast_matches, discover_set, discover_candidates.clone())
             .await?;
         stage_stats.verify_ms = elapsed_ms(verify_start);
+        stage_stats.record_verify_languages(&verification.language_counts, stage_stats.verify_ms);
 
         stage_stats.precision = round_two(verification.metrics.precision);
         stage_stats.density = round_two(verification.metrics.density);
@@ -439,6 +452,7 @@ impl SearchEngine {
             .map(|m| SearchHit::from_ripgrep(&self.config.root, m, ProbeKind::Global))
             .collect();
         let total_hits = hits.len();
+        let probe_hits_snapshot = hits.clone();
 
         let verify_start = Instant::now();
         let verification = self
@@ -454,12 +468,14 @@ impl SearchEngine {
         let mut stage_stats = StageStats::default();
         stage_stats.probe_ms = probe_ms;
         stage_stats.probe_hits = total_hits;
+        stage_stats.record_probe_languages(&probe_hits_snapshot, stage_stats.probe_ms);
         stage_stats.verify_ms = verify_ms;
         stage_stats.cycle_latency_ms = probe_ms + verify_ms;
         stage_stats.precision = round_two(verification.metrics.precision);
         stage_stats.density = round_two(verification.metrics.density);
         stage_stats.clustering = round_two(verification.metrics.cluster_score);
         stage_stats.reward = round_two(verification.metrics.reward);
+        stage_stats.record_verify_languages(&verification.language_counts, stage_stats.verify_ms);
 
         self.reward_total += verification.metrics.reward;
 
@@ -553,11 +569,8 @@ impl SearchEngine {
     async fn discover(&mut self) -> Vec<PathBuf> {
         let root = self.config.root.clone();
         let symbol = self.config.symbol.clone();
-        let extensions = self
-            .config
-            .language
-            .as_deref()
-            .and_then(language_to_extensions);
+        let extension_filters = extensions_for_languages(&self.config.language_tokens);
+        let extensions = extension_filters.as_deref();
         let mut candidates: Vec<PathBuf> = Vec::new();
         let mut seen: HashSet<PathBuf> = HashSet::new();
 
@@ -629,6 +642,49 @@ impl SearchEngine {
             }
         }
 
+        if languages_include(&self.config.language_tokens, "swift") {
+            let mut swift_hints: Vec<PathBuf> = Vec::new();
+            let package_manifest = root.join("Package.swift");
+            if package_manifest.is_file() {
+                swift_hints.push(package_manifest);
+            }
+            if let Ok(entries) = fs::read_dir(&root) {
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+                        if name.eq_ignore_ascii_case("sources") && path.is_dir() {
+                            if let Ok(children) = fs::read_dir(&path) {
+                                for child in children.flatten().take(20) {
+                                    let child_path = child.path();
+                                    if child_path.is_file() {
+                                        swift_hints.push(child_path);
+                                    } else if child_path.is_dir() {
+                                        if let Ok(grandchildren) = fs::read_dir(&child_path) {
+                                            for file in grandchildren.flatten().take(10) {
+                                                let file_path = file.path();
+                                                if file_path.is_file() {
+                                                    swift_hints.push(file_path);
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            for hint in swift_hints {
+                if let Ok(normalized) = normalize_path(&root, &hint) {
+                    if passes_extension_filter(&normalized, extensions)
+                        && seen.insert(normalized.clone())
+                    {
+                        candidates.push(normalized);
+                    }
+                }
+            }
+        }
+
         candidates
     }
 
@@ -667,7 +723,7 @@ impl SearchEngine {
     async fn disambiguate(&mut self, scope: &[PathBuf]) -> Vec<AstGrepMatch> {
         let root = self.config.root.clone();
         let symbol = self.config.symbol.clone();
-        let language = self.config.language.clone();
+        let language_tokens = self.config.language_tokens.clone();
         let Some(ast_tool) = self.ensure_ast_tool() else {
             return Vec::new();
         };
@@ -675,12 +731,7 @@ impl SearchEngine {
         crate::telemetry::record_tool_invocation("ast-grep");
 
         ast_tool
-            .search_identifier(
-                &root,
-                symbol.as_str(),
-                language.as_deref(),
-                scope,
-            )
+            .search_identifier(&root, symbol.as_str(), &language_tokens, scope)
             .await
             .map(|matches| {
                 crate::telemetry::record_tool_results("ast-grep", matches.len());
@@ -695,12 +746,8 @@ impl SearchEngine {
     #[cfg(feature = "indexing")]
     async fn ensure_index(&mut self) -> Result<&TantivyIndex> {
         if self.index.is_none() {
-            let extensions = self
-                .config
-                .language
-                .as_deref()
-                .and_then(language_to_extensions)
-                .map(|exts| exts.iter().map(|s| s.to_string()).collect::<Vec<_>>());
+            let extensions = extensions_for_languages(&self.config.language_tokens)
+                .map(|exts| exts.into_iter().map(|s| s.to_string()).collect::<Vec<_>>());
             let index_config = IndexConfig {
                 root: self.config.root.clone(),
                 index_dir: self.config.index_dir.clone(),
@@ -787,6 +834,9 @@ impl SearchEngine {
 
         let metrics = compute_metrics(&dedup_hits, &ast_set, fd_set.len());
 
+        let language_counts =
+            aggregate_language_counts(dedup_hits.iter().map(|hit| hit.path.as_path()));
+
         Ok(VerificationOutcome {
             top_hits,
             next_actions,
@@ -801,6 +851,7 @@ impl SearchEngine {
                 })
                 .collect(),
             metrics,
+            language_counts,
         })
     }
 }
@@ -1032,37 +1083,41 @@ impl SearchCache {
 #[derive(Debug)]
 struct QueryRewriter {
     symbol: String,
-    language: Option<String>,
+    languages: Vec<String>,
 }
 
 impl QueryRewriter {
-    fn for_symbol(symbol: &str, language: Option<&str>) -> Self {
+    fn for_symbol(symbol: &str, languages: &[String]) -> Self {
         Self {
             symbol: symbol.to_string(),
-            language: language.map(|lang| lang.to_string()),
+            languages: languages.iter().cloned().collect(),
         }
     }
 
     fn build(&self) -> Vec<String> {
         let s = self.symbol.trim();
-        let escaped_symbol = Self::escape_literal(s);
+        if s.is_empty() {
+            return Vec::new();
+        }
         let type_hint = self.derive_type_hint();
-        let escaped_type_hint = Self::escape_literal(&type_hint);
 
         let mut queries = vec![
-            escaped_symbol.clone(),
-            format!("{escaped_symbol} {escaped_type_hint}"),
-            format!("{escaped_symbol} error"),
-            format!("{escaped_type_hint}\\.{escaped_symbol}"),
+            Self::escape_literal(s),
+            Self::escape_literal(&format!("{s} {type_hint}")),
+            Self::escape_literal(&format!("{s} error")),
+            Self::escape_literal(&format!("{type_hint}.{s}")),
         ];
 
-        if let Some(lang) = &self.language {
-            match lang.to_ascii_lowercase().as_str() {
+        for lang in &self.languages {
+            match lang.as_str() {
                 "typescript" | "ts" | "tsx" => {
                     queries.extend(self.build_typescript_variants(s));
                 }
                 "swift" => {
                     queries.extend(self.build_swift_variants(s));
+                }
+                "rust" => {
+                    queries.extend(self.build_rust_variants(s));
                 }
                 _ => {}
             }
@@ -1099,20 +1154,34 @@ impl QueryRewriter {
             return variants;
         }
 
-        let escaped = Self::escape_literal(symbol);
+        let is_hook = symbol.starts_with("use") && symbol.len() > 3;
+        let is_component = symbol
+            .chars()
+            .next()
+            .map(|ch| ch.is_uppercase())
+            .unwrap_or(false);
 
-        variants.push(format!("{escaped}<"));
-        variants.push(format!("{escaped} <"));
-        variants.push(format!("<{escaped}"));
-        variants.push(format!("</{escaped}"));
-        variants.push(format!("{escaped} extends"));
-        variants.push(format!("type {escaped}"));
-        variants.push(format!("interface {escaped}"));
-        variants.push(format!("const {escaped}"));
-        variants.push(format!("export const {escaped}"));
-        variants.push(format!("function {escaped}"));
-        variants.push(format!("export function {escaped}"));
-        variants.push(format!("{escaped}\\("));
+        variants.push(Self::escape_literal(&format!("{symbol}<")));
+        variants.push(Self::escape_literal(&format!("{symbol} <")));
+        variants.push(Self::escape_literal(&format!("<{symbol}")));
+        variants.push(Self::escape_literal(&format!("</{symbol}")));
+        variants.push(Self::escape_literal(&format!("{symbol} extends")));
+        variants.push(Self::escape_literal(&format!("type {symbol}")));
+        variants.push(Self::escape_literal(&format!("interface {symbol}")));
+        variants.push(Self::escape_literal(&format!("const {symbol}")));
+        variants.push(Self::escape_literal(&format!("export const {symbol}")));
+        variants.push(Self::escape_literal(&format!("function {symbol}")));
+        variants.push(Self::escape_literal(&format!("export function {symbol}")));
+        variants.push(Self::escape_literal(&format!("{symbol}(")));
+        variants.push(Self::escape_literal(&format!("{symbol} satisfies")));
+        variants.push(Self::escape_literal(&format!("namespace {symbol}")));
+        variants.push(Self::escape_literal(&format!("export default {symbol}")));
+        variants.push(Self::escape_literal(&format!("{symbol} props")));
+        variants.push(Self::escape_literal(&format!("{symbol}:")));
+        if is_hook {
+            variants.push(Self::escape_literal(&format!("{symbol}(")));
+            variants.push(Self::escape_literal(&format!("{symbol}<{{")));
+        }
 
         if symbol
             .chars()
@@ -1120,13 +1189,35 @@ impl QueryRewriter {
             .map(|c| c.is_uppercase())
             .unwrap_or(false)
         {
-            variants.push(format!("<{escaped} "));
-            variants.push(format!("<{escaped} />"));
-            variants.push(format!("{escaped}Props"));
-            variants.push(format!("{escaped}Component"));
+            variants.push(Self::escape_literal(&format!("<{symbol} ")));
+            variants.push(Self::escape_literal(&format!("<{symbol} />")));
+            variants.push(Self::escape_literal(&format!("{symbol}Props")));
+            variants.push(Self::escape_literal(&format!("{symbol}Component")));
+        }
+
+        if is_component {
+            variants.push(Self::escape_literal(&format!("<{symbol} {{...")));
+            variants.push(Self::escape_literal(&format!("React.memo({symbol}")));
+            variants.push(Self::escape_literal(&format!("React.forwardRef({symbol}")));
         }
 
         variants
+    }
+
+    fn build_rust_variants(&self, symbol: &str) -> Vec<String> {
+        if symbol.is_empty() {
+            return Vec::new();
+        }
+
+        vec![
+            Self::escape_literal(&format!("fn {symbol}")),
+            Self::escape_literal(&format!("impl {symbol}")),
+            Self::escape_literal(&format!("trait {symbol}")),
+            Self::escape_literal(&format!("pub(crate) {symbol}")),
+            Self::escape_literal(&format!("{symbol}::<")),
+            Self::escape_literal(&format!("::{symbol}")),
+            Self::escape_literal(&format!("macro_rules! {symbol}")),
+        ]
     }
 
     fn build_swift_variants(&self, symbol: &str) -> Vec<String> {
@@ -1134,19 +1225,30 @@ impl QueryRewriter {
             return Vec::new();
         }
 
-        let escaped = Self::escape_literal(symbol);
+        let is_type_like = symbol
+            .chars()
+            .next()
+            .map(|ch| ch.is_uppercase())
+            .unwrap_or(false);
 
         let mut variants = vec![
-            format!("func {escaped}"),
-            format!("func {escaped}\\("),
-            format!("func {escaped}<"),
-            format!("{escaped} async"),
-            format!("@MainActor func {escaped}"),
+            Self::escape_literal(&format!("func {symbol}")),
+            Self::escape_literal(&format!("func {symbol}(")),
+            Self::escape_literal(&format!("func {symbol}<")),
+            Self::escape_literal(&format!("{symbol} async")),
+            Self::escape_literal(&format!("@MainActor func {symbol}")),
         ];
 
-        variants.push(format!("{escaped}\\("));
-        variants.push(format!("\\.{escaped}"));
-        variants.push(format!("self\\.{escaped}"));
+        variants.push(Self::escape_literal(&format!("{symbol}(")));
+        variants.push(Self::escape_literal(&format!(".{symbol}")));
+        variants.push(Self::escape_literal(&format!("self.{symbol}")));
+        variants.push(Self::escape_literal(&format!("await {symbol}")));
+        if is_type_like {
+            variants.push(Self::escape_literal(&format!("@{symbol}")));
+            variants.push(Self::escape_literal(&format!(": {symbol}")));
+            variants.push(Self::escape_literal(&format!("extension {symbol}")));
+            variants.push(Self::escape_literal(&format!("where {symbol}")));
+        }
 
         variants
     }
@@ -1234,6 +1336,132 @@ where
     deduped
 }
 
+fn expand_language_hint(language: Option<&str>) -> Vec<String> {
+    let mut tokens: Vec<String> = Vec::new();
+    let Some(raw) = language else {
+        return tokens;
+    };
+    let normalized = raw.trim().to_ascii_lowercase();
+    if normalized.is_empty() {
+        return tokens;
+    }
+
+    if normalized.starts_with("auto-") {
+        let remainder = normalized.trim_start_matches("auto-");
+        let parts: Vec<&str> = remainder
+            .split(|ch| matches!(ch, '-' | '+' | '|' | ','))
+            .filter(|part| !part.is_empty())
+            .collect();
+        for part in parts {
+            tokens.extend(expand_language_token(part));
+        }
+    } else {
+        let parts: Vec<&str> = normalized
+            .split(|ch| matches!(ch, '+' | '|' | ','))
+            .filter(|part| !part.is_empty())
+            .collect();
+        if parts.is_empty() {
+            tokens.extend(expand_language_token(&normalized));
+        } else {
+            for part in parts {
+                tokens.extend(expand_language_token(part));
+            }
+        }
+    }
+
+    let mut dedup: Vec<String> = Vec::new();
+    let mut seen: HashSet<String> = HashSet::new();
+    for token in tokens {
+        if seen.insert(token.clone()) {
+            dedup.push(token);
+        }
+    }
+    dedup
+}
+
+fn expand_language_token(token: &str) -> Vec<String> {
+    match token {
+        "typescript" | "ts" => vec!["ts".to_string(), "tsx".to_string()],
+        "tsx" => vec!["tsx".to_string()],
+        "swift" => vec!["swift".to_string()],
+        "rust" | "rs" => vec!["rust".to_string()],
+        "javascript" | "js" => vec!["js".to_string(), "jsx".to_string()],
+        "jsx" => vec!["jsx".to_string()],
+        "kotlin" | "kt" => vec!["kt".to_string(), "kts".to_string()],
+        "kts" => vec!["kts".to_string()],
+        "python" | "py" => vec!["py".to_string()],
+        "swiftui" => vec!["swift".to_string()],
+        other => vec![other.to_string()],
+    }
+}
+
+fn languages_include(tokens: &[String], needle: &str) -> bool {
+    tokens.iter().any(|token| token == needle)
+}
+
+fn extensions_for_languages(languages: &[String]) -> Option<Vec<&'static str>> {
+    let mut results: Vec<&'static str> = Vec::new();
+    for lang in languages {
+        match lang.as_str() {
+            "swift" => {
+                if !results.contains(&"swift") {
+                    results.push("swift");
+                }
+            }
+            "tsx" => {
+                if !results.contains(&"tsx") {
+                    results.push("tsx");
+                }
+            }
+            "ts" | "typescript" => {
+                if !results.contains(&"ts") {
+                    results.push("ts");
+                }
+                if !results.contains(&"tsx") {
+                    results.push("tsx");
+                }
+            }
+            "rust" => {
+                if !results.contains(&"rs") {
+                    results.push("rs");
+                }
+            }
+            "js" | "javascript" => {
+                if !results.contains(&"js") {
+                    results.push("js");
+                }
+                if !results.contains(&"jsx") {
+                    results.push("jsx");
+                }
+            }
+            "jsx" => {
+                if !results.contains(&"jsx") {
+                    results.push("jsx");
+                }
+            }
+            "kt" | "kts" | "kotlin" => {
+                if !results.contains(&"kt") {
+                    results.push("kt");
+                }
+                if !results.contains(&"kts") {
+                    results.push("kts");
+                }
+            }
+            "py" | "python" => {
+                if !results.contains(&"py") {
+                    results.push("py");
+                }
+            }
+            _ => {}
+        }
+    }
+    if results.is_empty() {
+        None
+    } else {
+        Some(results)
+    }
+}
+
 fn detect_language_from_path(path: &Path) -> Option<&'static str> {
     let ext = path.extension()?.to_str()?;
     match ext.to_ascii_lowercase().as_str() {
@@ -1250,6 +1478,20 @@ fn detect_language_from_path(path: &Path) -> Option<&'static str> {
     }
 }
 
+fn aggregate_language_counts<'a, I>(paths: I) -> BTreeMap<String, usize>
+where
+    I: IntoIterator<Item = &'a Path>,
+{
+    let mut counts: BTreeMap<String, usize> = BTreeMap::new();
+    for path in paths {
+        let key = detect_language_from_path(path)
+            .map(|lang| lang.to_string())
+            .unwrap_or_else(|| "other".to_string());
+        *counts.entry(key).or_default() += 1;
+    }
+    counts
+}
+
 fn format_snippet(root: &Path, path: &Path, line: usize, raw: &str) -> Option<String> {
     let ext = path
         .extension()
@@ -1264,6 +1506,8 @@ fn format_snippet(root: &Path, path: &Path, line: usize, raw: &str) -> Option<St
 
 fn format_swift_snippet(root: &Path, path: &Path, line: usize, raw: &str) -> Option<String> {
     let trimmed: Vec<String> = raw.lines().map(|entry| entry.trim().to_string()).collect();
+
+    let mut attributes_rev: Vec<String> = Vec::new();
 
     let mut candidate_idx: Option<usize> = None;
     for (idx, entry) in trimmed.iter().enumerate() {
@@ -1285,7 +1529,7 @@ fn format_swift_snippet(root: &Path, path: &Path, line: usize, raw: &str) -> Opt
         }
     }
 
-    let (selected_idx, selected) = if let Some(idx) = candidate_idx {
+    let (selected_idx, _selected) = if let Some(idx) = candidate_idx {
         (idx, trimmed[idx].clone())
     } else {
         trimmed.iter().enumerate().find_map(|(idx, entry)| {
@@ -1297,12 +1541,60 @@ fn format_swift_snippet(root: &Path, path: &Path, line: usize, raw: &str) -> Opt
         })?
     };
 
-    let mut formatted = collapse_whitespace(&selected);
-    if selected.contains("async") {
-        formatted.push_str(" [async]");
+    let mut signature_segments = vec![trimmed[selected_idx].clone()];
+    for entry in trimmed.iter().skip(selected_idx + 1) {
+        let trimmed_entry = entry.trim();
+        if trimmed_entry.is_empty() {
+            break;
+        }
+        if trimmed_entry.starts_with('@') {
+            let attr = collapse_whitespace(trimmed_entry);
+            if !attributes_rev.iter().any(|existing| existing == &attr) {
+                attributes_rev.push(attr);
+            }
+            continue;
+        }
+        if trimmed_entry.starts_with('}') {
+            break;
+        }
+        if trimmed_entry.starts_with(")")
+            || trimmed_entry.starts_with("async")
+            || trimmed_entry.starts_with("throws")
+            || trimmed_entry.starts_with("rethrows")
+            || trimmed_entry.starts_with("->")
+            || trimmed_entry.starts_with("where ")
+            || trimmed_entry.starts_with("some ")
+        {
+            signature_segments.push(trimmed_entry.to_string());
+            continue;
+        }
+        break;
     }
 
-    let mut attributes_rev: Vec<String> = Vec::new();
+    let collapsed_signature = collapse_whitespace(&signature_segments.join(" "));
+    let mut formatted = collapsed_signature.clone();
+    let lowered_sig = collapsed_signature.to_ascii_lowercase();
+    if collapsed_signature.contains("async") {
+        formatted.push_str(" [async]");
+    }
+    if lowered_sig.contains("await ") {
+        formatted.push_str(" [await]");
+    }
+    for access in ["public", "internal", "private", "fileprivate", "open"].iter() {
+        if lowered_sig.starts_with(access)
+            || lowered_sig.contains(&format!(" {access} "))
+            || lowered_sig.contains(&format!(" {access}("))
+        {
+            formatted.push_str(" [");
+            formatted.push_str(access);
+            formatted.push(']');
+            break;
+        }
+    }
+    if collapsed_signature.contains('<') && collapsed_signature.contains('>') {
+        formatted.push_str(" [generic]");
+    }
+
     let mut context: Option<String> = None;
 
     if selected_idx > 0 {
@@ -1432,11 +1724,23 @@ fn format_typescript_snippet(raw: &str) -> Option<String> {
     if lowered.contains("React.FC") || lowered.contains("React.FunctionComponent") {
         formatted.push_str(" [component]");
     }
+    if lowered.contains("React.forwardRef") || lowered.contains("React.memo") {
+        formatted.push_str(" [component]");
+    }
     if lowered.contains("Promise<") {
         formatted.push_str(" [promise]");
     }
     if lowered.contains("=>") {
         formatted.push_str(" [arrow]");
+    }
+    if lowered.contains("await ") {
+        formatted.push_str(" [await]");
+    }
+    if selected.contains('<') && selected.contains('>') {
+        formatted.push_str(" [generic]");
+    }
+    if lowered.contains("satisfies ") {
+        formatted.push_str(" [satisfies]");
     }
     Some(formatted)
 }
@@ -1465,20 +1769,7 @@ fn collapse_whitespace(input: &str) -> String {
     result.trim().to_string()
 }
 
-fn language_to_extensions(language: &str) -> Option<&'static [&'static str]> {
-    match language.to_ascii_lowercase().as_str() {
-        "rust" => Some(&["rs"]),
-        "swift" => Some(&["swift"]),
-        "typescript" | "ts" => Some(&["ts", "tsx"]),
-        "tsx" => Some(&["tsx"]),
-        "javascript" | "js" => Some(&["js", "jsx"]),
-        "python" | "py" => Some(&["py"]),
-        "kotlin" => Some(&["kt", "kts"]),
-        _ => None,
-    }
-}
-
-fn passes_extension_filter(path: &Path, extensions: Option<&'static [&'static str]>) -> bool {
+fn passes_extension_filter(path: &Path, extensions: Option<&[&str]>) -> bool {
     match extensions {
         Some(exts) => path
             .extension()
@@ -1533,6 +1824,7 @@ struct VerificationOutcome {
     fd_candidates: Vec<PathBuf>,
     ast_hits: Vec<(PathBuf, usize)>,
     metrics: SearchMetrics,
+    language_counts: BTreeMap<String, usize>,
 }
 
 #[derive(Default, Clone, Serialize)]
@@ -1578,6 +1870,122 @@ pub struct StageStats {
     pub density: f32,
     pub clustering: f32,
     pub reward: f32,
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub language_metrics: BTreeMap<String, LanguageMetrics>,
+}
+
+#[derive(Default, Serialize)]
+pub struct LanguageMetrics {
+    #[serde(skip_serializing_if = "is_usize_zero")]
+    pub discover_candidates: usize,
+    #[serde(skip_serializing_if = "is_usize_zero")]
+    pub probe_hits: usize,
+    #[serde(skip_serializing_if = "is_usize_zero")]
+    pub escalate_hits: usize,
+    #[serde(skip_serializing_if = "is_usize_zero")]
+    pub disambiguate_hits: usize,
+    #[serde(skip_serializing_if = "is_usize_zero")]
+    pub verify_hits: usize,
+    #[serde(skip_serializing_if = "LanguageLatencyStats::is_empty")]
+    pub latency: LanguageLatencyStats,
+}
+
+#[derive(Default, Serialize)]
+pub struct LanguageLatencyStats {
+    #[serde(skip_serializing_if = "is_zero")]
+    pub discover_ms: u64,
+    #[serde(skip_serializing_if = "is_zero")]
+    pub probe_ms: u64,
+    #[serde(skip_serializing_if = "is_zero")]
+    pub escalate_ms: u64,
+    #[serde(skip_serializing_if = "is_zero")]
+    pub disambiguate_ms: u64,
+    #[serde(skip_serializing_if = "is_zero")]
+    pub verify_ms: u64,
+}
+
+impl StageStats {
+    fn record_discover_languages(&mut self, candidates: &[PathBuf], latency_ms: u64) {
+        if candidates.is_empty() {
+            return;
+        }
+        let counts = aggregate_language_counts(candidates.iter().map(|p| p.as_path()));
+        if counts.is_empty() {
+            return;
+        }
+        let mut shares = distribute_latency(latency_ms, counts.len()).into_iter();
+        for (lang, count) in counts {
+            let share = shares.next().unwrap_or(0);
+            let metrics = self.language_metrics.entry(lang).or_default();
+            metrics.discover_candidates += count;
+            metrics.latency.discover_ms = metrics.latency.discover_ms.saturating_add(share);
+        }
+    }
+
+    fn record_probe_languages(&mut self, hits: &[SearchHit], latency_ms: u64) {
+        if hits.is_empty() {
+            return;
+        }
+        let counts = aggregate_language_counts(hits.iter().map(|hit| hit.path.as_path()));
+        if counts.is_empty() {
+            return;
+        }
+        let mut shares = distribute_latency(latency_ms, counts.len()).into_iter();
+        for (lang, count) in counts {
+            let share = shares.next().unwrap_or(0);
+            let metrics = self.language_metrics.entry(lang).or_default();
+            metrics.probe_hits += count;
+            metrics.latency.probe_ms = metrics.latency.probe_ms.saturating_add(share);
+        }
+    }
+
+    fn record_escalate_languages(&mut self, hits: &[SearchHit], latency_ms: u64) {
+        if hits.is_empty() {
+            return;
+        }
+        let counts = aggregate_language_counts(hits.iter().map(|hit| hit.path.as_path()));
+        if counts.is_empty() {
+            return;
+        }
+        let mut shares = distribute_latency(latency_ms, counts.len()).into_iter();
+        for (lang, count) in counts {
+            let share = shares.next().unwrap_or(0);
+            let metrics = self.language_metrics.entry(lang).or_default();
+            metrics.escalate_hits += count;
+            metrics.latency.escalate_ms = metrics.latency.escalate_ms.saturating_add(share);
+        }
+    }
+
+    fn record_disambiguate_languages(&mut self, matches: &[AstGrepMatch], latency_ms: u64) {
+        if matches.is_empty() {
+            return;
+        }
+        let counts = aggregate_language_counts(matches.iter().map(|m| m.path.as_path()));
+        if counts.is_empty() {
+            return;
+        }
+        let mut shares = distribute_latency(latency_ms, counts.len()).into_iter();
+        for (lang, count) in counts {
+            let share = shares.next().unwrap_or(0);
+            let metrics = self.language_metrics.entry(lang).or_default();
+            metrics.disambiguate_hits += count;
+            metrics.latency.disambiguate_ms =
+                metrics.latency.disambiguate_ms.saturating_add(share);
+        }
+    }
+
+    fn record_verify_languages(&mut self, counts: &BTreeMap<String, usize>, latency_ms: u64) {
+        if counts.is_empty() {
+            return;
+        }
+        let mut shares = distribute_latency(latency_ms, counts.len()).into_iter();
+        for (lang, count) in counts {
+            let share = shares.next().unwrap_or(0);
+            let metrics = self.language_metrics.entry(lang.clone()).or_default();
+            metrics.verify_hits += *count;
+            metrics.latency.verify_ms = metrics.latency.verify_ms.saturating_add(share);
+        }
+    }
 }
 
 #[derive(Serialize)]
@@ -1611,4 +2019,32 @@ pub struct TopHit {
 
 fn is_zero(value: &u64) -> bool {
     *value == 0
+}
+
+fn is_usize_zero(value: &usize) -> bool {
+    *value == 0
+}
+
+fn distribute_latency(latency_ms: u64, buckets: usize) -> Vec<u64> {
+    if buckets == 0 {
+        return Vec::new();
+    }
+    let buckets_u64 = buckets as u64;
+    let base = latency_ms / buckets_u64;
+    let remainder = latency_ms % buckets_u64;
+    let mut shares = vec![base; buckets];
+    for share in shares.iter_mut().take(remainder as usize) {
+        *share = share.saturating_add(1);
+    }
+    shares
+}
+
+impl LanguageLatencyStats {
+    fn is_empty(&self) -> bool {
+        self.discover_ms == 0
+            && self.probe_ms == 0
+            && self.escalate_ms == 0
+            && self.disambiguate_ms == 0
+            && self.verify_ms == 0
+    }
 }

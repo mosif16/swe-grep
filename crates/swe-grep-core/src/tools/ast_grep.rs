@@ -26,29 +26,38 @@ impl AstGrepTool {
         &self,
         root: &Path,
         symbol: &str,
-        language: Option<&str>,
+        languages: &[String],
         paths: &[PathBuf],
     ) -> Result<Vec<AstGrepMatch>> {
-        let lang = language.unwrap_or("rust");
-        let patterns = patterns_for_language(symbol, lang);
+        let mut hints: Vec<String> = if languages.is_empty() {
+            vec!["rust".to_string()]
+        } else {
+            languages.iter().cloned().collect()
+        };
+        if hints.is_empty() {
+            hints.push("rust".to_string());
+        }
         let mut aggregated: Vec<AstGrepMatch> = Vec::new();
         let mut seen: HashSet<(PathBuf, usize)> = HashSet::new();
 
-        for pattern in patterns {
-            if aggregated.len() >= self.max_matches {
-                break;
-            }
-            let remaining = self.max_matches.saturating_sub(aggregated.len());
-            let matches = self
-                .run_pattern(root, lang, &pattern, paths, remaining)
-                .await?;
+        for lang in hints {
+            let patterns = patterns_for_language(symbol, &lang);
+            for pattern in patterns {
+                if aggregated.len() >= self.max_matches {
+                    break;
+                }
+                let remaining = self.max_matches.saturating_sub(aggregated.len());
+                let matches = self
+                    .run_pattern(root, &lang, &pattern, paths, remaining)
+                    .await?;
 
-            for m in matches {
-                let key = (m.path.clone(), m.line);
-                if seen.insert(key) {
-                    aggregated.push(m);
-                    if aggregated.len() >= self.max_matches {
-                        break;
+                for m in matches {
+                    let key = (m.path.clone(), m.line);
+                    if seen.insert(key) {
+                        aggregated.push(m);
+                        if aggregated.len() >= self.max_matches {
+                            break;
+                        }
                     }
                 }
             }
@@ -220,6 +229,11 @@ fn patterns_for_language(symbol: &str, language: &str) -> Vec<String> {
             format!(
                 "(await_expression (function_call_expression function: (identifier) @id (#eq? @id \"{needle}\")))"
             ),
+            format!("(attribute attribute_name: (identifier) @id (#eq? @id \"{needle}\"))"),
+            format!(
+                "(extension_declaration protocol_conformance: (identifier) @id (#eq? @id \"{needle}\"))"
+            ),
+            format!("(generic_argument_clause (identifier) @id (#eq? @id \"{needle}\"))"),
         ],
         "typescript" | "ts" | "tsx" => vec![
             format!("(identifier) @id (#eq? @id \"{needle}\")"),
@@ -237,6 +251,33 @@ fn patterns_for_language(symbol: &str, language: &str) -> Vec<String> {
                 "(lexical_declaration (variable_declarator name: (identifier) @id (#eq? @id \"{needle}\"))))"
             ),
             format!("(jsx_opening_element name: (identifier) @id (#eq? @id \"{needle}\"))"),
+            format!(
+                "(lexical_declaration (variable_declarator name: (identifier) @id (#eq? @id \"{needle}\") value: (arrow_function)))"
+            ),
+            format!("(export_statement value: (identifier) @id (#eq? @id \"{needle}\"))"),
+            format!(
+                "(export_statement (export_clause (export_specifier name: (identifier) @id (#eq? @id \"{needle}\"))))"
+            ),
+            format!("(jsx_attribute name: (property_identifier) @id (#eq? @id \"{needle}\"))"),
+            format!(
+                "(binary_expression left: (identifier) @id (#eq? @id \"{needle}\") operator: \"satisfies\")"
+            ),
+        ],
+        "rust" => vec![
+            format!("(function_item name: (identifier) @id (#eq? @id \"{needle}\"))"),
+            format!(
+                "(impl_item type: (type_path (path_segment name: (identifier) @id (#eq? @id \"{needle}\"))))"
+            ),
+            format!("(trait_item name: (identifier) @id (#eq? @id \"{needle}\"))"),
+            format!("(struct_item name: (identifier) @id (#eq? @id \"{needle}\"))"),
+            format!("(enum_item name: (identifier) @id (#eq? @id \"{needle}\"))"),
+            format!("(macro_invocation macro: (identifier) @id (#eq? @id \"{needle}\"))"),
+            format!(
+                "(impl_item trait: (trait_ref path: (scoped_identifier path: (identifier) @id (#eq? @id \"{needle}\"))))"
+            ),
+            format!(
+                "(impl_item trait: (trait_ref path: (type_identifier) @id (#eq? @id \"{needle}\")))"
+            ),
         ],
         _ => vec![format!("(identifier) @id (#eq? @id \"{needle}\")")],
     }
