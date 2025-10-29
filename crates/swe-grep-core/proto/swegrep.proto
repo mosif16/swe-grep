@@ -15,6 +15,9 @@ message SearchRequest {
   string cache_dir = 10;
   string log_dir = 11;
   map<string, bool> tool_flags = 12;
+  uint32 context_before = 13;
+  uint32 context_after = 14;
+  bool body = 15;
 }
 
 message SearchResponse {
@@ -28,6 +31,14 @@ message TopHit {
   string origin = 4;
   string origin_label = 5;
   string snippet = 6;
+  string raw_snippet = 7;
+  uint32 snippet_length = 8;
+  bool raw_snippet_truncated = 9;
+  string expanded_snippet = 10;
+  uint32 context_start = 11;
+  uint32 context_end = 12;
+  string body = 13;
+  bool body_retrieved = 14;
 }
 
 message AstHit {

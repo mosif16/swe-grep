@@ -20,21 +20,39 @@ swe-grep search --symbol <identifier> --path <repo-root>
 - `--disable-ast-grep` – skip structural validation when unneeded.
 - `--enable-rga` – enable ripgrep-all fallback (requires `rga` on PATH).
 - `--enable-index` – use Tantivy indices (build with `--features indexing`).
+- `--context-before/--context-after` – request additional lines for each hit.
+- `--body` – stream the full UTF-8 file for the surfaced hits (512 KiB guardrail).
 
 ## 2. Output contract
 
-The CLI, HTTP, gRPC, and log outputs share the same JSON structure:
+The CLI, HTTP, gRPC, and log outputs share the same JSON structure. A typical
+response now includes enriched hit metadata:
 
 ```json
 {
   "cycle": 1,
   "symbol": "login_user",
-  "queries": ["login_user", "login_user User", ...],
+  "queries": ["login_user", "login_user User", "..."],
   "top_hits": [
-    {"path": "src/lib.rs", "line": 1, "score": 1.2, "origin": "rg-scoped", "snippet": "..."}
+    {
+      "path": "src/lib.rs",
+      "line": 18,
+      "score": 1.2,
+      "origin": "rg-scoped",
+      "origin_label": "rg-scoped [rust]",
+      "snippet": "fn login_user_allows_admin() {",
+      "raw_snippet": "{\"type\":\"match\",...}",
+      "snippet_length": 42,
+      "raw_snippet_truncated": false,
+      "expanded_snippet": "017 fn login_user_allows_admin() {\n018 ...",
+      "context_start": 17,
+      "context_end": 19,
+      "body": "pub fn login_user(...",
+      "body_retrieved": true
+    }
   ],
   "deduped": 4,
-  "next_actions": ["inspect src/lib.rs:1", "..."],
+  "next_actions": ["inspect src/lib.rs:18"],
   "stage_stats": {
     "discover_ms": 0,
     "probe_ms": 7,
@@ -49,7 +67,8 @@ The CLI, HTTP, gRPC, and log outputs share the same JSON structure:
 Agents typically:
 
 1. Use `top_hits` snippets for immediate context.
-2. Follow `next_actions` to fetch additional files/lines.
+2. Follow `next_actions` to fetch additional files/lines. When `body_retrieved`
+   is `true`, the full source is already embedded in the hit and can be cached.
 3. Inspect `stage_stats` to detect degraded runs (e.g., non-zero `discover_ms`
    means fast path was bypassed).
 

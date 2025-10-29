@@ -51,6 +51,12 @@ pub struct HttpSearchRequest {
     pub use_index: Option<bool>,
     #[serde(default)]
     pub use_rga: Option<bool>,
+    #[serde(default)]
+    pub context_before: Option<usize>,
+    #[serde(default)]
+    pub context_after: Option<usize>,
+    #[serde(default)]
+    pub body: Option<bool>,
 }
 
 impl From<HttpSearchRequest> for SearchInput {
@@ -82,6 +88,9 @@ impl From<HttpSearchRequest> for SearchInput {
             cache_dir: req.cache_dir.map(PathBuf::from),
             log_dir: req.log_dir.map(PathBuf::from),
             tool_flags,
+            context_before: req.context_before,
+            context_after: req.context_after,
+            body: req.body,
         }
     }
 }

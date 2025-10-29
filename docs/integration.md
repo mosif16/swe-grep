@@ -15,13 +15,20 @@ curl -s http://localhost:8080/search \
         "symbol": "login_user",
         "root": "fixtures/multi_lang",
         "timeout_secs": 4,
+        "context_before": 2,
+        "context_after": 2,
+        "body": true,
         "tool_flags": {"fd": true, "ast-grep": true}
       }'
 ```
 
 Key fields in the response:
 
-- `top_hits` – sorted by score (path, line, snippet, origin)
+- `top_hits` – sorted by score; each element now includes:
+  - `raw_snippet` (verbatim ripgrep payload)
+  - `snippet_length` and `raw_snippet_truncated` (honour `--max-columns`)
+  - `expanded_snippet`, `context_start`, `context_end` (line-window with zero padding)
+  - `body` and `body_retrieved` when `body: true` is requested (guarded at 512 KiB)
 - `next_actions` – pre-canned follow-up suggestions for the caller
 - `stage_stats` – latency and precision metrics per phase
 - `reward` – accumulated reinforcement score for the cycle
@@ -43,7 +50,9 @@ grpcurl -plaintext \
 ```
 
 The RPC returns the same `SearchSummary` structure as the CLI/HTTP path. Tool
-flags can be toggled via the `tool_flags` map (e.g. `{ "ast-grep": false }`).
+flags can be toggled via the `tool_flags` map (e.g. `{ "ast-grep": false }`), and
+context/body retrieval mirrors the CLI flags (`context_before`, `context_after`,
+`body`).
 
 ## Structured JSON logs
 

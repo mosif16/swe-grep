@@ -82,6 +82,9 @@ fn map_request(proto: proto::SearchRequest) -> SearchInput {
         index_dir: path_from_string(proto.index_dir),
         cache_dir: path_from_string(proto.cache_dir),
         log_dir: path_from_string(proto.log_dir),
+        context_before: zeroable_usize(proto.context_before),
+        context_after: zeroable_usize(proto.context_after),
+        body: Some(proto.body).filter(|value| *value),
         tool_flags: proto.tool_flags,
     }
 }
@@ -122,13 +125,29 @@ impl From<SearchSummary> for proto::SearchSummary {
             top_hits: summary
                 .top_hits
                 .into_iter()
-                .map(|hit| proto::TopHit {
-                    path: hit.path,
-                    line: hit.line as u32,
-                    score: hit.score,
-                    origin: hit.origin,
-                    origin_label: hit.origin_label,
-                    snippet: hit.snippet.unwrap_or_default(),
+                .map(|hit| {
+                    let snippet_length =
+                        hit.snippet_length.unwrap_or(0).min(u32::MAX as usize) as u32;
+                    let context_start =
+                        hit.context_start.unwrap_or(0).min(u32::MAX as usize) as u32;
+                    let context_end = hit.context_end.unwrap_or(0).min(u32::MAX as usize) as u32;
+
+                    proto::TopHit {
+                        path: hit.path,
+                        line: hit.line as u32,
+                        score: hit.score,
+                        origin: hit.origin,
+                        origin_label: hit.origin_label,
+                        snippet: hit.snippet.unwrap_or_default(),
+                        raw_snippet: hit.raw_snippet.unwrap_or_default(),
+                        snippet_length,
+                        raw_snippet_truncated: hit.raw_snippet_truncated,
+                        expanded_snippet: hit.expanded_snippet.unwrap_or_default(),
+                        context_start,
+                        context_end,
+                        body: hit.body.unwrap_or_default(),
+                        body_retrieved: hit.body_retrieved,
+                    }
                 })
                 .collect(),
             deduped: summary.deduped as u32,

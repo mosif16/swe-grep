@@ -53,6 +53,18 @@ pub struct SearchArgs {
     #[arg(long, default_value_t = 8)]
     pub concurrency: usize,
 
+    /// Number of neighbouring lines to include before each match when expanding snippets.
+    #[arg(long = "context-before", default_value_t = 0)]
+    pub context_before: usize,
+
+    /// Number of neighbouring lines to include after each match when expanding snippets.
+    #[arg(long = "context-after", default_value_t = 0)]
+    pub context_after: usize,
+
+    /// Retrieve full file bodies for each surfaced hit.
+    #[arg(long = "body", action = ArgAction::SetTrue, default_value_t = false)]
+    pub body: bool,
+
     /// Enable Tantivy-backed micro-indexing for the current repository.
     #[arg(long, default_value_t = false)]
     pub enable_index: bool,
