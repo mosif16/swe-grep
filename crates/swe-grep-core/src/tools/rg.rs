@@ -11,13 +11,25 @@ use tokio::time::timeout;
 pub struct RipgrepTool {
     timeout: Duration,
     max_matches: usize,
+    context_before: usize,
+    context_after: usize,
+    max_columns: usize,
 }
 
 impl RipgrepTool {
-    pub fn new(timeout: Duration, max_matches: usize) -> Self {
+    pub fn new(
+        timeout: Duration,
+        max_matches: usize,
+        context_before: usize,
+        context_after: usize,
+        max_columns: usize,
+    ) -> Self {
         Self {
             timeout,
             max_matches,
+            context_before,
+            context_after,
+            max_columns,
         }
     }
 
@@ -36,10 +48,19 @@ impl RipgrepTool {
             .arg("--line-number")
             .arg("--column")
             .arg("--max-columns")
-            .arg("200")
+            .arg(self.max_columns.to_string())
             .arg("--smart-case")
             .arg("--max-count")
             .arg(self.max_matches.to_string());
+
+        if self.context_before > 0 {
+            cmd.arg("--before-context")
+                .arg(self.context_before.to_string());
+        }
+        if self.context_after > 0 {
+            cmd.arg("--after-context")
+                .arg(self.context_after.to_string());
+        }
 
         for query in queries {
             cmd.arg("-e").arg(query);
@@ -95,6 +116,7 @@ impl RipgrepTool {
                         path,
                         line_number: data.line_number,
                         lines: data.lines.text,
+                        raw_json: line.clone(),
                     });
                 }
             }
@@ -145,4 +167,5 @@ pub struct RipgrepMatch {
     pub path: PathBuf,
     pub line_number: usize,
     pub lines: String,
+    pub raw_json: String,
 }

@@ -130,6 +130,9 @@ impl SearchExecutor {
             index_dir,
             cache_dir,
             log_dir,
+            context_before,
+            context_after,
+            body,
             tool_flags,
         } = request;
 
@@ -159,6 +162,10 @@ impl SearchExecutor {
             .map(|p| self.normalize_with_root(p))
             .or_else(|| self.config.log_dir.clone());
 
+        let context_before = context_before.unwrap_or(0);
+        let context_after = context_after.unwrap_or(0);
+        let body = body.unwrap_or(false);
+
         let mut args = SearchArgs {
             symbol,
             path: Some(root_path),
@@ -166,6 +173,9 @@ impl SearchExecutor {
             timeout_secs,
             max_matches,
             concurrency,
+            context_before,
+            context_after,
+            body,
             enable_index,
             index_dir,
             enable_rga,
@@ -197,6 +207,9 @@ pub struct SearchInput {
     pub index_dir: Option<PathBuf>,
     pub cache_dir: Option<PathBuf>,
     pub log_dir: Option<PathBuf>,
+    pub context_before: Option<usize>,
+    pub context_after: Option<usize>,
+    pub body: Option<bool>,
     pub tool_flags: HashMap<String, bool>,
 }
 
@@ -225,6 +238,9 @@ fn apply_tool_flags(mut args: SearchArgs, flags: HashMap<String, bool>) -> Searc
             }
             "rga" | "use_rga" | "enable_rga" => {
                 args.enable_rga = value;
+            }
+            "body" | "fetch_body" | "include_body" => {
+                args.body = value;
             }
             _ => {}
         }

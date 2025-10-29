@@ -1,4 +1,5 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
+use std::fmt::Write as _;
 use std::fs;
 use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
@@ -18,6 +19,9 @@ use crate::tools::rg::{RipgrepMatch, RipgrepTool};
 use crate::tools::rga::{RgaMatch, RgaTool};
 #[cfg(feature = "indexing")]
 use swe_grep_indexer::{IndexConfig, TantivyIndex};
+
+const DEFAULT_MAX_COLUMNS: usize = 200;
+const DEFAULT_MAX_BODY_BYTES: usize = 512 * 1024;
 
 /// Execute a single SWE-grep cycle using the phase-3 workflow.
 pub async fn execute(args: SearchArgs) -> Result<SearchSummary> {
@@ -43,6 +47,11 @@ struct SearchConfig {
     use_ast: bool,
     cache_dir: PathBuf,
     log_dir: Option<PathBuf>,
+    context_before: usize,
+    context_after: usize,
+    max_columns: usize,
+    body: bool,
+    max_body_bytes: usize,
 }
 
 impl SearchConfig {
@@ -105,6 +114,11 @@ impl SearchConfig {
             use_ast,
             cache_dir,
             log_dir,
+            context_before: args.context_before,
+            context_after: args.context_after,
+            max_columns: DEFAULT_MAX_COLUMNS,
+            body: args.body,
+            max_body_bytes: DEFAULT_MAX_BODY_BYTES,
         })
     }
 }
@@ -122,6 +136,7 @@ struct SearchEngine {
     reward_total: f32,
     startup_stats: StartupStats,
     language_cache: HashMap<PathBuf, &'static str>,
+    body_cache: HashMap<PathBuf, BodyPayload>,
 }
 
 impl SearchEngine {
@@ -132,7 +147,13 @@ impl SearchEngine {
         let fd_tool = None;
 
         let rg_start = StdInstant::now();
-        let rg_tool = RipgrepTool::new(config.timeout, config.max_matches);
+        let rg_tool = RipgrepTool::new(
+            config.timeout,
+            config.max_matches,
+            config.context_before,
+            config.context_after,
+            config.max_columns,
+        );
         startup_stats.rg_ms = elapsed_std_ms(rg_start);
 
         let ast_tool = None;
@@ -183,7 +204,49 @@ impl SearchEngine {
             reward_total: 0.0,
             startup_stats,
             language_cache: HashMap::new(),
+            body_cache: HashMap::new(),
         })
+    }
+
+    fn fetch_body(&mut self, path: &Path) -> BodyPayload {
+        if let Some(cached) = self.body_cache.get(path) {
+            return cached.clone();
+        }
+
+        let absolute = if path.is_absolute() {
+            path.to_path_buf()
+        } else {
+            self.config.root.join(path)
+        };
+
+        let payload = match fs::metadata(&absolute) {
+            Ok(metadata) => {
+                if metadata.len() as usize > self.config.max_body_bytes {
+                    BodyPayload {
+                        body: None,
+                        retrieved: false,
+                    }
+                } else {
+                    match fs::read_to_string(&absolute) {
+                        Ok(contents) => BodyPayload {
+                            body: Some(contents),
+                            retrieved: true,
+                        },
+                        Err(_) => BodyPayload {
+                            body: None,
+                            retrieved: false,
+                        },
+                    }
+                }
+            }
+            Err(_) => BodyPayload {
+                body: None,
+                retrieved: false,
+            },
+        };
+
+        self.body_cache.insert(path.to_path_buf(), payload.clone());
+        payload
     }
 
     fn ensure_fd_tool(&mut self) -> Option<&FdTool> {
@@ -449,7 +512,14 @@ impl SearchEngine {
         let probe_ms = elapsed_ms(probe_start);
         let mut hits: Vec<SearchHit> = matches
             .into_iter()
-            .map(|m| SearchHit::from_ripgrep(&self.config.root, m, ProbeKind::Global))
+            .map(|m| {
+                SearchHit::from_ripgrep(
+                    &self.config.root,
+                    m,
+                    ProbeKind::Global,
+                    self.config.max_columns,
+                )
+            })
             .collect();
         let total_hits = hits.len();
         let probe_hits_snapshot = hits.clone();
@@ -708,7 +778,14 @@ impl SearchEngine {
                 crate::telemetry::record_tool_results("rg", matches.len());
                 let hits = matches
                     .into_iter()
-                    .map(|m| SearchHit::from_ripgrep(&self.config.root, m, kind.clone()))
+                    .map(|m| {
+                        SearchHit::from_ripgrep(
+                            &self.config.root,
+                            m,
+                            kind.clone(),
+                            self.config.max_columns,
+                        )
+                    })
                     .collect::<Vec<_>>();
                 let hit_count = hits.len();
                 (hits, hit_count)
@@ -817,13 +894,44 @@ impl SearchEngine {
         let top_hits: Vec<TopHit> = dedup_hits
             .iter()
             .take(5)
-            .map(|hit| TopHit {
-                path: hit.path.to_string_lossy().to_string(),
-                line: hit.line,
-                score: round_two(hit.score),
-                origin: hit.origin.as_str().to_string(),
-                origin_label: self.format_origin_label(&hit.origin, &hit.path),
-                snippet: format_snippet(&self.config.root, &hit.path, hit.line, &hit.snippet),
+            .map(|hit| {
+                let formatted_snippet =
+                    format_snippet(&self.config.root, &hit.path, hit.line, &hit.snippet);
+                let context_window = gather_expanded_snippet(
+                    &self.config.root,
+                    &hit.path,
+                    hit.line,
+                    self.config.context_before,
+                    self.config.context_after,
+                );
+                let (expanded_snippet, context_start, context_end) = match context_window {
+                    Some((snippet, start, end)) => (Some(snippet), Some(start), Some(end)),
+                    None => (None, None, None),
+                };
+
+                let (body, body_retrieved) = if self.config.body {
+                    let payload = self.fetch_body(&hit.path);
+                    (payload.body, payload.retrieved)
+                } else {
+                    (None, false)
+                };
+
+                TopHit {
+                    path: hit.path.to_string_lossy().to_string(),
+                    line: hit.line,
+                    score: round_two(hit.score),
+                    origin: hit.origin.as_str().to_string(),
+                    origin_label: self.format_origin_label(&hit.origin, &hit.path),
+                    snippet: formatted_snippet,
+                    raw_snippet: hit.raw_snippet.clone(),
+                    snippet_length: Some(hit.snippet_length),
+                    raw_snippet_truncated: hit.raw_snippet_truncated,
+                    expanded_snippet,
+                    context_start,
+                    context_end,
+                    body,
+                    body_retrieved,
+                }
             })
             .collect();
 
@@ -863,10 +971,24 @@ struct SearchHit {
     snippet: String,
     score: f32,
     origin: HitOrigin,
+    raw_snippet: Option<String>,
+    snippet_length: usize,
+    raw_snippet_truncated: bool,
+}
+
+#[derive(Clone)]
+struct BodyPayload {
+    body: Option<String>,
+    retrieved: bool,
 }
 
 impl SearchHit {
-    fn from_ripgrep(root: &Path, rg_match: RipgrepMatch, kind: ProbeKind) -> Self {
+    fn from_ripgrep(
+        root: &Path,
+        rg_match: RipgrepMatch,
+        kind: ProbeKind,
+        max_columns: usize,
+    ) -> Self {
         let absolute = if rg_match.path.is_absolute() {
             rg_match.path.clone()
         } else {
@@ -874,12 +996,20 @@ impl SearchHit {
         };
         let normalized = normalize_path(root, &absolute).unwrap_or(absolute);
         let line = rg_match.line_number;
+        let snippet_length = rg_match.lines.chars().count();
+        // Ripgrep truncates the snippet when --max-columns is exceeded. We use a conservative
+        // heuristic that treats matches meeting or exceeding the limit as truncated so downstream
+        // tooling can proactively expand context.
+        let raw_snippet_truncated = snippet_length >= max_columns;
         Self {
             path: normalized,
             line,
             snippet: rg_match.lines,
             score: 1.0,
             origin: HitOrigin::Ripgrep(kind),
+            raw_snippet: Some(rg_match.raw_json),
+            snippet_length,
+            raw_snippet_truncated,
         }
     }
 
@@ -891,12 +1021,16 @@ impl SearchHit {
         };
         let normalized = normalize_path(root, &absolute).unwrap_or(absolute);
         let line = rga_match.line_number;
+        let snippet_length = rga_match.lines.chars().count();
         Self {
             path: normalized,
             line,
             snippet: rga_match.lines,
             score: 0.9,
             origin: HitOrigin::Rga,
+            raw_snippet: None,
+            snippet_length,
+            raw_snippet_truncated: false,
         }
     }
 }
@@ -1492,6 +1626,47 @@ where
     counts
 }
 
+fn gather_expanded_snippet(
+    root: &Path,
+    path: &Path,
+    line: usize,
+    before: usize,
+    after: usize,
+) -> Option<(String, usize, usize)> {
+    if line == 0 {
+        return None;
+    }
+
+    let absolute = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        root.join(path)
+    };
+    let contents = fs::read_to_string(&absolute).ok()?;
+    let lines: Vec<&str> = contents.lines().collect();
+
+    if lines.is_empty() || line > lines.len() {
+        return None;
+    }
+
+    let before_cap = before.min(line - 1);
+    let start = line - before_cap;
+    let remaining_after = lines.len() - line;
+    let after_cap = after.min(remaining_after);
+    let end = line + after_cap;
+    let width = end.to_string().len().max(1);
+
+    let mut buffer = String::new();
+    for idx in start..=end {
+        let text = lines.get(idx - 1).copied().unwrap_or_default();
+        if writeln!(&mut buffer, "{:0width$} {}", idx, text, width = width).is_err() {
+            return None;
+        }
+    }
+
+    Some((buffer, start, end))
+}
+
 fn format_snippet(root: &Path, path: &Path, line: usize, raw: &str) -> Option<String> {
     let ext = path
         .extension()
@@ -1969,8 +2144,7 @@ impl StageStats {
             let share = shares.next().unwrap_or(0);
             let metrics = self.language_metrics.entry(lang).or_default();
             metrics.disambiguate_hits += count;
-            metrics.latency.disambiguate_ms =
-                metrics.latency.disambiguate_ms.saturating_add(share);
+            metrics.latency.disambiguate_ms = metrics.latency.disambiguate_ms.saturating_add(share);
         }
     }
 
@@ -2015,6 +2189,22 @@ pub struct TopHit {
     pub origin_label: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub snippet: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub raw_snippet: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub snippet_length: Option<usize>,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub raw_snippet_truncated: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub expanded_snippet: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub context_start: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub context_end: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub body: Option<String>,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub body_retrieved: bool,
 }
 
 fn is_zero(value: &u64) -> bool {
@@ -2023,6 +2213,10 @@ fn is_zero(value: &u64) -> bool {
 
 fn is_usize_zero(value: &usize) -> bool {
     *value == 0
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
 }
 
 fn distribute_latency(latency_ms: u64, buckets: usize) -> Vec<u64> {
