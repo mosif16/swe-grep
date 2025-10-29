@@ -134,6 +134,10 @@ async fn surfaces_expanded_snippet_metadata() {
         expanded.contains("login_user_allows_admin"),
         "expanded snippet should contain the target symbol"
     );
+    assert!(
+        !hit.auto_expanded_context,
+        "explicit context window should not be marked as auto expanded"
+    );
 
     let start = hit
         .context_start
@@ -158,6 +162,65 @@ async fn surfaces_expanded_snippet_metadata() {
         expanded.lines().count(),
         3,
         "window should include neighbours"
+    );
+}
+
+#[tokio::test]
+async fn auto_expands_context_when_flags_omitted() {
+    let repo_root = fixture_root().join("fixtures/multi_lang");
+
+    let args = SearchArgs {
+        symbol: "login_user_allows_admin".to_string(),
+        path: Some(repo_root),
+        language: Some("rust".to_string()),
+        timeout_secs: 3,
+        max_matches: 20,
+        concurrency: 8,
+        context_before: 0,
+        context_after: 0,
+        body: false,
+        enable_index: false,
+        index_dir: None,
+        enable_rga: false,
+        cache_dir: None,
+        log_dir: None,
+        use_fd: true,
+        use_ast_grep: true,
+    };
+
+    let summary = search::execute(args).await.expect("search should succeed");
+    let hit = summary
+        .top_hits
+        .iter()
+        .find(|hit| hit.path.ends_with("src/lib.rs"))
+        .expect("expected rust lib.rs hit when relying on default context");
+
+    let expanded = hit
+        .expanded_snippet
+        .as_ref()
+        .expect("expanded_snippet should be populated by default");
+    let start = hit
+        .context_start
+        .expect("context_start should accompany expanded snippet");
+    let end = hit
+        .context_end
+        .expect("context_end should accompany expanded snippet");
+
+    assert!(
+        start < hit.line,
+        "default context should include at least one leading line"
+    );
+    assert!(
+        end > hit.line,
+        "default context should include at least one trailing line"
+    );
+    assert!(
+        expanded.lines().count() >= 3,
+        "expanded snippet should include surrounding lines when context flags are omitted"
+    );
+    assert!(
+        hit.auto_expanded_context,
+        "auto_expanded_context should be true when default padding is applied"
     );
 }
 
