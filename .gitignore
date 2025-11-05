@@ -2,3 +2,10 @@
 .fastembed_cache
 .swe-grep-cache
 .DS_Store
+
+# Benchmark data and results
+benchmarks/
+**/benchmark*.json
+**/benchmark*.jsonl
+docs/benchmark*.json
+docs/benchmark*.jsonl
