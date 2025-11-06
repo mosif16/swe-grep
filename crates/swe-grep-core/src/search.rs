@@ -171,15 +171,6 @@ impl SearchEngine {
             startup_stats.index_ms = elapsed_std_ms(start);
         }
 
-        let cache_start = StdInstant::now();
-        fs::create_dir_all(&config.cache_dir).with_context(|| {
-            format!(
-                "failed to create cache directory {}",
-                config.cache_dir.display()
-            )
-        })?;
-        startup_stats.cache_ms = elapsed_std_ms(cache_start);
-
         let state_start = StdInstant::now();
         let state = PersistentState::load(&config.root, &config.cache_dir)?;
         startup_stats.state_ms = elapsed_std_ms(state_start);
@@ -1233,6 +1224,11 @@ impl PersistentState {
         if !self.dirty {
             return Ok(());
         }
+        if let Some(parent) = self.file_path.parent() {
+            fs::create_dir_all(parent).with_context(|| {
+                format!("failed to create cache directory {}", parent.display())
+            })?;
+        }
         let tmp_path = self.file_path.with_extension("json.tmp");
         let file = fs::File::create(&tmp_path)
             .with_context(|| format!("failed to create {}", tmp_path.display()))?;
@@ -1254,6 +1250,36 @@ impl PersistentState {
 #[derive(Default)]
 struct SearchCache {
     seen: HashSet<(String, usize)>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    #[test]
+    fn persistent_state_only_creates_directory_when_saving() -> Result<()> {
+        let temp = TempDir::new()?;
+        let root = temp.path();
+        let cache_dir = root.join("cache");
+
+        assert!(!cache_dir.exists());
+
+        let state = PersistentState::load(root, &cache_dir)?;
+        let state_path = state.file_path.clone();
+        drop(state);
+
+        assert!(!cache_dir.exists());
+        assert!(!state_path.exists());
+
+        let mut state = PersistentState::load(root, &cache_dir)?;
+        state.dirty = true;
+        state.save()?;
+
+        assert!(cache_dir.exists());
+        assert!(state.file_path.exists());
+        Ok(())
+    }
 }
 
 impl SearchCache {
