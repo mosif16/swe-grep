@@ -242,6 +242,47 @@ impl SearchEngine {
         payload
     }
 
+    fn should_attach_body(&self, path: &Path) -> bool {
+        if self.config.body {
+            return true;
+        }
+        match path
+            .extension()
+            .and_then(|ext| ext.to_str())
+            .map(|ext| ext.to_ascii_lowercase())
+        {
+            Some(ref ext) if ext == "rs" || ext == "swift" => true,
+            _ => false,
+        }
+    }
+
+    fn compute_context_hints(&self, path: &Path, line: usize) -> Vec<ContextHint> {
+        if line == 0 {
+            return Vec::new();
+        }
+
+        let absolute = if path.is_absolute() {
+            path.to_path_buf()
+        } else {
+            self.config.root.join(path)
+        };
+
+        let Ok(contents) = fs::read_to_string(&absolute) else {
+            return Vec::new();
+        };
+
+        let extension = path
+            .extension()
+            .and_then(|ext| ext.to_str())
+            .map(|ext| ext.to_ascii_lowercase());
+
+        match extension.as_deref() {
+            Some("rs") => rust_context_hints(&contents, line),
+            Some("swift") => swift_context_hints(&contents, line),
+            _ => Vec::new(),
+        }
+    }
+
     fn ensure_fd_tool(&mut self) -> Option<&FdTool> {
         if !self.config.use_fd {
             return None;
@@ -955,12 +996,15 @@ impl SearchEngine {
                         None => (None, None, None, false),
                     };
 
-                let (body, body_retrieved) = if self.config.body {
+                let include_body = self.should_attach_body(&hit.path);
+                let (body, body_retrieved) = if include_body {
                     let payload = self.fetch_body(&hit.path);
                     (payload.body, payload.retrieved)
                 } else {
                     (None, false)
                 };
+
+                let hints = self.compute_context_hints(&hit.path, hit.line);
 
                 TopHit {
                     path: hit.path.to_string_lossy().to_string(),
@@ -978,6 +1022,7 @@ impl SearchEngine {
                     auto_expanded_context: auto_context_flag,
                     body,
                     body_retrieved,
+                    hints,
                 }
             })
             .collect();
@@ -1226,10 +1271,7 @@ impl PersistentState {
         }
         if let Some(parent) = self.file_path.parent() {
             fs::create_dir_all(parent).with_context(|| {
-                format!(
-                    "failed to create cache directory {}",
-                    parent.display()
-                )
+                format!("failed to create cache directory {}", parent.display())
             })?;
         }
         let tmp_path = self.file_path.with_extension("json.tmp");
@@ -1722,6 +1764,60 @@ fn gather_expanded_snippet(
     Some((buffer, start, end))
 }
 
+const HINT_KEYWORD_LIMIT: usize = 32;
+
+fn rust_context_hints(contents: &str, line: usize) -> Vec<ContextHint> {
+    let lines: Vec<&str> = contents.lines().collect();
+    if lines.is_empty() {
+        return Vec::new();
+    }
+    let idx = line.saturating_sub(1).min(lines.len() - 1);
+
+    let declaration = find_rust_declaration(&lines, idx);
+    let anchor = declaration.as_ref().map(|(idx, _)| *idx).unwrap_or(idx);
+
+    let mut hints: Vec<ContextHint> = Vec::new();
+    collect_rust_attributes(&lines, anchor, &mut hints);
+
+    if let Some((decl_idx, decl_label)) = declaration.clone() {
+        push_hint(&mut hints, "declaration", decl_label, decl_idx + 1);
+    }
+
+    if let Some((impl_idx, impl_label)) =
+        find_rust_impl(&lines, anchor, declaration.as_ref().map(|(idx, _)| *idx))
+    {
+        push_hint(&mut hints, "impl", impl_label, impl_idx + 1);
+    }
+
+    collect_rust_modules(&lines, anchor, &mut hints);
+
+    finalize_hints(hints)
+}
+
+fn swift_context_hints(contents: &str, line: usize) -> Vec<ContextHint> {
+    let lines: Vec<&str> = contents.lines().collect();
+    if lines.is_empty() {
+        return Vec::new();
+    }
+    let idx = line.saturating_sub(1).min(lines.len() - 1);
+
+    let signature = find_swift_signature(&lines, idx);
+    let anchor = signature.as_ref().map(|(idx, _)| *idx).unwrap_or(idx);
+
+    let mut hints: Vec<ContextHint> = Vec::new();
+    collect_swift_attributes(&lines, anchor, &mut hints);
+
+    if let Some((type_idx, type_label, kind)) = find_swift_type(&lines, anchor) {
+        push_hint(&mut hints, kind, type_label, type_idx + 1);
+    }
+
+    if let Some((sig_idx, sig_label)) = signature {
+        push_hint(&mut hints, "declaration", sig_label, sig_idx + 1);
+    }
+
+    finalize_hints(hints)
+}
+
 fn format_snippet(root: &Path, path: &Path, line: usize, raw: &str) -> Option<String> {
     let ext = path
         .extension()
@@ -1982,6 +2078,360 @@ fn format_default_snippet(raw: &str) -> Option<String> {
         .map(collapse_whitespace)
 }
 
+fn push_hint(target: &mut Vec<ContextHint>, kind: &str, label: String, line: usize) {
+    if label.is_empty() {
+        return;
+    }
+    if target
+        .iter()
+        .any(|hint| hint.kind == kind && hint.label == label && hint.line == line)
+    {
+        return;
+    }
+    target.push(ContextHint {
+        kind: kind.to_string(),
+        label,
+        line,
+    });
+}
+
+fn finalize_hints(mut hints: Vec<ContextHint>) -> Vec<ContextHint> {
+    hints.sort_by_key(|hint| hint.line);
+    hints.dedup_by(|a, b| a.line == b.line && a.kind == b.kind && a.label == b.label);
+    hints
+}
+
+fn keyword_near_start(text: &str, keyword: &str) -> bool {
+    if keyword.is_empty() {
+        return false;
+    }
+
+    let bytes = text.as_bytes();
+    let needle = keyword.as_bytes();
+    let first_requires_boundary = !keyword
+        .chars()
+        .next()
+        .map(|ch| ch.is_whitespace())
+        .unwrap_or(false);
+    let last_requires_boundary = !keyword
+        .chars()
+        .last()
+        .map(|ch| ch.is_whitespace())
+        .unwrap_or(false);
+
+    let limit = bytes.len().min(HINT_KEYWORD_LIMIT + needle.len());
+    let mut idx = 0;
+    while idx + needle.len() <= limit {
+        if &bytes[idx..idx + needle.len()] == needle {
+            let before_ok = if first_requires_boundary {
+                idx == 0 || !bytes[idx - 1].is_ascii_alphanumeric() && bytes[idx - 1] != b'_'
+            } else {
+                true
+            };
+            let after_pos = idx + needle.len();
+            let after_ok = if last_requires_boundary {
+                after_pos >= bytes.len()
+                    || !bytes
+                        .get(after_pos)
+                        .map(|ch| ch.is_ascii_alphanumeric() || *ch == b'_')
+                        .unwrap_or(false)
+            } else {
+                true
+            };
+            if before_ok && after_ok {
+                return true;
+            }
+        }
+        idx += 1;
+    }
+    false
+}
+
+fn collect_rust_attributes(lines: &[&str], anchor: usize, hints: &mut Vec<ContextHint>) {
+    if lines.is_empty() || anchor == 0 {
+        return;
+    }
+
+    let mut idx = anchor;
+    while idx > 0 {
+        idx -= 1;
+        let trimmed = lines[idx].trim();
+        if trimmed.starts_with("#[") {
+            push_hint(hints, "attribute", collapse_whitespace(trimmed), idx + 1);
+            continue;
+        }
+        if trimmed.is_empty() || trimmed.starts_with("//") {
+            continue;
+        }
+        break;
+    }
+}
+
+fn find_rust_declaration(lines: &[&str], start_idx: usize) -> Option<(usize, String)> {
+    if lines.is_empty() {
+        return None;
+    }
+
+    let mut idx = start_idx.min(lines.len() - 1);
+    loop {
+        let trimmed = lines[idx].trim();
+        if trimmed.is_empty()
+            || trimmed.starts_with("//")
+            || trimmed.starts_with("#[")
+            || trimmed.starts_with("/*")
+            || trimmed.starts_with("*/")
+        {
+            if idx == 0 {
+                return None;
+            }
+            idx -= 1;
+            continue;
+        }
+        if trimmed.starts_with('}') {
+            if idx == 0 {
+                return None;
+            }
+            idx -= 1;
+            continue;
+        }
+        if looks_like_rust_declaration(trimmed) {
+            return Some((idx, collapse_whitespace(trimmed)));
+        }
+        if idx == 0 {
+            break;
+        }
+        idx -= 1;
+    }
+    None
+}
+
+fn looks_like_rust_declaration(trimmed: &str) -> bool {
+    if trimmed.starts_with("//") || trimmed.starts_with("#[") {
+        return false;
+    }
+    let collapsed = collapse_whitespace(trimmed);
+    let lower = collapsed.to_ascii_lowercase();
+
+    lower.starts_with("fn ")
+        || lower.starts_with("fn(")
+        || lower.contains(" fn ")
+        || lower.contains(" fn(")
+        || lower.starts_with("struct ")
+        || lower.contains(" struct ")
+        || lower.starts_with("enum ")
+        || lower.contains(" enum ")
+        || lower.starts_with("trait ")
+        || lower.contains(" trait ")
+        || lower.starts_with("type ")
+        || lower.contains(" type ")
+        || lower.starts_with("const ")
+        || lower.contains(" const ")
+        || lower.starts_with("static ")
+        || lower.contains(" static ")
+        || lower.starts_with("macro_rules!")
+        || lower.contains(" macro_rules!")
+}
+
+fn find_rust_impl(
+    lines: &[&str],
+    start_idx: usize,
+    skip: Option<usize>,
+) -> Option<(usize, String)> {
+    if lines.is_empty() || start_idx == 0 {
+        return None;
+    }
+
+    let mut idx = start_idx;
+    while idx > 0 {
+        idx -= 1;
+        if Some(idx) == skip {
+            continue;
+        }
+        let trimmed = lines[idx].trim();
+        if trimmed.is_empty() || trimmed.starts_with("//") || trimmed.starts_with("#[") {
+            continue;
+        }
+        if trimmed.starts_with('}') {
+            continue;
+        }
+        if looks_like_rust_impl(trimmed) {
+            return Some((idx, collapse_whitespace(trimmed)));
+        }
+    }
+    None
+}
+
+fn looks_like_rust_impl(trimmed: &str) -> bool {
+    let collapsed = collapse_whitespace(trimmed);
+    let lower = collapsed.to_ascii_lowercase();
+    lower.starts_with("impl<")
+        || lower.starts_with("impl(")
+        || keyword_near_start(&lower, "impl ")
+        || keyword_near_start(&lower, "impl<")
+        || keyword_near_start(&lower, "impl(")
+}
+
+fn collect_rust_modules(lines: &[&str], start_idx: usize, hints: &mut Vec<ContextHint>) {
+    if lines.is_empty() {
+        return;
+    }
+
+    let mut modules: Vec<ContextHint> = Vec::new();
+    let mut idx = start_idx.min(lines.len() - 1);
+    loop {
+        let trimmed = lines[idx].trim();
+        if looks_like_rust_module(trimmed) && indentation(lines[idx]) == 0 {
+            push_hint(
+                &mut modules,
+                "module",
+                collapse_whitespace(trimmed),
+                idx + 1,
+            );
+            if modules.len() >= 3 {
+                break;
+            }
+        }
+        if idx == 0 {
+            break;
+        }
+        idx -= 1;
+    }
+    modules.reverse();
+    hints.extend(modules.into_iter());
+}
+
+fn looks_like_rust_module(trimmed: &str) -> bool {
+    let collapsed = collapse_whitespace(trimmed);
+    let lower = collapsed.to_ascii_lowercase();
+    keyword_near_start(&lower, "mod ")
+}
+
+fn indentation(line: &str) -> usize {
+    line.chars().take_while(|ch| ch.is_whitespace()).count()
+}
+
+fn collect_swift_attributes(lines: &[&str], anchor: usize, hints: &mut Vec<ContextHint>) {
+    if lines.is_empty() || anchor == 0 {
+        return;
+    }
+
+    let mut idx = anchor.min(lines.len() - 1);
+    while idx > 0 {
+        idx -= 1;
+        let trimmed = lines[idx].trim();
+        if trimmed.starts_with('@') {
+            push_hint(hints, "attribute", collapse_whitespace(trimmed), idx + 1);
+            continue;
+        }
+        if trimmed.is_empty() || trimmed.starts_with("//") {
+            continue;
+        }
+        break;
+    }
+}
+
+fn find_swift_signature(lines: &[&str], start_idx: usize) -> Option<(usize, String)> {
+    if lines.is_empty() {
+        return None;
+    }
+
+    let mut idx = start_idx.min(lines.len() - 1);
+    loop {
+        let trimmed = lines[idx].trim();
+        if trimmed.is_empty() || trimmed.starts_with("//") || trimmed.starts_with('@') {
+            if idx == 0 {
+                return None;
+            }
+            idx -= 1;
+            continue;
+        }
+        if trimmed.starts_with('}') {
+            if idx == 0 {
+                return None;
+            }
+            idx -= 1;
+            continue;
+        }
+        if looks_like_swift_signature(trimmed) {
+            return Some((idx, collapse_whitespace(trimmed)));
+        }
+        if idx == 0 {
+            break;
+        }
+        idx -= 1;
+    }
+    None
+}
+
+fn looks_like_swift_signature(trimmed: &str) -> bool {
+    let collapsed = collapse_whitespace(trimmed);
+    let lower = collapsed.to_ascii_lowercase();
+
+    lower.starts_with("func ")
+        || lower.starts_with("func(")
+        || lower.contains(" func ")
+        || lower.contains(" func(")
+        || keyword_near_start(&lower, "init")
+        || keyword_near_start(&lower, "var ")
+        || keyword_near_start(&lower, "let ")
+        || keyword_near_start(&lower, "case ")
+        || lower.starts_with("subscript")
+        || lower.contains(" subscript")
+        || lower.starts_with("deinit")
+        || lower.contains(" deinit")
+}
+
+fn find_swift_type(lines: &[&str], start_idx: usize) -> Option<(usize, String, &'static str)> {
+    if lines.is_empty() {
+        return None;
+    }
+
+    let mut idx = start_idx.min(lines.len() - 1);
+    loop {
+        let trimmed = lines[idx].trim();
+        if trimmed.is_empty() || trimmed.starts_with("//") || trimmed.starts_with('@') {
+            if idx == 0 {
+                return None;
+            }
+            idx -= 1;
+            continue;
+        }
+        if let Some(kind) = swift_type_kind(trimmed) {
+            return Some((idx, collapse_whitespace(trimmed), kind));
+        }
+        if trimmed.starts_with('}') {
+            if idx == 0 {
+                return None;
+            }
+            idx -= 1;
+            continue;
+        }
+        if idx == 0 {
+            break;
+        }
+        idx -= 1;
+    }
+    None
+}
+
+fn swift_type_kind(trimmed: &str) -> Option<&'static str> {
+    let collapsed = collapse_whitespace(trimmed);
+    let lower = collapsed.to_ascii_lowercase();
+
+    if keyword_near_start(&lower, "extension ") {
+        Some("extension")
+    } else if keyword_near_start(&lower, "struct ")
+        || keyword_near_start(&lower, "class ")
+        || keyword_near_start(&lower, "enum ")
+        || keyword_near_start(&lower, "protocol ")
+        || keyword_near_start(&lower, "actor ")
+    {
+        Some("type")
+    } else {
+        None
+    }
+}
+
 fn collapse_whitespace(input: &str) -> String {
     let mut result = String::with_capacity(input.len());
     let mut last_was_space = false;
@@ -2236,6 +2686,13 @@ pub struct SearchSummary {
 }
 
 #[derive(Clone, Serialize)]
+pub struct ContextHint {
+    pub kind: String,
+    pub label: String,
+    pub line: usize,
+}
+
+#[derive(Clone, Serialize)]
 pub struct TopHit {
     pub path: String,
     pub line: usize,
@@ -2262,6 +2719,8 @@ pub struct TopHit {
     pub body: Option<String>,
     #[serde(default, skip_serializing_if = "is_false")]
     pub body_retrieved: bool,
+    #[serde(default, skip_serializing_if = "hints_is_empty")]
+    pub hints: Vec<ContextHint>,
 }
 
 fn is_zero(value: &u64) -> bool {
@@ -2274,6 +2733,10 @@ fn is_usize_zero(value: &usize) -> bool {
 
 fn is_false(value: &bool) -> bool {
     !*value
+}
+
+fn hints_is_empty(value: &Vec<ContextHint>) -> bool {
+    value.is_empty()
 }
 
 fn distribute_latency(latency_ms: u64, buckets: usize) -> Vec<u64> {

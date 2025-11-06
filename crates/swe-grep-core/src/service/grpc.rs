@@ -147,6 +147,15 @@ impl From<SearchSummary> for proto::SearchSummary {
                         context_end,
                         body: hit.body.unwrap_or_default(),
                         body_retrieved: hit.body_retrieved,
+                        hints: hit
+                            .hints
+                            .into_iter()
+                            .map(|hint| proto::ContextHint {
+                                kind: hint.kind,
+                                label: hint.label,
+                                line: hint.line as u32,
+                            })
+                            .collect(),
                     }
                 })
                 .collect(),
