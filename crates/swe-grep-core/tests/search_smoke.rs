@@ -114,8 +114,12 @@ async fn surfaces_expanded_snippet_metadata() {
         "expected raw ripgrep payload to be preserved"
     );
     assert!(
-        hit.body.is_none(),
-        "body should remain absent when the flag is not enabled"
+        hit.body.is_some(),
+        "rust hits should surface full file bodies even without --body"
+    );
+    assert!(
+        hit.body_retrieved,
+        "body_retrieved should be set when the file payload is loaded"
     );
     assert!(
         hit.snippet_length.unwrap_or_default() > 0,
@@ -162,6 +166,14 @@ async fn surfaces_expanded_snippet_metadata() {
         expanded.lines().count(),
         3,
         "window should include neighbours"
+    );
+    assert!(
+        !hit.hints.is_empty(),
+        "context hints should be emitted for rust hits"
+    );
+    assert!(
+        hit.hints.iter().any(|hint| hint.kind == "declaration"),
+        "expected declaration hint to identify the matched function"
     );
 }
 
@@ -269,5 +281,60 @@ async fn retrieves_body_when_requested() {
     assert!(
         body.len() < 10_000,
         "fixture body should comfortably sit below guardrail limits"
+    );
+}
+
+#[tokio::test]
+async fn surfaces_swift_context_hints() {
+    let repo_root = fixture_root().join("fixtures/multi_lang");
+
+    let args = SearchArgs {
+        symbol: "hydrateAndNotify".to_string(),
+        path: Some(repo_root),
+        language: Some("swift".to_string()),
+        timeout_secs: 3,
+        max_matches: 20,
+        concurrency: 8,
+        context_before: 0,
+        context_after: 0,
+        body: false,
+        enable_index: false,
+        index_dir: None,
+        enable_rga: false,
+        cache_dir: None,
+        log_dir: None,
+        use_fd: true,
+        use_ast_grep: true,
+    };
+
+    let summary = search::execute(args).await.expect("search should succeed");
+    let hit = summary
+        .top_hits
+        .iter()
+        .find(|hit| hit.path.ends_with("App.swift"))
+        .expect("expected swift App.swift hit when retrieving context");
+
+    assert!(
+        hit.body.is_some(),
+        "swift hits should surface full file bodies even without --body"
+    );
+    assert!(
+        hit.body_retrieved,
+        "swift file body should be marked as retrieved"
+    );
+    assert!(
+        !hit.hints.is_empty(),
+        "swift hits should include contextual hints"
+    );
+    assert!(
+        hit.hints.iter().any(|hint| hint.kind == "declaration"),
+        "expected declaration hint to identify the matched member"
+    );
+    assert!(
+        hit.hints.iter().any(|hint| {
+            hint.kind == "extension"
+                || (hint.kind == "type" && hint.label.to_ascii_lowercase().contains("userapi"))
+        }),
+        "expected hints to call out the surrounding type or extension"
     );
 }

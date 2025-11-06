@@ -21,7 +21,8 @@ swe-grep search --symbol <identifier> --path <repo-root>
 - `--enable-rga` – enable ripgrep-all fallback (requires `rga` on PATH).
 - `--enable-index` – use Tantivy indices (build with `--features indexing`).
 - `--context-before/--context-after` – request additional lines for each hit.
-- `--body` – stream the full UTF-8 file for the surfaced hits (512 KiB guardrail).
+- `--body` – stream the full UTF-8 file for the surfaced hits (512 KiB guardrail). Rust and Swift hits now return the full body even without this flag.
+- `--cache-dir` – persist symbol and directory hints to this directory. The folder is created lazily when state is flushed, so misses leave the path untouched.
 
 ## 2. Output contract
 
@@ -49,7 +50,10 @@ response now includes enriched hit metadata:
       "context_end": 19,
       "auto_expanded_context": false,
       "body": "pub fn login_user(...",
-      "body_retrieved": true
+      "body_retrieved": true,
+      "hints": [
+        { "kind": "declaration", "label": "fn login_user_allows_admin() {", "line": 17 }
+      ]
     }
   ],
   "deduped": 4,
@@ -70,13 +74,16 @@ Agents typically:
 1. Use `top_hits` snippets for immediate context.
 2. Follow `next_actions` to fetch additional files/lines. When `body_retrieved`
    is `true`, the full source is already embedded in the hit and can be cached.
-3. Inspect `stage_stats` to detect degraded runs (e.g., non-zero `discover_ms`
+3. Inspect `hints` to jump straight to the surrounding declaration, type, or extension (Rust/Swift populate these automatically).
+4. Inspect `stage_stats` to detect degraded runs (e.g., non-zero `discover_ms`
    means fast path was bypassed).
 
 `swe-grep` automatically widens context windows when the caller omits
 `--context-before/--context-after`. Literal runs now ship with ±2 lines of
 context (±4 when ripgrep truncates the match), and the `auto_expanded_context`
 flag records when this fallback kicked in.
+
+Rust and Swift workflows always include the full file body and emit declaration/extension hints, so agents can render rich previews without an extra fetch even when `--body` is omitted.
 
 ## 3. HTTP/gRPC use
 

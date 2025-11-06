@@ -39,6 +39,13 @@ message TopHit {
   uint32 context_end = 12;
   string body = 13;
   bool body_retrieved = 14;
+  repeated ContextHint hints = 15;
+}
+
+message ContextHint {
+  string kind = 1;
+  string label = 2;
+  uint32 line = 3;
 }
 
 message AstHit {
