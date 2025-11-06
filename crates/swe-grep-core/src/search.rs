@@ -171,15 +171,6 @@ impl SearchEngine {
             startup_stats.index_ms = elapsed_std_ms(start);
         }
 
-        let cache_start = StdInstant::now();
-        fs::create_dir_all(&config.cache_dir).with_context(|| {
-            format!(
-                "failed to create cache directory {}",
-                config.cache_dir.display()
-            )
-        })?;
-        startup_stats.cache_ms = elapsed_std_ms(cache_start);
-
         let state_start = StdInstant::now();
         let state = PersistentState::load(&config.root, &config.cache_dir)?;
         startup_stats.state_ms = elapsed_std_ms(state_start);
@@ -1232,6 +1223,14 @@ impl PersistentState {
     fn save(&mut self) -> Result<()> {
         if !self.dirty {
             return Ok(());
+        }
+        if let Some(parent) = self.file_path.parent() {
+            fs::create_dir_all(parent).with_context(|| {
+                format!(
+                    "failed to create cache directory {}",
+                    parent.display()
+                )
+            })?;
         }
         let tmp_path = self.file_path.with_extension("json.tmp");
         let file = fs::File::create(&tmp_path)
