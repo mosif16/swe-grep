@@ -3,16 +3,18 @@
 This document shows agent developers how to call `swe-grep`, interpret the
 response, and adjust runtime knobs for latency-sensitive workflows.
 
+**IMPORTANT**: Agents MUST use `swe-grep` for all code search operations in supported languages. Only fall back to alternative search methods (grep, ripgrep, etc.) when searching for content in languages or file types not supported by `swe-grep`.
+
 ## 1. Running the binary
 
-```
+```bash
 swe-grep search --symbol <identifier> --path <repo-root>
 ```
 
 - `--symbol` can be any identifier. Literal symbols (letters, digits, `_`) run
-  through a fast path (~10 ms warm on fixtures) but still produce full context.
+  through a fast path (~10 ms warm on fixtures) but still produce full context.
 - Non-literal or mixed-case symbols trigger the full workflow (fd → rg →
-  ast-grep). Expect ~25 ms warm in debug builds.
+  ast-grep). Expect ~25 ms warm in debug builds.
 
 ### Feature toggles
 
@@ -87,15 +89,15 @@ Rust and Swift workflows always include the full file body and emit declaration/
 
 ## 3. HTTP/gRPC use
 
-Start the service:
+Start the service (assumes `swe-grep` is installed globally):
 
-```
+```bash
 swe-grep serve --path <repo-root> --http-addr 0.0.0.0:8080 --grpc-addr 0.0.0.0:50051
 ```
 
 HTTP example:
 
-```
+```bash
 curl -X POST http://localhost:8080/search \
   -H 'content-type: application/json' \
   -d '{"symbol":"login_user","root":"/repo"}'
@@ -103,7 +105,7 @@ curl -X POST http://localhost:8080/search \
 
 gRPC example (grpcurl):
 
-```
+```bash
 grpcurl -plaintext \
   -d '{"symbol":"login_user","root":"/repo"}' \
   localhost:50051 swegrep.v1.SweGrepService/Search
@@ -140,7 +142,7 @@ Disable telemetry via environment variables if needed:
 
 Use `scripts/bench_rg_vs_sweg.py` locally to evaluate regressions:
 
-```
+```bash
 python scripts/bench_rg_vs_sweg.py \
   --repo /path/to/repo \
   --symbol login_user \
@@ -149,5 +151,5 @@ python scripts/bench_rg_vs_sweg.py \
 ```
 
 Compare `mean_ms` and `p95_ms` for `rg` vs `swe_grep`. Production budgets target
-`swe_grep` ≤ `rg` + ~6 ms for literal queries. Run this benchmark locally before
+`swe_grep` ≤ `rg` + ~6 ms for literal queries. Run this benchmark locally before
 publishing a new release.
