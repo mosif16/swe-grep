@@ -139,6 +139,7 @@ struct SearchEngine {
     startup_stats: StartupStats,
     language_cache: HashMap<PathBuf, &'static str>,
     body_cache: HashMap<PathBuf, BodyPayload>,
+    warnings: Vec<String>,
 }
 
 impl SearchEngine {
@@ -155,6 +156,7 @@ impl SearchEngine {
             config.context_before,
             config.context_after,
             config.max_columns,
+            config.concurrency,
         );
         startup_stats.rg_ms = elapsed_std_ms(rg_start);
 
@@ -173,7 +175,9 @@ impl SearchEngine {
 
         let state_start = StdInstant::now();
         let state = PersistentState::load(&config.root, &config.cache_dir)?;
-        startup_stats.state_ms = elapsed_std_ms(state_start);
+        let state_elapsed = elapsed_std_ms(state_start);
+        startup_stats.state_ms = state_elapsed;
+        startup_stats.cache_ms = state_elapsed;
 
         let rga_tool = None;
 
@@ -198,6 +202,7 @@ impl SearchEngine {
             startup_stats,
             language_cache: HashMap::new(),
             body_cache: HashMap::new(),
+            warnings: Vec::new(),
         })
     }
 
@@ -334,6 +339,10 @@ impl SearchEngine {
         self.rga_tool.as_ref()
     }
 
+    fn push_warning(&mut self, message: impl Into<String>) {
+        self.warnings.push(message.into());
+    }
+
     fn format_origin_label(&mut self, origin: &HitOrigin, path: &Path) -> String {
         let tool = origin.as_str();
         if let Some(lang) = self.language_cache.get(path) {
@@ -349,6 +358,7 @@ impl SearchEngine {
 
     async fn run_cycle(&mut self) -> Result<SearchSummary> {
         let mut stage_stats = StageStats::default();
+        self.warnings.clear();
 
         tracing::info!(symbol = %self.config.symbol, "search_cycle_start");
 
@@ -407,11 +417,13 @@ impl SearchEngine {
                         }
                         Err(err) => {
                             eprintln!("warn: tantivy search failed: {err}");
+                            self.push_warning(format!("index search failed: {err}"));
                         }
                     }
                 }
                 Err(err) => {
                     eprintln!("warn: failed to initialize index: {err}");
+                    self.push_warning(format!("index initialization failed: {err}"));
                 }
             }
             stage_stats.index_ms = elapsed_ms(index_stage_start);
@@ -433,6 +445,7 @@ impl SearchEngine {
                     }
                     Err(err) => {
                         eprintln!("warn: rga search failed: {err}");
+                        self.push_warning(format!("rga search failed: {err}"));
                     }
                 }
                 stage_stats.rga_ms = elapsed_ms(rga_start);
@@ -498,6 +511,7 @@ impl SearchEngine {
             startup_stats: Some(self.startup_stats.clone()),
             stage_stats,
             reward: round_two(self.reward_total),
+            warnings: self.warnings.clone(),
         };
 
         crate::telemetry::record_reward(verification.metrics.reward);
@@ -533,6 +547,7 @@ impl SearchEngine {
         {
             Ok(matches) => matches,
             Err(err) => {
+                self.push_warning(format!("fast-path ripgrep failed: {err}"));
                 eprintln!("warn: fast-path ripgrep failed: {err}");
                 return Ok(None);
             }
@@ -602,6 +617,7 @@ impl SearchEngine {
             startup_stats: Some(self.startup_stats.clone()),
             stage_stats,
             reward: round_two(self.reward_total),
+            warnings: self.warnings.clone(),
         };
 
         crate::telemetry::record_reward(verification.metrics.reward);
@@ -716,13 +732,14 @@ impl SearchEngine {
 
         let fd_results = if let Some(fd_tool) = self.ensure_fd_tool() {
             crate::telemetry::record_tool_invocation("fd");
-            fd_tool
-                .run(&root, symbol.as_str())
-                .await
-                .unwrap_or_else(|err| {
+            match fd_tool.run(&root, symbol.as_str()).await {
+                Ok(results) => results,
+                Err(err) => {
+                    self.push_warning(format!("fd invocation failed: {err}"));
                     eprintln!("warn: fd invocation failed: {err}");
                     Vec::new()
-                })
+                }
+            }
         } else {
             Vec::new()
         };
@@ -829,7 +846,7 @@ impl SearchEngine {
     }
 
     async fn probe(
-        &self,
+        &mut self,
         rewrites: &[String],
         scope: &[PathBuf],
         kind: ProbeKind,
@@ -861,6 +878,7 @@ impl SearchEngine {
                 (hits, hit_count)
             }
             Err(err) => {
+                self.push_warning(format!("ripgrep invocation failed: {err}"));
                 eprintln!("warn: ripgrep invocation failed: {err}");
                 (Vec::new(), 0)
             }
@@ -895,8 +913,13 @@ impl SearchEngine {
                         pattern = %pattern_err.pattern(),
                         "ast-grep pattern invalid; falling back to literal search"
                     );
+                    self.push_warning(format!(
+                        "ast-grep pattern invalid for `{symbol}`: {}",
+                        pattern_err.message()
+                    ));
                 } else {
                     eprintln!("warn: ast-grep invocation failed: {err}");
+                    self.push_warning(format!("ast-grep invocation failed: {err}"));
                 }
                 Vec::new()
             })
@@ -2683,6 +2706,8 @@ pub struct SearchSummary {
     pub startup_stats: Option<StartupStats>,
     pub stage_stats: StageStats,
     pub reward: f32,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<String>,
 }
 
 #[derive(Clone, Serialize)]

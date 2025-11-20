@@ -98,6 +98,7 @@ message SearchSummary {
   StageStats stage_stats = 9;
   float reward = 10;
   StartupStats startup_stats = 11;
+  repeated string warnings = 12;
 }
 
 message HealthCheckRequest {}

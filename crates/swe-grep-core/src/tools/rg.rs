@@ -14,6 +14,7 @@ pub struct RipgrepTool {
     context_before: usize,
     context_after: usize,
     max_columns: usize,
+    threads: usize,
 }
 
 impl RipgrepTool {
@@ -23,6 +24,7 @@ impl RipgrepTool {
         context_before: usize,
         context_after: usize,
         max_columns: usize,
+        threads: usize,
     ) -> Self {
         Self {
             timeout,
@@ -30,6 +32,7 @@ impl RipgrepTool {
             context_before,
             context_after,
             max_columns,
+            threads: usize::max(1, threads),
         }
     }
 
@@ -47,6 +50,8 @@ impl RipgrepTool {
         cmd.arg("--json")
             .arg("--line-number")
             .arg("--column")
+            .arg("--threads")
+            .arg(self.threads.to_string())
             .arg("--max-columns")
             .arg(self.max_columns.to_string())
             .arg("--smart-case")

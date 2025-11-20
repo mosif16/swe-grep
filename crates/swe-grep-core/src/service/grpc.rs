@@ -77,14 +77,14 @@ fn map_request(proto: proto::SearchRequest) -> SearchInput {
         timeout_secs: zeroable(proto.timeout_secs),
         max_matches: zeroable_usize(proto.max_matches),
         concurrency: zeroable_usize(proto.concurrency),
-        enable_index: Some(proto.enable_index).filter(|value| *value != false),
-        enable_rga: Some(proto.enable_rga).filter(|value| *value != false),
+        enable_index: Some(proto.enable_index),
+        enable_rga: Some(proto.enable_rga),
         index_dir: path_from_string(proto.index_dir),
         cache_dir: path_from_string(proto.cache_dir),
         log_dir: path_from_string(proto.log_dir),
         context_before: zeroable_usize(proto.context_before),
         context_after: zeroable_usize(proto.context_after),
-        body: Some(proto.body).filter(|value| *value),
+        body: Some(proto.body),
         tool_flags: proto.tool_flags,
     }
 }
@@ -177,6 +177,7 @@ impl From<SearchSummary> for proto::SearchSummary {
             stage_stats,
             reward: summary.reward,
             startup_stats,
+            warnings: summary.warnings,
         }
     }
 }
