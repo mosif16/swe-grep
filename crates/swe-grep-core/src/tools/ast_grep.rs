@@ -30,14 +30,12 @@ impl AstGrepTool {
         languages: &[String],
         paths: &[PathBuf],
     ) -> Result<Vec<AstGrepMatch>> {
-        let mut hints: Vec<String> = if languages.is_empty() {
+        // Default to Rust if no languages specified
+        let hints: Vec<String> = if languages.is_empty() {
             vec!["rust".to_string()]
         } else {
             languages.iter().cloned().collect()
         };
-        if hints.is_empty() {
-            hints.push("rust".to_string());
-        }
         let mut aggregated: Vec<AstGrepMatch> = Vec::new();
         let mut seen: HashSet<(PathBuf, usize)> = HashSet::new();
 
@@ -163,7 +161,7 @@ impl AstGrepTool {
                         matches.push(msg.into());
                     }
                     Err(err) => {
-                        eprintln!("warn: failed to parse ast-grep json line: {err}");
+                        tracing::warn!(error = %err, "failed to parse ast-grep json line");
                     }
                 }
             }

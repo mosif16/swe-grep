@@ -1716,7 +1716,6 @@ dependencies = [
  "clap",
  "futures",
  "hyper 1.7.0",
- "once_cell",
  "opentelemetry",
  "opentelemetry-prometheus",
  "opentelemetry_sdk",
@@ -1745,6 +1744,7 @@ dependencies = [
  "ignore",
  "tantivy",
  "tokio",
+ "tracing",
 ]
 
 [[package]]

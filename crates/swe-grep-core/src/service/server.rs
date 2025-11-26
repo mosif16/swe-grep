@@ -44,7 +44,7 @@ impl ServeConfig {
 
         let mut use_index = args.enable_index;
         if use_index && !cfg!(feature = "indexing") {
-            eprintln!("warn: indexing support not compiled; ignoring --enable-index");
+            tracing::warn!("indexing support not compiled; ignoring --enable-index");
             use_index = false;
         }
 

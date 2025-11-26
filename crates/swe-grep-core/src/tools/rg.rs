@@ -2,10 +2,11 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use anyhow::{Context, Result};
-use serde::Deserialize;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
 use tokio::time::timeout;
+
+use super::common::{ChildGuard, RgMessage};
 
 #[derive(Clone, Debug)]
 pub struct RipgrepTool {
@@ -90,15 +91,25 @@ impl RipgrepTool {
 
         cmd.current_dir(root);
         cmd.stdout(std::process::Stdio::piped());
+        cmd.stderr(std::process::Stdio::piped());
 
-        let mut child = cmd
+        let child = cmd
             .spawn()
             .with_context(|| "failed to spawn ripgrep; is rg installed and on PATH?")?;
 
-        let stdout = child
+        // Wrap child in guard to ensure cleanup on timeout/early exit
+        let mut guard = ChildGuard::new(child);
+        let child_ref = guard.as_mut().context("child process unavailable")?;
+
+        let stdout = child_ref
             .stdout
             .take()
             .context("ripgrep did not produce stdout pipe")?;
+        let stderr = child_ref
+            .stderr
+            .take()
+            .context("ripgrep did not produce stderr pipe")?;
+
         let mut reader = BufReader::new(stdout).lines();
         let mut matches = Vec::new();
         let max_matches = self.max_matches;
@@ -111,7 +122,7 @@ impl RipgrepTool {
                 let parsed: RgMessage = match serde_json::from_str(&line) {
                     Ok(msg) => msg,
                     Err(err) => {
-                        eprintln!("warn: failed to parse ripgrep json line: {err}");
+                        tracing::warn!(error = %err, "failed to parse ripgrep json line");
                         continue;
                     }
                 };
@@ -125,10 +136,33 @@ impl RipgrepTool {
                     });
                 }
             }
+
+            // Take ownership from guard before waiting (prevents kill on normal exit)
+            let mut child = guard.take().context("child process already taken")?;
             let status = child.wait().await?;
-            if !status.success() {
-                if status.code() != Some(1) {
+
+            if !status.success() && status.code() != Some(1) {
+                // Capture stderr for better error diagnostics
+                let mut stderr_reader = BufReader::new(stderr).lines();
+                let mut stderr_output = String::new();
+                while let Ok(Some(line)) = stderr_reader.next_line().await {
+                    if !stderr_output.is_empty() {
+                        stderr_output.push('\n');
+                    }
+                    stderr_output.push_str(&line);
+                    if stderr_output.len() > 1024 {
+                        stderr_output.push_str("\n... (truncated)");
+                        break;
+                    }
+                }
+                if stderr_output.is_empty() {
                     anyhow::bail!("ripgrep exited with status {}", status);
+                } else {
+                    anyhow::bail!(
+                        "ripgrep exited with status {}: {}",
+                        status,
+                        stderr_output.trim()
+                    );
                 }
             }
             Result::<Vec<RipgrepMatch>>::Ok(matches)
@@ -138,33 +172,6 @@ impl RipgrepTool {
             .await
             .with_context(|| "ripgrep invocation timed out")?
     }
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(tag = "type", rename_all = "lowercase")]
-enum RgMessage {
-    Match {
-        data: RgMatchData,
-    },
-    #[serde(other)]
-    Other,
-}
-
-#[derive(Debug, Deserialize)]
-struct RgMatchData {
-    path: RgPath,
-    lines: RgLines,
-    line_number: usize,
-}
-
-#[derive(Debug, Deserialize)]
-struct RgPath {
-    text: String,
-}
-
-#[derive(Debug, Deserialize)]
-struct RgLines {
-    text: String,
 }
 
 #[derive(Clone, Debug)]

@@ -1,7 +1,6 @@
 use std::sync::OnceLock;
 
 use anyhow::{Context, Result, anyhow};
-use once_cell::sync::OnceCell;
 use opentelemetry::KeyValue;
 use opentelemetry::global;
 use opentelemetry::metrics::{Counter, Histogram};
@@ -12,8 +11,8 @@ use prometheus::{Encoder, Registry, TextEncoder};
 use tracing_subscriber::{EnvFilter, fmt};
 
 static LOGGING: OnceLock<()> = OnceLock::new();
-static TELEMETRY: OnceCell<TelemetryState> = OnceCell::new();
-static METRICS: OnceCell<MetricsHandles> = OnceCell::new();
+static TELEMETRY: OnceLock<TelemetryState> = OnceLock::new();
+static METRICS: OnceLock<MetricsHandles> = OnceLock::new();
 
 struct TelemetryState {
     _provider: SdkMeterProvider,
@@ -50,62 +49,71 @@ fn configure_logging() {
 }
 
 fn configure_metrics() -> Result<&'static TelemetryState> {
-    TELEMETRY.get_or_try_init(|| {
-        let registry = Registry::new();
-        let exporter = build_exporter(&registry)?;
+    // Check if already initialized
+    if let Some(state) = TELEMETRY.get() {
+        return Ok(state);
+    }
 
-        let provider = SdkMeterProvider::builder()
-            .with_resource(Resource::new(vec![KeyValue::new(
-                "service.name",
-                "swe-grep",
-            )]))
-            .with_reader(exporter)
-            .build();
+    // Build the telemetry state (fallible)
+    let registry = Registry::new();
+    let exporter = build_exporter(&registry)?;
 
-        global::set_meter_provider(provider.clone());
+    let provider = SdkMeterProvider::builder()
+        .with_resource(Resource::new(vec![KeyValue::new(
+            "service.name",
+            "swe-grep",
+        )]))
+        .with_reader(exporter)
+        .build();
 
-        let meter = global::meter("swe-grep");
-        let tool_invocations = meter
-            .u64_counter("swegrep_tool_invocations_total")
-            .with_description("Number of tool invocations executed by SWE-Grep")
-            .init();
-        let tool_results = meter
-            .u64_counter("swegrep_tool_results_total")
-            .with_description("Number of matches produced by tool invocations")
-            .init();
-        let cache_hits = meter
-            .u64_counter("swegrep_cache_hits_total")
-            .with_description("Cache hits recorded during search execution")
-            .init();
-        let reward_histogram = meter
-            .f64_histogram("swegrep_reward_score")
-            .with_description("Reward signal produced per reasoning cycle")
-            .init();
-        let cycle_latency_histogram = meter
-            .f64_histogram("swegrep_cycle_latency_ms")
-            .with_description("End-to-end latency of a reasoning cycle in milliseconds")
-            .init();
-        let stage_latency_histogram = meter
-            .f64_histogram("swegrep_stage_latency_ms")
-            .with_description("Latency of individual pipeline stages in milliseconds")
-            .init();
+    global::set_meter_provider(provider.clone());
 
-        METRICS
-            .set(MetricsHandles {
-                tool_invocations,
-                tool_results,
-                cache_hits,
-                reward_histogram,
-                cycle_latency_histogram,
-                stage_latency_histogram,
-            })
-            .map_err(|_| anyhow!("metrics handles already initialized"))?;
+    let meter = global::meter("swe-grep");
+    let tool_invocations = meter
+        .u64_counter("swegrep_tool_invocations_total")
+        .with_description("Number of tool invocations executed by SWE-Grep")
+        .init();
+    let tool_results = meter
+        .u64_counter("swegrep_tool_results_total")
+        .with_description("Number of matches produced by tool invocations")
+        .init();
+    let cache_hits = meter
+        .u64_counter("swegrep_cache_hits_total")
+        .with_description("Cache hits recorded during search execution")
+        .init();
+    let reward_histogram = meter
+        .f64_histogram("swegrep_reward_score")
+        .with_description("Reward signal produced per reasoning cycle")
+        .init();
+    let cycle_latency_histogram = meter
+        .f64_histogram("swegrep_cycle_latency_ms")
+        .with_description("End-to-end latency of a reasoning cycle in milliseconds")
+        .init();
+    let stage_latency_histogram = meter
+        .f64_histogram("swegrep_stage_latency_ms")
+        .with_description("Latency of individual pipeline stages in milliseconds")
+        .init();
 
-        Ok(TelemetryState {
-            _provider: provider,
-            registry,
-        })
-    })
+    // Initialize metrics handles
+    let _ = METRICS.set(MetricsHandles {
+        tool_invocations,
+        tool_results,
+        cache_hits,
+        reward_histogram,
+        cycle_latency_histogram,
+        stage_latency_histogram,
+    });
+
+    let state = TelemetryState {
+        _provider: provider,
+        registry,
+    };
+
+    // Try to set the telemetry state; if another thread beat us, use theirs
+    match TELEMETRY.set(state) {
+        Ok(()) => TELEMETRY.get().ok_or_else(|| anyhow!("telemetry initialization failed")),
+        Err(_) => TELEMETRY.get().ok_or_else(|| anyhow!("telemetry initialization failed")),
+    }
 }
 
 fn build_exporter(registry: &Registry) -> Result<PrometheusExporter> {

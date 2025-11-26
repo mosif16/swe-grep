@@ -8,3 +8,4 @@ anyhow = "1.0"
 ignore = "0.4"
 tokio = { version = "1.38", features = ["rt-multi-thread"] }
 tantivy = { version = "0.18", default-features = false, features = ["lz4-compression", "mmap"] }
+tracing = "0.1"

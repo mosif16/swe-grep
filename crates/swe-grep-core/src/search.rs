@@ -56,8 +56,20 @@ struct SearchConfig {
     max_body_bytes: usize,
 }
 
+/// Maximum allowed symbol length to prevent regex bombs and performance issues.
+const MAX_SYMBOL_LENGTH: usize = 256;
+
 impl SearchConfig {
     fn try_from_args(args: SearchArgs) -> Result<Self> {
+        // Validate symbol length to prevent regex bombs and performance issues
+        if args.symbol.len() > MAX_SYMBOL_LENGTH {
+            anyhow::bail!(
+                "symbol exceeds maximum length of {} characters (got {})",
+                MAX_SYMBOL_LENGTH,
+                args.symbol.len()
+            );
+        }
+
         let root = args
             .path
             .unwrap_or(std::env::current_dir().context("failed to resolve current directory")?);
@@ -91,7 +103,7 @@ impl SearchConfig {
 
         let mut use_index = args.enable_index;
         if use_index && !cfg!(feature = "indexing") {
-            eprintln!("warn: indexing support not compiled; ignoring --enable-index");
+            tracing::warn!("indexing support not compiled; ignoring --enable-index");
             use_index = false;
         }
 
@@ -416,13 +428,13 @@ impl SearchEngine {
                             }
                         }
                         Err(err) => {
-                            eprintln!("warn: tantivy search failed: {err}");
+                            tracing::warn!(error = %err, "tantivy search failed");
                             self.push_warning(format!("index search failed: {err}"));
                         }
                     }
                 }
                 Err(err) => {
-                    eprintln!("warn: failed to initialize index: {err}");
+                    tracing::warn!(error = %err, "failed to initialize index");
                     self.push_warning(format!("index initialization failed: {err}"));
                 }
             }
@@ -444,7 +456,7 @@ impl SearchEngine {
                         }
                     }
                     Err(err) => {
-                        eprintln!("warn: rga search failed: {err}");
+                        tracing::warn!(error = %err, "rga search failed");
                         self.push_warning(format!("rga search failed: {err}"));
                     }
                 }
@@ -488,7 +500,7 @@ impl SearchEngine {
         self.reward_total += verification.metrics.reward;
 
         if let Err(err) = self.state.save() {
-            eprintln!("warn: failed to persist cache state: {err}");
+            tracing::warn!(error = %err, "failed to persist cache state");
         }
 
         crate::telemetry::record_stage_latency("discover", stage_stats.discover_ms);
@@ -548,7 +560,7 @@ impl SearchEngine {
             Ok(matches) => matches,
             Err(err) => {
                 self.push_warning(format!("fast-path ripgrep failed: {err}"));
-                eprintln!("warn: fast-path ripgrep failed: {err}");
+                tracing::warn!(error = %err, "fast-path ripgrep failed");
                 return Ok(None);
             }
         };
@@ -599,7 +611,7 @@ impl SearchEngine {
         self.reward_total += verification.metrics.reward;
 
         if let Err(err) = self.state.save() {
-            eprintln!("warn: failed to persist cache state: {err}");
+            tracing::warn!(error = %err, "failed to persist cache state");
         }
 
         crate::telemetry::record_stage_latency("probe", stage_stats.probe_ms);
@@ -736,7 +748,7 @@ impl SearchEngine {
                 Ok(results) => results,
                 Err(err) => {
                     self.push_warning(format!("fd invocation failed: {err}"));
-                    eprintln!("warn: fd invocation failed: {err}");
+                    tracing::warn!(error = %err, "fd invocation failed");
                     Vec::new()
                 }
             }
@@ -791,9 +803,10 @@ impl SearchEngine {
                     }
                 }
                 Err(err) => {
-                    eprintln!(
-                        "warn: failed to read cached directory {}: {err}",
-                        dir_path.display()
+                    tracing::warn!(
+                        path = %dir_path.display(),
+                        error = %err,
+                        "failed to read cached directory"
                     );
                 }
             }
@@ -879,7 +892,7 @@ impl SearchEngine {
             }
             Err(err) => {
                 self.push_warning(format!("ripgrep invocation failed: {err}"));
-                eprintln!("warn: ripgrep invocation failed: {err}");
+                tracing::warn!(error = %err, "ripgrep invocation failed");
                 (Vec::new(), 0)
             }
         }
@@ -918,7 +931,7 @@ impl SearchEngine {
                         pattern_err.message()
                     ));
                 } else {
-                    eprintln!("warn: ast-grep invocation failed: {err}");
+                    tracing::warn!(error = %err, "ast-grep invocation failed");
                     self.push_warning(format!("ast-grep invocation failed: {err}"));
                 }
                 Vec::new()
@@ -1196,11 +1209,24 @@ impl PersistentState {
         let file_path = cache_dir.join("state.json");
         let data = if file_path.exists() {
             match fs::read_to_string(&file_path) {
-                Ok(contents) => serde_json::from_str(&contents).unwrap_or_default(),
+                Ok(contents) => {
+                    match serde_json::from_str(&contents) {
+                        Ok(parsed) => parsed,
+                        Err(err) => {
+                            tracing::warn!(
+                                path = %file_path.display(),
+                                error = %err,
+                                "failed to parse persistent state JSON; resetting to default"
+                            );
+                            PersistentStateData::default()
+                        }
+                    }
+                }
                 Err(err) => {
-                    eprintln!(
-                        "warn: failed to read persistent state {}; {err}",
-                        file_path.display()
+                    tracing::warn!(
+                        path = %file_path.display(),
+                        error = %err,
+                        "failed to read persistent state file"
                     );
                     PersistentStateData::default()
                 }
@@ -1253,6 +1279,11 @@ impl PersistentState {
             .collect()
     }
 
+    /// Maximum number of distinct symbols to cache
+    const MAX_SYMBOLS: usize = 500;
+    /// Maximum number of directories to track
+    const MAX_DIRECTORIES: usize = 200;
+
     fn observe(&mut self, symbol: &str, hits: &[SearchHit]) {
         if hits.is_empty() {
             return;
@@ -1285,7 +1316,56 @@ impl PersistentState {
             }
         }
 
+        // Evict entries if cache exceeds limits
+        self.evict_if_needed();
+
         self.dirty = true;
+    }
+
+    /// Evict oldest/least-used entries when cache exceeds size limits.
+    fn evict_if_needed(&mut self) {
+        // Evict symbols if over limit (keep most recently added)
+        if self.data.symbol_hits.len() > Self::MAX_SYMBOLS {
+            let excess = self.data.symbol_hits.len() - Self::MAX_SYMBOLS;
+            let keys_to_remove: Vec<String> = self
+                .data
+                .symbol_hits
+                .keys()
+                .take(excess)
+                .cloned()
+                .collect();
+            for key in keys_to_remove {
+                self.data.symbol_hits.remove(&key);
+            }
+            tracing::debug!(
+                evicted = excess,
+                remaining = self.data.symbol_hits.len(),
+                "evicted symbol cache entries"
+            );
+        }
+
+        // Evict directories with lowest scores
+        if self.data.directory_scores.len() > Self::MAX_DIRECTORIES {
+            let mut dirs: Vec<_> = self
+                .data
+                .directory_scores
+                .iter()
+                .map(|(k, v)| (k.clone(), *v))
+                .collect();
+            dirs.sort_by(|a, b| b.1.cmp(&a.1)); // Sort by score descending
+            let to_keep: std::collections::HashSet<String> = dirs
+                .into_iter()
+                .take(Self::MAX_DIRECTORIES)
+                .map(|(k, _)| k)
+                .collect();
+            let before = self.data.directory_scores.len();
+            self.data.directory_scores.retain(|k, _| to_keep.contains(k));
+            tracing::debug!(
+                evicted = before - self.data.directory_scores.len(),
+                remaining = self.data.directory_scores.len(),
+                "evicted directory cache entries"
+            );
+        }
     }
 
     fn save(&mut self) -> Result<()> {
@@ -1303,7 +1383,9 @@ impl PersistentState {
         let mut writer = BufWriter::new(file);
         serde_json::to_writer_pretty(&mut writer, &self.data)
             .context("failed to serialize persistent state")?;
-        writer.flush().ok();
+        writer
+            .flush()
+            .with_context(|| format!("failed to flush {}", tmp_path.display()))?;
         fs::rename(&tmp_path, &self.file_path).with_context(|| {
             format!(
                 "failed to move persistent state into place {}",

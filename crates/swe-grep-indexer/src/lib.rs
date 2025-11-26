@@ -144,7 +144,7 @@ async fn build_index(index: Index, root: &Path, extensions: Option<Vec<String>>)
             let entry = match result {
                 Ok(entry) => entry,
                 Err(err) => {
-                    eprintln!("warn: failed to read entry during indexing: {err}");
+                    tracing::warn!(error = %err, "failed to read entry during indexing");
                     continue;
                 }
             };
@@ -175,7 +175,7 @@ async fn build_index(index: Index, root: &Path, extensions: Option<Vec<String>>)
             doc.add_text(path_field, path.display().to_string());
             doc.add_text(body_field, content);
             if let Err(err) = writer.add_document(doc) {
-                eprintln!("warn: failed to add document to index: {err}");
+                tracing::warn!(error = %err, "failed to add document to index");
             }
         }
 
