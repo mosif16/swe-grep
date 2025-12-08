@@ -1,7 +1,7 @@
 use std::net::SocketAddr;
 use std::path::PathBuf;
 
-use clap::{ArgAction, Parser, Subcommand};
+use clap::{ArgAction, Parser, Subcommand, ValueEnum};
 
 /// Top-level CLI definition for swe-grep.
 #[derive(Parser, Debug)]
@@ -19,11 +19,73 @@ pub struct Cli {
 #[derive(Subcommand, Debug)]
 pub enum Commands {
     /// Search the repository for occurrences of a symbol.
-    Search(SearchArgs),
+    Search(SearchCommand),
     /// Run benchmark scenarios and collect performance metrics.
     Bench(BenchArgs),
     /// Serve the SWE-Grep API over HTTP and gRPC.
     Serve(ServeArgs),
+}
+
+/// Extended CLI surface for search, including agent-focused flags.
+#[derive(clap::Args, Debug)]
+pub struct SearchCommand {
+    #[command(flatten)]
+    pub search: SearchArgs,
+
+    /// Enable agent mode (schema v1) with concise, structured output and sensible defaults.
+    #[arg(long, default_value_t = false, action = ArgAction::SetTrue)]
+    pub agent: bool,
+
+    /// Output format when agent mode is enabled (json or table).
+    #[arg(long, default_value = "json", value_enum)]
+    pub format: OutputFormat,
+
+    /// Minimize agent output (omit context, origin, scores, and bodies).
+    #[arg(long, default_value_t = false, action = ArgAction::SetTrue)]
+    pub concise: bool,
+
+    /// Pretty-print agent JSON output (ignored for streaming).
+    #[arg(long, default_value_t = false, action = ArgAction::SetTrue)]
+    pub json_pretty: bool,
+
+    /// Comma-separated list of symbols to search (batch mode).
+    #[arg(long)]
+    pub symbols: Option<String>,
+
+    /// Read symbols from a file (one per line) for batch mode.
+    #[arg(long)]
+    pub symbols_file: Option<PathBuf>,
+
+    /// Read symbols from stdin (one per line) for batch mode.
+    #[arg(long, default_value_t = false, action = ArgAction::SetTrue)]
+    pub stdin_symbols: bool,
+
+    /// Stream NDJSON results per symbol (batch-friendly).
+    #[arg(long, default_value_t = false, action = ArgAction::SetTrue)]
+    pub stream: bool,
+
+    /// Emit per-symbol progress updates on stderr.
+    #[arg(long, default_value_t = false, action = ArgAction::SetTrue)]
+    pub progress: bool,
+
+    /// Silence logs on stderr (errors still surface).
+    #[arg(long, default_value_t = false, action = ArgAction::SetTrue)]
+    pub quiet: bool,
+
+    /// Trim fetched bodies to at most N lines (agent mode only).
+    #[arg(long)]
+    pub trim_body: Option<usize>,
+
+    /// Attempt to extract a nearby definition/signature for each hit.
+    #[arg(long, default_value_t = false, action = ArgAction::SetTrue)]
+    pub definitions: bool,
+}
+
+/// Output format for agent mode.
+#[derive(Copy, Clone, Debug, ValueEnum)]
+pub enum OutputFormat {
+    Json,
+    Table,
 }
 
 /// Shared tool toggles for search execution.
@@ -47,10 +109,10 @@ pub struct ToolArgs {
 }
 
 /// Arguments for the `search` subcommand.
-#[derive(clap::Args, Debug)]
+#[derive(clap::Args, Debug, Clone)]
 pub struct SearchArgs {
     /// Symbol or identifier to search for.
-    #[arg(long)]
+    #[arg(long, default_value_t = String::new())]
     pub symbol: String,
 
     /// Root directory of the repository; defaults to the current working directory.

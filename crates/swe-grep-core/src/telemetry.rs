@@ -8,11 +8,12 @@ use opentelemetry_prometheus::PrometheusExporter;
 use opentelemetry_sdk::Resource;
 use opentelemetry_sdk::metrics::SdkMeterProvider;
 use prometheus::{Encoder, Registry, TextEncoder};
-use tracing_subscriber::{EnvFilter, fmt};
+use tracing_subscriber::{EnvFilter, fmt, registry::Registry as TraceRegistry};
 
 static LOGGING: OnceLock<()> = OnceLock::new();
 static TELEMETRY: OnceLock<TelemetryState> = OnceLock::new();
 static METRICS: OnceLock<MetricsHandles> = OnceLock::new();
+static SILENCED: OnceLock<()> = OnceLock::new();
 
 struct TelemetryState {
     _provider: SdkMeterProvider,
@@ -41,10 +42,18 @@ fn configure_logging() {
         let subscriber = fmt::Subscriber::builder()
             .with_env_filter(filter)
             .json()
+            .with_writer(std::io::stderr)
             .with_current_span(false)
             .with_span_list(false)
             .finish();
         let _ = tracing::subscriber::set_global_default(subscriber);
+    });
+}
+
+/// Install a no-op tracing subscriber to keep stderr quiet for agent/quiet mode.
+pub fn silence_tracing() {
+    SILENCED.get_or_init(|| {
+        let _ = tracing::subscriber::set_global_default(TraceRegistry::default());
     });
 }
 

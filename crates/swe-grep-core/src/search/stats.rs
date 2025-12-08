@@ -5,10 +5,10 @@ use std::time::Instant as StdInstant;
 use serde::Serialize;
 use tokio::time::Instant;
 
+use crate::language::detect_language_from_path;
 use crate::search::formatting::ContextHint;
 use crate::search::hits::SearchHit;
 use crate::tools::ast_grep::AstGrepMatch;
-use crate::language::detect_language_from_path;
 
 #[derive(Default)]
 pub(crate) struct SearchMetrics {
@@ -258,10 +258,12 @@ impl StageStats {
 #[derive(Serialize)]
 pub struct SearchSummary {
     pub cycle: u32,
+    pub root: PathBuf,
     pub symbol: String,
     pub queries: Vec<String>,
     pub top_hits: Vec<TopHit>,
     pub deduped: usize,
+    pub max_matches: usize,
     pub next_actions: Vec<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub fd_candidates: Vec<PathBuf>,
@@ -273,6 +275,8 @@ pub struct SearchSummary {
     pub reward: f32,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub warnings: Vec<String>,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub truncated: bool,
 }
 
 #[derive(Clone, Serialize)]

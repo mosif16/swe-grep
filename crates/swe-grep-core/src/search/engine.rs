@@ -256,10 +256,12 @@ impl SearchEngine {
 
         let summary = SearchSummary {
             cycle: 1,
+            root: self.config.root.clone(),
             symbol: self.config.symbol.clone(),
             queries: rewrites,
             top_hits: verification.top_hits,
             deduped: verification.dedup_count,
+            max_matches: self.config.max_matches,
             next_actions: verification.next_actions,
             fd_candidates: verification.fd_candidates,
             ast_hits: verification.ast_hits,
@@ -267,6 +269,7 @@ impl SearchEngine {
             stage_stats,
             reward: round_two(self.reward_total),
             warnings: self.warnings.clone(),
+            truncated: verification.dedup_count >= self.config.max_matches,
         };
 
         crate::telemetry::record_reward(verification.metrics.reward);
@@ -362,10 +365,12 @@ impl SearchEngine {
 
         let summary = SearchSummary {
             cycle: 1,
+            root: self.config.root.clone(),
             symbol: self.config.symbol.clone(),
             queries: rewrites.to_vec(),
             top_hits: verification.top_hits,
             deduped: verification.dedup_count,
+            max_matches: self.config.max_matches,
             next_actions: verification.next_actions,
             fd_candidates: Vec::new(),
             ast_hits: Vec::new(),
@@ -373,6 +378,7 @@ impl SearchEngine {
             stage_stats,
             reward: round_two(self.reward_total),
             warnings: self.warnings.clone(),
+            truncated: verification.dedup_count >= self.config.max_matches,
         };
 
         crate::telemetry::record_reward(verification.metrics.reward);
@@ -904,6 +910,8 @@ impl SearchEngine {
             b.score
                 .partial_cmp(&a.score)
                 .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| a.path.cmp(&b.path))
+                .then_with(|| a.line.cmp(&b.line))
         });
 
         self.dedup_cache.retain_new(&mut dedup_hits);

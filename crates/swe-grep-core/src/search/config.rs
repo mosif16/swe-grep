@@ -4,7 +4,9 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 
 use crate::cli::SearchArgs;
-pub(crate) use crate::language::{expand_language_hint, extensions_for_languages, languages_include};
+pub(crate) use crate::language::{
+    expand_language_hint, extensions_for_languages, languages_include,
+};
 
 pub(crate) const DEFAULT_MAX_COLUMNS: usize = 200;
 pub(crate) const DEFAULT_MAX_BODY_BYTES: usize = 512 * 1024;
@@ -38,11 +40,15 @@ pub(crate) struct SearchConfig {
 
 impl SearchConfig {
     pub(crate) fn try_from_args(args: SearchArgs) -> Result<Self> {
-        if args.symbol.len() > MAX_SYMBOL_LENGTH {
+        let symbol = args.symbol.trim();
+        if symbol.is_empty() {
+            anyhow::bail!("symbol is required");
+        }
+        if symbol.len() > MAX_SYMBOL_LENGTH {
             anyhow::bail!(
                 "symbol exceeds maximum length of {} characters (got {})",
                 MAX_SYMBOL_LENGTH,
-                args.symbol.len()
+                symbol.len()
             );
         }
 
@@ -88,7 +94,7 @@ impl SearchConfig {
 
         Ok(Self {
             root,
-            symbol: args.symbol,
+            symbol: symbol.to_string(),
             language,
             language_tokens,
             timeout,

@@ -18,6 +18,13 @@ cargo run -p swe-grep -- search --symbol foo --timeout-secs 2
 - Persistent hints are stored under `.swe-grep-cache/` (already ignored by git).
 - Language-aware rewrites can now be pre-seeded from the CLI: pass `--language swift`, `--language tsx`, or multi-language presets such as `--language auto-swift-ts` to hydrate Swift/TypeScript heuristics simultaneously (snippets, AST-grep, cache hints).
 
+## Agent Mode
+
+- `swe-grep search --agent --symbols Foo,Bar --path . --format json` — batch search with jq-ready output and schema versioning.
+- `swe-grep search --agent --symbols Foo,Bar --stream` — NDJSON per symbol (final line has `done=true`), exit code `2` on runtime errors, `1` on usage errors.
+- Defaults: telemetry off, bodies fetched (first 50 lines by default), deterministic ordering; add `--definitions` for best-effort signatures, `--concise` to drop context/origin/score/body, and `--json-pretty`/`--progress`/`--trim-body N` to tune output.
+- See `docs/agent-mode.md` for the schema, exit codes, batch inputs (`--symbols/--symbols-file/--stdin-symbols`), and `--format json|table`.
+
 ## Optional Tantivy Indexing
 
 To enable the Tantivy indexer:

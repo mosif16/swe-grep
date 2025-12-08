@@ -1,3 +1,4 @@
+pub mod agent;
 pub mod bench;
 pub mod cli;
 pub mod file_cache;
