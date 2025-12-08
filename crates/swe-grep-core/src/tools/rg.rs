@@ -7,16 +7,14 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
 use grep_matcher::LineTerminator;
 use grep_regex::{RegexMatcher, RegexMatcherBuilder};
-use grep_searcher::{
-    BinaryDetection, Searcher, SearcherBuilder, Sink, SinkContext, SinkMatch,
-};
+use grep_searcher::{BinaryDetection, Searcher, SearcherBuilder, Sink, SinkContext, SinkMatch};
 use ignore::WalkBuilder;
 use lru::LruCache;
-use rayon::prelude::*;
 use rayon::ThreadPoolBuilder;
+use rayon::prelude::*;
 use serde_json::json;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
@@ -155,10 +153,7 @@ impl RipgrepTool {
         let matcher = builder
             .build_many(&normalized)
             .context("failed to compile ripgrep patterns")?;
-        self.matcher_cache
-            .lock()
-            .unwrap()
-            .put(key, matcher.clone());
+        self.matcher_cache.lock().unwrap().put(key, matcher.clone());
         Ok(matcher)
     }
 
@@ -177,12 +172,8 @@ impl RipgrepTool {
             }
         }
 
-        let mut builder = WalkBuilder::new(
-            roots
-                .get(0)
-                .cloned()
-                .unwrap_or_else(|| root.to_path_buf()),
-        );
+        let mut builder =
+            WalkBuilder::new(roots.get(0).cloned().unwrap_or_else(|| root.to_path_buf()));
         for extra in roots.iter().skip(1) {
             builder.add(extra);
         }

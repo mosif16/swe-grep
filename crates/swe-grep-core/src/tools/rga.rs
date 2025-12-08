@@ -99,7 +99,11 @@ impl RgaTool {
                 if stderr_output.is_empty() {
                     anyhow::bail!("rga exited with status {}", status);
                 } else {
-                    anyhow::bail!("rga exited with status {}: {}", status, stderr_output.trim());
+                    anyhow::bail!(
+                        "rga exited with status {}: {}",
+                        status,
+                        stderr_output.trim()
+                    );
                 }
             }
             Result::<Vec<RgaMatch>>::Ok(matches)

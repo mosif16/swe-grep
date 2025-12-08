@@ -7,7 +7,7 @@ use serde::Serialize;
 use tokio::fs;
 use tokio::time::Instant;
 
-use crate::cli::{BenchArgs, SearchArgs};
+use crate::cli::{BenchArgs, SearchArgs, ToolArgs};
 use crate::search;
 
 pub async fn run(args: BenchArgs) -> Result<()> {
@@ -180,16 +180,18 @@ fn build_search_args(repo_root: &Path, scenario: &Scenario, bench: &BenchArgs) -
         timeout_secs: scenario.timeout_secs.unwrap_or(3),
         max_matches: scenario.max_matches.unwrap_or(20),
         concurrency: scenario.concurrency.unwrap_or(8),
+        tools: ToolArgs {
+            enable_index,
+            enable_rga,
+            use_fd: true,
+            use_ast_grep: true,
+        },
         context_before: 0,
         context_after: 0,
         body: false,
-        enable_index,
         index_dir: Some(index_dir),
-        enable_rga,
         cache_dir,
         log_dir,
-        use_fd: true,
-        use_ast_grep: true,
     }
 }
 

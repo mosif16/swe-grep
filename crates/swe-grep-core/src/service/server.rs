@@ -6,7 +6,7 @@ use std::sync::Arc;
 use anyhow::{Context, Result, bail};
 use tokio::try_join;
 
-use crate::cli::{SearchArgs, ServeArgs};
+use crate::cli::{SearchArgs, ServeArgs, ToolArgs};
 use crate::search::{self, SearchSummary};
 
 use super::{grpc, http};
@@ -42,7 +42,7 @@ impl ServeConfig {
             )
         })?;
 
-        let mut use_index = args.enable_index;
+        let mut use_index = args.tools.enable_index;
         if use_index && !cfg!(feature = "indexing") {
             tracing::warn!("indexing support not compiled; ignoring --enable-index");
             use_index = false;
@@ -56,9 +56,9 @@ impl ServeConfig {
             max_matches: usize::max(1, args.max_matches),
             concurrency: usize::max(1, args.concurrency),
             use_index,
-            use_rga: args.enable_rga,
-            use_fd: args.use_fd,
-            use_ast_grep: args.use_ast_grep,
+            use_rga: args.tools.enable_rga,
+            use_fd: args.tools.use_fd,
+            use_ast_grep: args.tools.use_ast_grep,
             index_dir: normalize_relative(&root, args.index_dir),
             cache_dir: normalize_relative(&root, args.cache_dir),
             log_dir: normalize_relative(&root, args.log_dir),
@@ -173,21 +173,21 @@ impl SearchExecutor {
             timeout_secs,
             max_matches,
             concurrency,
+            tools: ToolArgs {
+                enable_index,
+                enable_rga,
+                use_fd: self.config.use_fd,
+                use_ast_grep: self.config.use_ast_grep,
+            },
             context_before,
             context_after,
             body,
-            enable_index,
             index_dir,
-            enable_rga,
             cache_dir,
             log_dir,
-            use_fd: self.config.use_fd,
-            use_ast_grep: self.config.use_ast_grep,
         };
 
-        if !tool_flags.is_empty() {
-            args = apply_tool_flags(args, tool_flags);
-        }
+        tool_flags.apply_to(&mut args);
 
         search::execute(args).await
     }
@@ -210,7 +210,7 @@ pub struct SearchInput {
     pub context_before: Option<usize>,
     pub context_after: Option<usize>,
     pub body: Option<bool>,
-    pub tool_flags: HashMap<String, bool>,
+    pub tool_flags: ToolFlagOverrides,
 }
 
 fn normalize_relative(base: &Path, value: Option<PathBuf>) -> Option<PathBuf> {
@@ -223,27 +223,81 @@ fn normalize_relative(base: &Path, value: Option<PathBuf>) -> Option<PathBuf> {
     })
 }
 
-fn apply_tool_flags(mut args: SearchArgs, flags: HashMap<String, bool>) -> SearchArgs {
-    for (key, value) in flags {
-        let normalized = key.to_ascii_lowercase();
+#[derive(Clone, Default)]
+pub struct ToolFlagOverrides {
+    fd: Option<bool>,
+    ast_grep: Option<bool>,
+    index: Option<bool>,
+    rga: Option<bool>,
+    body: Option<bool>,
+}
+
+impl ToolFlagOverrides {
+    pub fn from_map(flags: HashMap<String, bool>) -> Self {
+        let mut overrides = Self::default();
+        for (key, value) in flags {
+            overrides.apply_flag(&key, value);
+        }
+        overrides
+    }
+
+    pub fn set_fd(&mut self, value: Option<bool>) {
+        if let Some(v) = value {
+            self.fd = Some(v);
+        }
+    }
+
+    pub fn set_ast_grep(&mut self, value: Option<bool>) {
+        if let Some(v) = value {
+            self.ast_grep = Some(v);
+        }
+    }
+
+    pub fn set_index(&mut self, value: Option<bool>) {
+        if let Some(v) = value {
+            self.index = Some(v);
+        }
+    }
+
+    pub fn set_rga(&mut self, value: Option<bool>) {
+        if let Some(v) = value {
+            self.rga = Some(v);
+        }
+    }
+
+    pub fn set_body(&mut self, value: Option<bool>) {
+        if let Some(v) = value {
+            self.body = Some(v);
+        }
+    }
+
+    pub fn apply_to(&self, args: &mut SearchArgs) {
+        if let Some(value) = self.fd {
+            args.tools.use_fd = value;
+        }
+        if let Some(value) = self.ast_grep {
+            args.tools.use_ast_grep = value;
+        }
+        if let Some(value) = self.index {
+            args.tools.enable_index = value;
+        }
+        if let Some(value) = self.rga {
+            args.tools.enable_rga = value;
+        }
+        if let Some(value) = self.body {
+            args.body = value;
+        }
+    }
+
+    fn apply_flag(&mut self, key: &str, value: bool) {
+        let normalized = key.to_ascii_lowercase().replace('_', "-");
         match normalized.as_str() {
-            "fd" | "use_fd" | "disable_fd" => {
-                args.use_fd = value;
-            }
-            "ast-grep" | "ast_grep" | "use_ast_grep" => {
-                args.use_ast_grep = value;
-            }
-            "index" | "use_index" | "enable_index" => {
-                args.enable_index = value;
-            }
-            "rga" | "use_rga" | "enable_rga" => {
-                args.enable_rga = value;
-            }
-            "body" | "fetch_body" | "include_body" => {
-                args.body = value;
-            }
+            "fd" | "use-fd" | "disable-fd" => self.fd = Some(value),
+            "ast-grep" | "use-ast-grep" => self.ast_grep = Some(value),
+            "index" | "use-index" | "enable-index" => self.index = Some(value),
+            "rga" | "use-rga" | "enable-rga" => self.rga = Some(value),
+            "body" | "fetch-body" | "include-body" => self.body = Some(value),
             _ => {}
         }
     }
-    args
 }

@@ -9,6 +9,8 @@ use tokio::process::Command;
 use tokio::time::timeout;
 use tracing::{debug, warn};
 
+use crate::language;
+
 #[derive(Clone, Debug)]
 pub struct AstGrepTool {
     timeout: Duration,
@@ -40,7 +42,7 @@ impl AstGrepTool {
         let mut seen: HashSet<(PathBuf, usize)> = HashSet::new();
 
         for lang in hints {
-            let patterns = patterns_for_language(symbol, &lang);
+            let patterns = language::ast_patterns_for(&lang, symbol);
             for pattern in patterns {
                 if aggregated.len() >= self.max_matches {
                     break;
@@ -241,90 +243,3 @@ impl fmt::Display for AstPatternError {
 }
 
 impl std::error::Error for AstPatternError {}
-
-fn patterns_for_language(symbol: &str, language: &str) -> Vec<String> {
-    let needle = symbol.trim();
-    if needle.is_empty() {
-        return vec![String::from("(identifier) @id")];
-    }
-
-    match language.to_ascii_lowercase().as_str() {
-        "swift" => vec![
-            format!("(function_declaration name: (identifier) @id (#eq? @id \"{needle}\"))"),
-            format!("(protocol_declaration name: (identifier) @id (#eq? @id \"{needle}\"))"),
-            format!(
-                "(protocol_member_declaration (function_declaration name: (identifier) @id) (#eq? @id \"{needle}\"))"
-            ),
-            format!("(initializer_declaration name: (identifier) @id (#eq? @id \"{needle}\"))"),
-            format!(
-                "(class_declaration body: (member_declaration_list (member_declaration (function_declaration name: (identifier) @id (#eq? @id \"{needle}\")))))"
-            ),
-            format!(
-                "(struct_declaration body: (member_declaration_list (member_declaration (function_declaration name: (identifier) @id (#eq? @id \"{needle}\")))))"
-            ),
-            format!(
-                "(extension_declaration body: (member_declaration_list (member_declaration (function_declaration name: (identifier) @id (#eq? @id \"{needle}\")))))"
-            ),
-            format!(
-                "(actor_declaration body: (member_declaration_list (member_declaration (function_declaration name: (identifier) @id (#eq? @id \"{needle}\")))))"
-            ),
-            format!("(member_access_expression name: (identifier) @id (#eq? @id \"{needle}\"))"),
-            format!(
-                "(function_call_expression function: (identifier) @id (#eq? @id \"{needle}\"))"
-            ),
-            format!(
-                "(await_expression (function_call_expression function: (identifier) @id (#eq? @id \"{needle}\")))"
-            ),
-            format!("(attribute attribute_name: (identifier) @id (#eq? @id \"{needle}\"))"),
-            format!(
-                "(extension_declaration protocol_conformance: (identifier) @id (#eq? @id \"{needle}\"))"
-            ),
-            format!("(generic_argument_clause (identifier) @id (#eq? @id \"{needle}\"))"),
-        ],
-        "typescript" | "ts" | "tsx" => vec![
-            format!("(identifier) @id (#eq? @id \"{needle}\")"),
-            format!("(call_expression function: (identifier) @id (#eq? @id \"{needle}\"))"),
-            format!(
-                "(call_expression function: (member_expression property: (property_identifier) @id (#eq? @id \"{needle}\")))"
-            ),
-            format!("(class_declaration name: (identifier) @id (#eq? @id \"{needle}\"))"),
-            format!("(interface_declaration name: (identifier) @id (#eq? @id \"{needle}\"))"),
-            format!("(interface_declaration name: (type_identifier) @id (#eq? @id \"{needle}\"))"),
-            format!("(type_alias_declaration name: (identifier) @id (#eq? @id \"{needle}\"))"),
-            format!("(type_alias_declaration name: (type_identifier) @id (#eq? @id \"{needle}\"))"),
-            format!("(method_definition name: (property_identifier) @id (#eq? @id \"{needle}\"))"),
-            format!(
-                "(lexical_declaration (variable_declarator name: (identifier) @id (#eq? @id \"{needle}\"))))"
-            ),
-            format!("(jsx_opening_element name: (identifier) @id (#eq? @id \"{needle}\"))"),
-            format!(
-                "(lexical_declaration (variable_declarator name: (identifier) @id (#eq? @id \"{needle}\") value: (arrow_function)))"
-            ),
-            format!("(export_statement value: (identifier) @id (#eq? @id \"{needle}\"))"),
-            format!(
-                "(export_statement (export_clause (export_specifier name: (identifier) @id (#eq? @id \"{needle}\"))))"
-            ),
-            format!("(jsx_attribute name: (property_identifier) @id (#eq? @id \"{needle}\"))"),
-            format!(
-                "(binary_expression left: (identifier) @id (#eq? @id \"{needle}\") operator: \"satisfies\")"
-            ),
-        ],
-        "rust" => vec![
-            format!("(function_item name: (identifier) @id (#eq? @id \"{needle}\"))"),
-            format!(
-                "(impl_item type: (type_path (path_segment name: (identifier) @id (#eq? @id \"{needle}\"))))"
-            ),
-            format!("(trait_item name: (identifier) @id (#eq? @id \"{needle}\"))"),
-            format!("(struct_item name: (identifier) @id (#eq? @id \"{needle}\"))"),
-            format!("(enum_item name: (identifier) @id (#eq? @id \"{needle}\"))"),
-            format!("(macro_invocation macro: (identifier) @id (#eq? @id \"{needle}\"))"),
-            format!(
-                "(impl_item trait: (trait_ref path: (scoped_identifier path: (identifier) @id (#eq? @id \"{needle}\"))))"
-            ),
-            format!(
-                "(impl_item trait: (trait_ref path: (type_identifier) @id (#eq? @id \"{needle}\")))"
-            ),
-        ],
-        _ => vec![format!("(identifier) @id (#eq? @id \"{needle}\")")],
-    }
-}

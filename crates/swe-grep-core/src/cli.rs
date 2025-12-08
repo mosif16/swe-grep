@@ -26,6 +26,26 @@ pub enum Commands {
     Serve(ServeArgs),
 }
 
+/// Shared tool toggles for search execution.
+#[derive(clap::Args, Debug, Clone)]
+pub struct ToolArgs {
+    /// Enable Tantivy-backed micro-indexing for the current repository.
+    #[arg(long, default_value_t = false)]
+    pub enable_index: bool,
+
+    /// Enable the ripgrep-all fallback for documentation and config files.
+    #[arg(long, default_value_t = false)]
+    pub enable_rga: bool,
+
+    /// Disable fd-based discovery for this search.
+    #[arg(long = "disable-fd", action = ArgAction::SetFalse, default_value_t = true)]
+    pub use_fd: bool,
+
+    /// Disable AST-Grep disambiguation for this search.
+    #[arg(long = "disable-ast-grep", action = ArgAction::SetFalse, default_value_t = true)]
+    pub use_ast_grep: bool,
+}
+
 /// Arguments for the `search` subcommand.
 #[derive(clap::Args, Debug)]
 pub struct SearchArgs {
@@ -53,6 +73,9 @@ pub struct SearchArgs {
     #[arg(long, default_value_t = 8)]
     pub concurrency: usize,
 
+    #[command(flatten)]
+    pub tools: ToolArgs,
+
     /// Number of neighbouring lines to include before each match when expanding snippets.
     #[arg(long = "context-before", default_value_t = 0)]
     pub context_before: usize,
@@ -65,17 +88,9 @@ pub struct SearchArgs {
     #[arg(long = "body", action = ArgAction::SetTrue, default_value_t = false)]
     pub body: bool,
 
-    /// Enable Tantivy-backed micro-indexing for the current repository.
-    #[arg(long, default_value_t = false)]
-    pub enable_index: bool,
-
     /// Override the default path for the Tantivy index directory.
     #[arg(long)]
     pub index_dir: Option<PathBuf>,
-
-    /// Enable the ripgrep-all fallback for documentation and config files.
-    #[arg(long, default_value_t = false)]
-    pub enable_rga: bool,
 
     /// Directory used to persist symbol hints and directory cache data.
     #[arg(long)]
@@ -84,14 +99,6 @@ pub struct SearchArgs {
     /// Directory to append structured search logs (JSON Lines).
     #[arg(long)]
     pub log_dir: Option<PathBuf>,
-
-    /// Disable fd-based discovery for this search.
-    #[arg(long = "disable-fd", action = ArgAction::SetFalse, default_value_t = true)]
-    pub use_fd: bool,
-
-    /// Disable AST-Grep disambiguation for this search.
-    #[arg(long = "disable-ast-grep", action = ArgAction::SetFalse, default_value_t = true)]
-    pub use_ast_grep: bool,
 }
 
 /// Arguments for the `bench` subcommand.
@@ -153,13 +160,8 @@ pub struct ServeArgs {
     #[arg(long, default_value_t = 8)]
     pub concurrency: usize,
 
-    /// Enable Tantivy-backed micro-indexing by default.
-    #[arg(long, default_value_t = false)]
-    pub enable_index: bool,
-
-    /// Enable the ripgrep-all fallback by default.
-    #[arg(long, default_value_t = false)]
-    pub enable_rga: bool,
+    #[command(flatten)]
+    pub tools: ToolArgs,
 
     /// Override the default path for the Tantivy index directory.
     #[arg(long)]
@@ -172,12 +174,4 @@ pub struct ServeArgs {
     /// Directory to append structured search logs (JSON Lines).
     #[arg(long)]
     pub log_dir: Option<PathBuf>,
-
-    /// Disable fd-based discovery by default.
-    #[arg(long = "disable-fd", action = ArgAction::SetFalse, default_value_t = true)]
-    pub use_fd: bool,
-
-    /// Disable AST-Grep disambiguation by default.
-    #[arg(long = "disable-ast-grep", action = ArgAction::SetFalse, default_value_t = true)]
-    pub use_ast_grep: bool,
 }

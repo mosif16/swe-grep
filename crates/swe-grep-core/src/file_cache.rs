@@ -1,5 +1,5 @@
-use memmap2::Mmap;
 use lru::LruCache;
+use memmap2::Mmap;
 use std::fs::File;
 use std::io;
 use std::num::NonZeroUsize;

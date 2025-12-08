@@ -111,8 +111,12 @@ fn configure_metrics() -> Result<&'static TelemetryState> {
 
     // Try to set the telemetry state; if another thread beat us, use theirs
     match TELEMETRY.set(state) {
-        Ok(()) => TELEMETRY.get().ok_or_else(|| anyhow!("telemetry initialization failed")),
-        Err(_) => TELEMETRY.get().ok_or_else(|| anyhow!("telemetry initialization failed")),
+        Ok(()) => TELEMETRY
+            .get()
+            .ok_or_else(|| anyhow!("telemetry initialization failed")),
+        Err(_) => TELEMETRY
+            .get()
+            .ok_or_else(|| anyhow!("telemetry initialization failed")),
     }
 }
 

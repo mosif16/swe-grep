@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use swe_grep::cli::SearchArgs;
+use swe_grep::cli::{SearchArgs, ToolArgs};
 use swe_grep::search;
 use tempfile::tempdir;
 
@@ -24,13 +24,15 @@ async fn finds_rust_symbol() {
         context_before: 0,
         context_after: 0,
         body: false,
-        enable_index: false,
+        tools: ToolArgs {
+            enable_index: false,
+            enable_rga: false,
+            use_fd: true,
+            use_ast_grep: true,
+        },
         index_dir: None,
-        enable_rga: false,
         cache_dir: None,
         log_dir: None,
-        use_fd: true,
-        use_ast_grep: true,
     };
 
     let summary = search::execute(args).await.expect("search should succeed");
@@ -59,13 +61,15 @@ async fn writes_log_when_requested() {
         context_before: 0,
         context_after: 0,
         body: false,
-        enable_index: false,
+        tools: ToolArgs {
+            enable_index: false,
+            enable_rga: false,
+            use_fd: true,
+            use_ast_grep: true,
+        },
         index_dir: None,
-        enable_rga: false,
         cache_dir: None,
         log_dir: Some(log_dir.clone()),
-        use_fd: true,
-        use_ast_grep: true,
     };
 
     let _summary = search::execute(args).await.expect("search should succeed");
@@ -93,13 +97,15 @@ async fn surfaces_expanded_snippet_metadata() {
         context_before: 1,
         context_after: 1,
         body: false,
-        enable_index: false,
+        tools: ToolArgs {
+            enable_index: false,
+            enable_rga: false,
+            use_fd: true,
+            use_ast_grep: true,
+        },
         index_dir: None,
-        enable_rga: false,
         cache_dir: None,
         log_dir: None,
-        use_fd: true,
-        use_ast_grep: true,
     };
 
     let summary = search::execute(args).await.expect("search should succeed");
@@ -191,13 +197,15 @@ async fn auto_expands_context_when_flags_omitted() {
         context_before: 0,
         context_after: 0,
         body: false,
-        enable_index: false,
+        tools: ToolArgs {
+            enable_index: false,
+            enable_rga: false,
+            use_fd: true,
+            use_ast_grep: true,
+        },
         index_dir: None,
-        enable_rga: false,
         cache_dir: None,
         log_dir: None,
-        use_fd: true,
-        use_ast_grep: true,
     };
 
     let summary = search::execute(args).await.expect("search should succeed");
@@ -250,13 +258,15 @@ async fn retrieves_body_when_requested() {
         context_before: 0,
         context_after: 0,
         body: true,
-        enable_index: false,
+        tools: ToolArgs {
+            enable_index: false,
+            enable_rga: false,
+            use_fd: true,
+            use_ast_grep: true,
+        },
         index_dir: None,
-        enable_rga: false,
         cache_dir: None,
         log_dir: None,
-        use_fd: true,
-        use_ast_grep: true,
     };
 
     let summary = search::execute(args).await.expect("search should succeed");
@@ -298,13 +308,15 @@ async fn surfaces_swift_context_hints() {
         context_before: 0,
         context_after: 0,
         body: false,
-        enable_index: false,
+        tools: ToolArgs {
+            enable_index: false,
+            enable_rga: false,
+            use_fd: true,
+            use_ast_grep: true,
+        },
         index_dir: None,
-        enable_rga: false,
         cache_dir: None,
         log_dir: None,
-        use_fd: true,
-        use_ast_grep: true,
     };
 
     let summary = search::execute(args).await.expect("search should succeed");

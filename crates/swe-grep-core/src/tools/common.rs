@@ -39,7 +39,9 @@ impl Drop for ChildGuard {
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type", rename_all = "lowercase")]
 pub enum RgMessage {
-    Match { data: RgMatchData },
+    Match {
+        data: RgMatchData,
+    },
     #[serde(other)]
     Other,
 }

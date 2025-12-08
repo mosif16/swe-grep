@@ -5,8 +5,8 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use grep_matcher::Matcher;
 use grep_regex::RegexMatcherBuilder;
-use grep_searcher::sinks::UTF8;
 use grep_searcher::SearcherBuilder;
+use grep_searcher::sinks::UTF8;
 use ignore::WalkBuilder;
 
 #[derive(Clone, Debug)]

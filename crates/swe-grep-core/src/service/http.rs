@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::search::SearchSummary;
 
-use super::server::{SearchExecutor, SearchInput};
+use super::server::{SearchExecutor, SearchInput, ToolFlagOverrides};
 
 type SharedExecutor = Arc<SearchExecutor>;
 
@@ -61,19 +61,12 @@ pub struct HttpSearchRequest {
 
 impl From<HttpSearchRequest> for SearchInput {
     fn from(req: HttpSearchRequest) -> Self {
-        let mut tool_flags = req.tool_flags;
-        if let Some(value) = req.use_fd {
-            tool_flags.insert("fd".to_string(), value);
-        }
-        if let Some(value) = req.use_ast_grep {
-            tool_flags.insert("ast-grep".to_string(), value);
-        }
-        if let Some(value) = req.use_index {
-            tool_flags.insert("index".to_string(), value);
-        }
-        if let Some(value) = req.use_rga {
-            tool_flags.insert("rga".to_string(), value);
-        }
+        let mut tool_flags = ToolFlagOverrides::from_map(req.tool_flags);
+        tool_flags.set_fd(req.use_fd);
+        tool_flags.set_ast_grep(req.use_ast_grep);
+        tool_flags.set_index(req.use_index);
+        tool_flags.set_rga(req.use_rga);
+        tool_flags.set_body(req.body);
 
         SearchInput {
             symbol: req.symbol,

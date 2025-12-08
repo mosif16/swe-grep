@@ -13,7 +13,7 @@ use super::proto::{
     self,
     swe_grep_service_server::{SweGrepService, SweGrepServiceServer},
 };
-use super::server::{SearchExecutor, SearchInput};
+use super::server::{SearchExecutor, SearchInput, ToolFlagOverrides};
 
 /// Start the gRPC server and block until shutdown.
 pub async fn serve(addr: SocketAddr, executor: Arc<SearchExecutor>) -> Result<()> {
@@ -85,7 +85,7 @@ fn map_request(proto: proto::SearchRequest) -> SearchInput {
         context_before: zeroable_usize(proto.context_before),
         context_after: zeroable_usize(proto.context_after),
         body: Some(proto.body),
-        tool_flags: proto.tool_flags,
+        tool_flags: ToolFlagOverrides::from_map(proto.tool_flags),
     }
 }
 

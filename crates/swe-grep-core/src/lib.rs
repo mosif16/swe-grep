@@ -1,6 +1,7 @@
 pub mod bench;
 pub mod cli;
 pub mod file_cache;
+pub mod language;
 pub mod search;
 pub mod service;
 pub mod telemetry;
