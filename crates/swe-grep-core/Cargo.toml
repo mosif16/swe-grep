@@ -24,6 +24,17 @@ opentelemetry = { version = "0.22", features = ["metrics"] }
 opentelemetry_sdk = { version = "0.22", features = ["metrics"] }
 opentelemetry-prometheus = "0.15"
 prometheus = "0.13"
+# Speed optimizations
+bytecount = "0.6"
+dashmap = "6.0"
+grep-matcher = "0.1"
+grep-regex = "0.1"
+grep-searcher = "0.1"
+lru = "0.12"
+memmap2 = "0.9"
+rayon = "1.10"
+simd-json = "0.13"
+ignore = "0.4"
 
 [features]
 default = []

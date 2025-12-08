@@ -13,6 +13,7 @@ use tokio::io::AsyncWriteExt;
 use tokio::time::Instant;
 
 use crate::cli::SearchArgs;
+use crate::file_cache::FileCache;
 use crate::tools::ast_grep::{AstGrepMatch, AstGrepTool, AstPatternError};
 use crate::tools::fd::FdTool;
 use crate::tools::rg::{RipgrepMatch, RipgrepTool};
@@ -149,6 +150,7 @@ struct SearchEngine {
     state: PersistentState,
     reward_total: f32,
     startup_stats: StartupStats,
+    file_cache: FileCache,
     language_cache: HashMap<PathBuf, &'static str>,
     body_cache: HashMap<PathBuf, BodyPayload>,
     warnings: Vec<String>,
@@ -212,6 +214,7 @@ impl SearchEngine {
             state,
             reward_total: 0.0,
             startup_stats,
+            file_cache: FileCache::new(128),
             language_cache: HashMap::new(),
             body_cache: HashMap::new(),
             warnings: Vec::new(),
@@ -237,12 +240,16 @@ impl SearchEngine {
                         retrieved: false,
                     }
                 } else {
-                    match fs::read_to_string(&absolute) {
-                        Ok(contents) => BodyPayload {
+                    match self
+                        .file_cache
+                        .read_file(&absolute)
+                        .map(|f| f.contents().to_string())
+                    {
+                        Some(contents) => BodyPayload {
                             body: Some(contents),
                             retrieved: true,
                         },
-                        Err(_) => BodyPayload {
+                        None => BodyPayload {
                             body: None,
                             retrieved: false,
                         },
@@ -284,7 +291,11 @@ impl SearchEngine {
             self.config.root.join(path)
         };
 
-        let Ok(contents) = fs::read_to_string(&absolute) else {
+        let Some(contents) = self
+            .file_cache
+            .read_file(&absolute)
+            .map(|f| f.contents().to_string())
+        else {
             return Vec::new();
         };
 
@@ -1013,12 +1024,18 @@ impl SearchEngine {
             .iter()
             .take(5)
             .map(|hit| {
-                let formatted_snippet =
-                    format_snippet(&self.config.root, &hit.path, hit.line, &hit.snippet);
+                let formatted_snippet = format_snippet(
+                    &self.config.root,
+                    &self.file_cache,
+                    &hit.path,
+                    hit.line,
+                    &hit.snippet,
+                );
                 let (context_before, context_after, auto_expanded_context) =
                     self.context_padding(hit);
                 let context_window = gather_expanded_snippet(
                     &self.config.root,
+                    &self.file_cache,
                     &hit.path,
                     hit.line,
                     context_before,
@@ -1830,6 +1847,7 @@ where
 
 fn gather_expanded_snippet(
     root: &Path,
+    file_cache: &FileCache,
     path: &Path,
     line: usize,
     before: usize,
@@ -1844,7 +1862,9 @@ fn gather_expanded_snippet(
     } else {
         root.join(path)
     };
-    let contents = fs::read_to_string(&absolute).ok()?;
+    let contents = file_cache
+        .read_file(&absolute)
+        .map(|f| f.contents().to_string())?;
     let lines: Vec<&str> = contents.lines().collect();
 
     if lines.is_empty() || line > lines.len() {
@@ -1923,19 +1943,31 @@ fn swift_context_hints(contents: &str, line: usize) -> Vec<ContextHint> {
     finalize_hints(hints)
 }
 
-fn format_snippet(root: &Path, path: &Path, line: usize, raw: &str) -> Option<String> {
+fn format_snippet(
+    root: &Path,
+    file_cache: &FileCache,
+    path: &Path,
+    line: usize,
+    raw: &str,
+) -> Option<String> {
     let ext = path
         .extension()
         .and_then(|ext| ext.to_str())
         .map(|ext| ext.to_ascii_lowercase());
     match ext.as_deref() {
-        Some("swift") => format_swift_snippet(root, path, line, raw),
+        Some("swift") => format_swift_snippet(root, file_cache, path, line, raw),
         Some("ts") | Some("tsx") => format_typescript_snippet(raw),
         _ => format_default_snippet(raw),
     }
 }
 
-fn format_swift_snippet(root: &Path, path: &Path, line: usize, raw: &str) -> Option<String> {
+fn format_swift_snippet(
+    root: &Path,
+    file_cache: &FileCache,
+    path: &Path,
+    line: usize,
+    raw: &str,
+) -> Option<String> {
     let trimmed: Vec<String> = raw.lines().map(|entry| entry.trim().to_string()).collect();
 
     let mut attributes_rev: Vec<String> = Vec::new();
@@ -2059,7 +2091,10 @@ fn format_swift_snippet(root: &Path, path: &Path, line: usize, raw: &str) -> Opt
         } else {
             root.join(path)
         };
-        if let Ok(contents) = fs::read_to_string(&full_path) {
+        if let Some(contents) = file_cache
+            .read_file(&full_path)
+            .map(|f| f.contents().to_string())
+        {
             let lines: Vec<&str> = contents.lines().collect();
             if !lines.is_empty() {
                 let mut idx = line.saturating_sub(1);
