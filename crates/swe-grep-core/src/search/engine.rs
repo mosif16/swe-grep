@@ -346,6 +346,7 @@ impl SearchEngine {
                     self.config.max_columns,
                 )
             })
+            .filter(|hit| self.matches_path_globs(&hit.path))
             .collect();
         let total_hits = hits.len();
         let probe_hits_snapshot = hits.clone();
@@ -683,6 +684,21 @@ impl SearchEngine {
             .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '$'))
     }
 
+    fn matches_path_globs(&self, path: &Path) -> bool {
+        if let Some(globs) = &self.config.path_globs {
+            let rel = path.to_string_lossy().replace('\\', "/");
+            let abs_path = if path.is_absolute() {
+                path.to_path_buf()
+            } else {
+                self.config.root.join(path)
+            };
+            let abs = abs_path.to_string_lossy().replace('\\', "/");
+            globs.is_match(rel.as_str()) || globs.is_match(abs.as_str())
+        } else {
+            true
+        }
+    }
+
     fn context_padding(&self, hit: &SearchHit) -> (usize, usize, bool) {
         let mut before = self.config.context_before;
         let mut after = self.config.context_after;
@@ -776,6 +792,7 @@ impl SearchEngine {
         for path in fd_results {
             if let Ok(normalized) = normalize_path(&root, &path) {
                 if passes_extension_filter(&normalized, extensions)
+                    && self.matches_path_globs(&normalized)
                     && seen.insert(normalized.clone())
                 {
                     candidates.push(normalized);
@@ -786,7 +803,10 @@ impl SearchEngine {
         let symbol_hints = self.state.hints_for_symbol(&self.config.symbol);
         crate::telemetry::record_cache_hits("symbol_hints", symbol_hints.len());
         for hint in symbol_hints {
-            if passes_extension_filter(&hint, extensions) && seen.insert(hint.clone()) {
+            if passes_extension_filter(&hint, extensions)
+                && self.matches_path_globs(&hint)
+                && seen.insert(hint.clone())
+            {
                 candidates.push(hint);
             }
         }
@@ -810,6 +830,7 @@ impl SearchEngine {
                             }
                             if let Ok(normalized) = normalize_path(&root, &path) {
                                 if passes_extension_filter(&normalized, extensions)
+                                    && self.matches_path_globs(&normalized)
                                     && seen.insert(normalized.clone())
                                 {
                                     candidates.push(normalized);
@@ -863,6 +884,7 @@ impl SearchEngine {
             for hint in swift_hints {
                 if let Ok(normalized) = normalize_path(&root, &hint) {
                     if passes_extension_filter(&normalized, extensions)
+                        && self.matches_path_globs(&normalized)
                         && seen.insert(normalized.clone())
                     {
                         candidates.push(normalized);
@@ -902,6 +924,7 @@ impl SearchEngine {
                             self.config.max_columns,
                         )
                     })
+                    .filter(|hit| self.matches_path_globs(&hit.path))
                     .collect::<Vec<_>>();
                 let hit_count = hits.len();
                 (hits, hit_count)

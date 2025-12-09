@@ -77,22 +77,23 @@ async fn main() {
 }
 
 async fn run(cli: Cli) -> Result<(), AppError> {
+    let disable_telemetry = cli.disable_telemetry || telemetry_default_disabled();
     if cli.clear_cache {
         clear_cache_for_command(&cli)?;
     }
     match cli.command {
-        Commands::Search(cmd) => handle_search(cmd, cli.disable_telemetry).await,
-        Commands::Usages(cmd) => handle_usages(cmd, cli.disable_telemetry).await,
-        Commands::Remove(cmd) => handle_remove(cmd, cli.disable_telemetry).await,
+        Commands::Search(cmd) => handle_search(cmd, disable_telemetry).await,
+        Commands::Usages(cmd) => handle_usages(cmd, disable_telemetry).await,
+        Commands::Remove(cmd) => handle_remove(cmd, disable_telemetry).await,
         Commands::Bench(args) => {
-            if !cli.disable_telemetry {
+            if !disable_telemetry {
                 telemetry::init()?;
             }
             bench::run(args).await?;
             Ok(())
         }
         Commands::Serve(args) => {
-            if !cli.disable_telemetry {
+            if !disable_telemetry {
                 telemetry::init()?;
             }
             service::serve(args).await?;
@@ -661,6 +662,40 @@ fn clear_cache_dirs(root: &Path) -> Result<(), AppError> {
     Ok(())
 }
 
+fn telemetry_default_disabled() -> bool {
+    if let Ok(value) = std::env::var("SWE_GREP_TELEMETRY") {
+        let normalized = value.trim().to_ascii_lowercase();
+        if matches!(
+            normalized.as_str(),
+            "0" | "false" | "off" | "no" | "disable" | "disabled"
+        ) {
+            return true;
+        }
+        if matches!(
+            normalized.as_str(),
+            "1" | "true" | "on" | "yes" | "enable" | "enabled"
+        ) {
+            return false;
+        }
+    }
+
+    if let Ok(home) = std::env::var("HOME") {
+        let path = PathBuf::from(home).join(".swe-grep.toml");
+        if path.is_file() {
+            if let Ok(contents) = fs::read_to_string(&path) {
+                if let Ok(value) = contents.parse::<toml::Value>() {
+                    if let Some(disable) = value.get("disable_telemetry").and_then(|v| v.as_bool())
+                    {
+                        return disable;
+                    }
+                }
+            }
+        }
+    }
+
+    false
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -672,8 +707,10 @@ mod tests {
             concept: None,
             regex: false,
             wildcard: false,
+            string: false,
             include_strings: false,
             path: None,
+            path_glob: Vec::new(),
             language: None,
             timeout_secs: 3,
             max_matches: 20,

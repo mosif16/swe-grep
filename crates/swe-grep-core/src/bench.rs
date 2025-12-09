@@ -172,14 +172,18 @@ fn build_search_args(repo_root: &Path, scenario: &Scenario, bench: &BenchArgs) -
         .or_else(|| bench.cache_dir.clone());
 
     let log_dir = scenario.log_dir.clone().or_else(|| bench.log_dir.clone());
+    let string = scenario.string.unwrap_or(false);
+    let path_glob = scenario.path_glob.clone().unwrap_or_default();
 
     SearchArgs {
         symbol: scenario.symbol.clone(),
         concept: None,
         regex: false,
         wildcard: false,
+        string,
         include_strings: false,
         path: Some(repo_root.to_path_buf()),
+        path_glob,
         language: scenario.language.clone(),
         timeout_secs: scenario.timeout_secs.unwrap_or(3),
         max_matches: scenario.max_matches.unwrap_or(20),
@@ -254,6 +258,10 @@ struct Scenario {
     timeout_secs: Option<u64>,
     #[serde(default)]
     max_matches: Option<usize>,
+    #[serde(default)]
+    string: Option<bool>,
+    #[serde(default)]
+    path_glob: Option<Vec<String>>,
 }
 
 #[derive(Clone, Deserialize, Serialize)]

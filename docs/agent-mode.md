@@ -6,6 +6,7 @@ Agent mode shapes CLI output for programmatic consumption and bundles sensible d
 - Exit codes: `0` success (hits or none), `1` usage/argument error, `2` runtime error.
 - Noise control: data on stdout only; logs on stderr; `--quiet` silences logs entirely (tracing subscriber disabled in agent/quiet mode).
 - Convenience: `--concise` drops context/origin/score/body, `--json-pretty` formats JSON, `--trim-body N` overrides the 50-line default, `--progress` emits `[idx/total] Searching <symbol>...` on stderr.
+- Strings/paths: `--string` generates quoted variants for literal string lookups; `--path-glob "src/**/*.tsx"` narrows scope without forcing a language hint.
 
 ## Schema (version 1)
 

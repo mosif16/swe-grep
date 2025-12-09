@@ -282,6 +282,8 @@ pub fn expand_language_token(token: &str) -> Vec<String> {
         "kotlin" | "kt" => vec!["kt".to_string(), "kts".to_string()],
         "kts" => vec!["kts".to_string()],
         "python" | "py" => vec!["py".to_string()],
+        "css" => vec!["css".to_string()],
+        "scss" | "sass" => vec!["scss".to_string()],
         "swiftui" => vec!["swift".to_string()],
         other => vec![other.to_string()],
     }
@@ -350,6 +352,16 @@ pub fn extensions_for_languages(
                     results.push("py");
                 }
             }
+            "css" => {
+                if !results.contains(&"css") {
+                    results.push("css");
+                }
+            }
+            "scss" | "sass" => {
+                if !results.contains(&"scss") {
+                    results.push("scss");
+                }
+            }
             _ => {}
         }
     }
@@ -378,6 +390,8 @@ pub fn detect_language_from_path(path: &Path) -> Option<&'static str> {
         "jsx" => Some("jsx"),
         "py" => Some("python"),
         "kt" | "kts" => Some("kotlin"),
+        "css" => Some("css"),
+        "scss" => Some("scss"),
         _ => None,
     }
 }

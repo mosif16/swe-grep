@@ -29,13 +29,17 @@ cargo run -p swe-grep -- search --symbol foo --timeout-secs 2
 
 - Concept/semantic search: `swe-grep search --concept "text to speech"` builds intent-driven rewrites that surface related symbols even when names do not match.
 - Regex/wildcard friendly: `--regex` accepts raw patterns (e.g. `speak|aloud`), `--wildcard` translates `*`/`?`; AST disambiguation is skipped automatically when patterns are non-literal.
+- String literals: `--string` generates quoted/ci variants and disables AST so inline CSS vars or JSX strings are easy to surface.
+- CSS/SCSS aware: `--language css|scss` scopes discovery to stylesheets; extension filters include CSS/SCSS by default when selected.
 - Localization-aware: `--include-strings` folds `xcstrings`/`strings`/`arb`/`json` resources into the search surface so string keys show up alongside code hits.
+- Path globs: `--path-glob "src/**/*.tsx"` narrows scope without forcing a language hint; accepts comma-separated patterns.
 - Output formats: `--format compact|tree|edit` (agent mode) for fast scanning, grouped results, or edit-tool ready `path:line:snippet` lines.
 - Usage graph: `swe-grep usages --symbol Foo --path .` emits a tree of references/types/imports; `--format json|compact` are available for automation.
 - Removal planning: `swe-grep remove --symbol Foo --dry-run` lists files to modify/delete; add `--apply` to delete obvious symbol-owned files cautiously.
 - Cache hygiene: `--clear-cache` wipes `.swe-grep-cache` and `.swe-grep-index` before executing the chosen subcommand.
 - Batch everywhere: multiple symbols now work without `--agent` (default mode emits a JSON array); agent mode still supports streaming and table output.
 - No-hit guidance: empty searches now return related symbols/paths plus notes when the search was constrained (regex/wildcard/strings), making reruns faster.
+- Telemetry defaults: set `SWE_GREP_TELEMETRY=off` or add `disable_telemetry = true` to `~/.swe-grep.toml` to avoid passing `--disable-telemetry` every run.
 
 ## Optional Tantivy Indexing
 

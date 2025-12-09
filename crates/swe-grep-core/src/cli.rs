@@ -138,6 +138,10 @@ pub struct SearchArgs {
     #[arg(long, default_value_t = false, action = ArgAction::SetTrue)]
     pub wildcard: bool,
 
+    /// Search literal/string content (adds quoted variants; disables AST disambiguation).
+    #[arg(long, default_value_t = false, action = ArgAction::SetTrue)]
+    pub string: bool,
+
     /// Include localization/string resources (xcstrings/strings/arb/json) in the search surface.
     #[arg(long, default_value_t = false, action = ArgAction::SetTrue)]
     pub include_strings: bool,
@@ -145,6 +149,10 @@ pub struct SearchArgs {
     /// Root directory of the repository; defaults to the current working directory.
     #[arg(long)]
     pub path: Option<PathBuf>,
+
+    /// Glob patterns to limit the search scope (e.g. \"src/**/*.tsx\"); can be comma-separated.
+    #[arg(long = "path-glob", value_delimiter = ',')]
+    pub path_glob: Vec<String>,
 
     /// Optional explicit language hint for AST-Grep (e.g. rust, tsx, swift, auto-swift-ts).
     #[arg(long, value_name = "LANGUAGE")]

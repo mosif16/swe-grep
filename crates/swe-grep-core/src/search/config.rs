@@ -2,6 +2,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use anyhow::{Context, Result};
+use globset::{Glob, GlobSet, GlobSetBuilder};
 
 use crate::cli::SearchArgs;
 pub(crate) use crate::language::{
@@ -40,6 +41,7 @@ pub(crate) struct SearchConfig {
     pub(crate) body: bool,
     pub(crate) max_body_bytes: usize,
     pub(crate) include_strings: bool,
+    pub(crate) path_globs: Option<GlobSet>,
 }
 
 impl SearchConfig {
@@ -75,8 +77,17 @@ impl SearchConfig {
             );
         }
 
-        let root = args
-            .path
+        let mut path_glob_patterns = args.path_glob.clone();
+        let mut path = args.path.clone();
+        if let Some(raw_path) = path.clone() {
+            let raw_str = raw_path.to_string_lossy();
+            if has_glob_chars(&raw_str) {
+                path_glob_patterns.push(raw_str.to_string());
+                path = None;
+            }
+        }
+
+        let root = path
             .unwrap_or(std::env::current_dir().context("failed to resolve current directory")?);
         let root = root.canonicalize().with_context(|| {
             format!(
@@ -114,6 +125,11 @@ impl SearchConfig {
             .map(|lang| lang.trim().to_string())
             .filter(|s| !s.is_empty());
         let language_tokens = expand_language_hint(language.as_deref());
+        let uses_css_like = language_tokens
+            .iter()
+            .any(|lang| lang.eq_ignore_ascii_case("css") || lang.eq_ignore_ascii_case("scss"));
+        let use_ast = args.tools.use_ast_grep && !uses_css_like && !args.string;
+        let path_globs = build_globset(&root, &path_glob_patterns)?;
 
         Ok(Self {
             root,
@@ -127,7 +143,7 @@ impl SearchConfig {
             index_dir,
             use_rga: args.tools.enable_rga,
             use_fd: args.tools.use_fd,
-            use_ast: args.tools.use_ast_grep,
+            use_ast,
             cache_dir,
             log_dir,
             context_before: args.context_before,
@@ -140,10 +156,13 @@ impl SearchConfig {
                 PatternMode::Regex
             } else if args.wildcard {
                 PatternMode::Wildcard
+            } else if args.string {
+                PatternMode::LiteralString
             } else {
                 PatternMode::Literal
             },
             include_strings: args.include_strings,
+            path_globs,
         })
     }
 }
@@ -173,4 +192,40 @@ pub(crate) fn normalize_path(root: &Path, path: &Path) -> Result<PathBuf> {
         .strip_prefix(root)
         .map(|p| p.to_path_buf())
         .unwrap_or(canonical))
+}
+
+fn has_glob_chars(value: &str) -> bool {
+    value.contains('*') || value.contains('?') || value.contains('[')
+}
+
+fn build_globset(root: &Path, patterns: &[String]) -> Result<Option<GlobSet>> {
+    if patterns.is_empty() {
+        return Ok(None);
+    }
+
+    let mut builder = GlobSetBuilder::new();
+    for raw in patterns {
+        if raw.trim().is_empty() {
+            continue;
+        }
+        let mut variants = Vec::new();
+        if Path::new(raw).is_absolute() {
+            variants.push(raw.clone());
+        } else {
+            variants.push(raw.clone());
+            variants.push(root.join(raw).to_string_lossy().replace('\\', "/"));
+        }
+        for pattern in variants {
+            let glob = Glob::new(&pattern)
+                .with_context(|| format!("invalid glob pattern: {raw}"))?;
+            builder.add(glob);
+        }
+    }
+
+    let set = builder.build()?;
+    if set.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(set))
+    }
 }

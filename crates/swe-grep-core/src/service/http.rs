@@ -64,7 +64,11 @@ pub struct HttpSearchRequest {
     #[serde(default)]
     pub wildcard: Option<bool>,
     #[serde(default)]
+    pub string: Option<bool>,
+    #[serde(default)]
     pub include_strings: Option<bool>,
+    #[serde(default)]
+    pub path_glob: Option<Vec<String>>,
 }
 
 impl From<HttpSearchRequest> for SearchInput {
@@ -88,7 +92,9 @@ impl From<HttpSearchRequest> for SearchInput {
             enable_rga: req.enable_rga,
             regex: req.regex,
             wildcard: req.wildcard,
+            string: req.string,
             include_strings: req.include_strings,
+            path_glob: req.path_glob,
             index_dir: req.index_dir.map(PathBuf::from),
             cache_dir: req.cache_dir.map(PathBuf::from),
             log_dir: req.log_dir.map(PathBuf::from),

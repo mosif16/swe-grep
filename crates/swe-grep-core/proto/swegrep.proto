@@ -22,6 +22,8 @@ message SearchRequest {
   bool regex = 17;
   bool wildcard = 18;
   bool include_strings = 19;
+  bool string = 20;
+  repeated string path_glob = 21;
 }
 
 message SearchResponse {

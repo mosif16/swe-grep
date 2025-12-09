@@ -35,6 +35,8 @@ memmap2 = "0.9"
 rayon = "1.10"
 simd-json = "0.13"
 ignore = "0.4"
+globset = "0.4"
+toml = "0.8"
 
 [features]
 default = []

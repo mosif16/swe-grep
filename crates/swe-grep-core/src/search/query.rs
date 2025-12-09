@@ -5,6 +5,7 @@ use crate::language;
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum PatternMode {
     Literal,
+    LiteralString,
     Regex,
     Wildcard,
 }
@@ -65,6 +66,15 @@ impl QueryRewriter {
                 Self::escape_literal(&format!("{s} error")),
                 Self::escape_literal(&format!("{type_hint}.{s}")),
             ],
+            PatternMode::LiteralString => {
+                let escaped = Self::escape_literal(s);
+                let mut patterns = vec![escaped.clone(), format!("(?i){escaped}")];
+                for quote in ['"', '\'', '`'] {
+                    patterns.push(format!("{quote}{escaped}{quote}"));
+                    patterns.push(format!("(?i){quote}{escaped}{quote}"));
+                }
+                patterns
+            }
             PatternMode::Regex => {
                 let mut patterns = Vec::new();
                 patterns.push(s.to_string());
@@ -83,14 +93,17 @@ impl QueryRewriter {
             }
         };
 
-        for lang in &self.languages {
-            for pattern in language::query_patterns_for(lang, s) {
-                let rendered = match pattern_mode {
-                    PatternMode::Literal => Self::escape_literal(&pattern),
-                    PatternMode::Regex => pattern,
-                    PatternMode::Wildcard => wildcard_to_regex(&pattern),
-                };
-                queries.push(rendered);
+        if !matches!(pattern_mode, PatternMode::LiteralString) {
+            for lang in &self.languages {
+                for pattern in language::query_patterns_for(lang, s) {
+                    let rendered = match pattern_mode {
+                        PatternMode::Literal => Self::escape_literal(&pattern),
+                        PatternMode::Regex => pattern,
+                        PatternMode::Wildcard => wildcard_to_regex(&pattern),
+                        PatternMode::LiteralString => Self::escape_literal(&pattern),
+                    };
+                    queries.push(rendered);
+                }
             }
         }
 

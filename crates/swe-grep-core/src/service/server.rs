@@ -130,7 +130,9 @@ impl SearchExecutor {
             enable_rga,
             regex,
             wildcard,
+            string,
             include_strings,
+            path_glob,
             index_dir,
             cache_dir,
             log_dir,
@@ -174,6 +176,8 @@ impl SearchExecutor {
         let context_before = context_before.unwrap_or(0);
         let context_after = context_after.unwrap_or(0);
         let body = body.unwrap_or(false);
+        let string = string.unwrap_or(false);
+        let path_glob = path_glob.unwrap_or_default();
 
         let mut args = SearchArgs {
             symbol,
@@ -194,7 +198,9 @@ impl SearchExecutor {
             body,
             regex: regex.unwrap_or(false),
             wildcard: wildcard.unwrap_or(false),
+            string,
             include_strings: include_strings.unwrap_or(false),
+            path_glob,
             index_dir,
             cache_dir,
             log_dir,
@@ -220,7 +226,9 @@ pub struct SearchInput {
     pub enable_rga: Option<bool>,
     pub regex: Option<bool>,
     pub wildcard: Option<bool>,
+    pub string: Option<bool>,
     pub include_strings: Option<bool>,
+    pub path_glob: Option<Vec<String>>,
     pub index_dir: Option<PathBuf>,
     pub cache_dir: Option<PathBuf>,
     pub log_dir: Option<PathBuf>,

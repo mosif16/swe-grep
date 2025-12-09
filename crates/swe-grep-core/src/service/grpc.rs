@@ -82,7 +82,13 @@ fn map_request(proto: proto::SearchRequest) -> SearchInput {
         enable_rga: Some(proto.enable_rga),
         regex: Some(proto.regex),
         wildcard: Some(proto.wildcard),
+        string: Some(proto.string),
         include_strings: Some(proto.include_strings),
+        path_glob: if proto.path_glob.is_empty() {
+            None
+        } else {
+            Some(proto.path_glob)
+        },
         index_dir: path_from_string(proto.index_dir),
         cache_dir: path_from_string(proto.cache_dir),
         log_dir: path_from_string(proto.log_dir),

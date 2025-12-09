@@ -40,6 +40,9 @@ swe-grep remove --symbol FooFeature --dry-run --path .
 swe-grep search --agent --symbols Alpha,Beta --format compact
 swe-grep search --agent --symbols Alpha,Beta --format tree
 swe-grep search --agent --symbols Alpha,Beta --format edit
+swe-grep search --string --symbol "var(--ink)" --path .
+swe-grep search --path-glob "src/**/*.tsx" --symbol Foo --path .
+swe-grep search --language css --symbol "var(--ink)" --path .
 swe-grep --clear-cache search --symbol Foo --path .
 ```
 
