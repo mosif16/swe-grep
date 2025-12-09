@@ -2,6 +2,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::time::{Instant as StdInstant, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result};
@@ -25,13 +26,15 @@ use super::config::{
 use super::formatting::{
     ContextHint, format_snippet, gather_expanded_snippet, rust_context_hints, swift_context_hints,
 };
+use super::fuzzy::{rank_suggestions, tokenize};
 use super::hits::{BodyPayload, HitOrigin, ProbeKind, SearchCache, SearchHit};
 use super::query::{PatternMode, QueryRewriter};
 use super::state::PersistentState;
 use super::stats::{
-    SearchMetrics, SearchSummary, StageStats, StartupStats, TopHit, aggregate_language_counts,
-    compute_metrics, elapsed_ms, elapsed_std_ms, round_two,
+    GitInfo, SearchMetrics, SearchSummary, StageStats, StartupStats, TopHit,
+    aggregate_language_counts, compute_metrics, elapsed_ms, elapsed_std_ms, round_two,
 };
+use crate::cli::SymbolKind;
 use crate::language::detect_language_from_path;
 
 pub(crate) struct SearchEngine {
@@ -69,6 +72,7 @@ impl SearchEngine {
             config.context_after,
             config.max_columns,
             config.concurrency,
+            config.ignore_case,
         );
         startup_stats.rg_ms = elapsed_std_ms(rg_start);
 
@@ -258,8 +262,9 @@ impl SearchEngine {
         crate::telemetry::record_stage_latency("ast", stage_stats.disambiguate_ms);
         crate::telemetry::record_stage_latency("verify", stage_stats.verify_ms);
 
-        let (related_symbols, related_paths, suggested_symbols, notes) =
-            self.suggest_alternatives(&discover_candidates, &verification, &rewrites);
+        let (related_symbols, related_paths, suggested_symbols, notes) = self
+            .suggest_alternatives(&discover_candidates, &verification, &rewrites)
+            .await;
 
         let summary = SearchSummary {
             cycle: 1,
@@ -305,12 +310,18 @@ impl SearchEngine {
 
     fn build_queries(&self) -> Vec<String> {
         if let Some(concept) = &self.config.concept {
-            return QueryRewriter::for_concept(concept, &self.config.language_tokens).build();
+            return QueryRewriter::for_concept(
+                concept,
+                &self.config.language_tokens,
+                self.config.ignore_case,
+            )
+            .build();
         }
         QueryRewriter::for_symbol(
             &self.config.symbol,
             &self.config.language_tokens,
             self.config.pattern_mode,
+            self.config.ignore_case,
         )
         .build()
     }
@@ -475,6 +486,51 @@ impl SearchEngine {
         payload
     }
 
+    fn compute_git_info(&self, path: &Path) -> Option<GitInfo> {
+        if !self.config.git_info {
+            return None;
+        }
+
+        let absolute = if path.is_absolute() {
+            path.to_path_buf()
+        } else {
+            self.config.root.join(path)
+        };
+        let relative = absolute
+            .strip_prefix(&self.config.root)
+            .unwrap_or(&absolute)
+            .to_path_buf();
+
+        let output = Command::new("git")
+            .arg("-C")
+            .arg(&self.config.root)
+            .arg("log")
+            .arg("-n")
+            .arg("1")
+            .arg("--format=%h\t%cs")
+            .arg("--")
+            .arg(&relative)
+            .output()
+            .ok()?;
+
+        if !output.status.success() {
+            return None;
+        }
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let mut parts = stdout.lines().next().unwrap_or("").split('\t');
+        let commit = parts.next().unwrap_or("").trim();
+        let date = parts.next().unwrap_or("").trim();
+        if commit.is_empty() || date.is_empty() {
+            return None;
+        }
+
+        Some(GitInfo {
+            last_commit: commit.to_string(),
+            last_modified: date.to_string(),
+        })
+    }
+
     fn should_attach_body(&self, path: &Path) -> bool {
         if self.config.body {
             return true;
@@ -518,6 +574,48 @@ impl SearchEngine {
             Some("swift") => swift_context_hints(&contents, line),
             _ => Vec::new(),
         }
+    }
+
+    fn is_definition_hit(&self, hit: &SearchHit, hints: &[ContextHint]) -> bool {
+        if hints.iter().any(|hint| {
+            matches!(
+                hint.kind.as_str(),
+                "declaration" | "impl" | "type" | "extension" | "module"
+            )
+        }) {
+            return true;
+        }
+
+        let snippet_lower = hit.snippet.to_ascii_lowercase();
+        let symbol_lower = self.config.symbol.to_ascii_lowercase();
+        if snippet_lower.is_empty() || symbol_lower.is_empty() {
+            return false;
+        }
+
+        let definition_markers = [
+            format!("fn {symbol_lower}"),
+            format!("struct {symbol_lower}"),
+            format!("enum {symbol_lower}"),
+            format!("trait {symbol_lower}"),
+            format!("impl {symbol_lower}"),
+            format!("type {symbol_lower}"),
+            format!("const {symbol_lower}"),
+            format!("static {symbol_lower}"),
+            format!("class {symbol_lower}"),
+            format!("interface {symbol_lower}"),
+            format!("function {symbol_lower}"),
+            format!("protocol {symbol_lower}"),
+            format!("extension {symbol_lower}"),
+            format!("actor {symbol_lower}"),
+            format!("mod {symbol_lower}"),
+            format!("let {symbol_lower}"),
+            format!("var {symbol_lower}"),
+            format!("case {symbol_lower}"),
+        ];
+
+        definition_markers
+            .iter()
+            .any(|pattern| snippet_lower.contains(pattern))
     }
 
     fn ensure_fd_tool(&mut self) -> Option<&FdTool> {
@@ -584,7 +682,7 @@ impl SearchEngine {
         })
     }
 
-    fn suggest_alternatives(
+    async fn suggest_alternatives(
         &self,
         discover_candidates: &[PathBuf],
         verification: &VerificationOutcome,
@@ -612,6 +710,11 @@ impl SearchEngine {
             .collect();
         candidates.extend(collect_candidate_symbols(&ast_paths));
 
+        if let Some(prefix) = self.fuzzy_prefix(target) {
+            let mut fuzzy = self.fuzzy_candidates(&prefix).await;
+            candidates.append(&mut fuzzy);
+        }
+
         let mut related_paths: Vec<String> = Vec::new();
         let mut related_symbols: Vec<String> = Vec::new();
         for path in discover_candidates {
@@ -625,23 +728,13 @@ impl SearchEngine {
         let mut seen_paths: HashSet<String> = HashSet::new();
         related_paths.retain(|p| seen_paths.insert(p.clone()));
 
-        let mut scored: Vec<(f32, String)> = Vec::new();
-        let mut seen: HashSet<String> = HashSet::new();
-        for candidate in candidates {
+        let ranked = rank_suggestions(target, candidates, 5);
+        for candidate in &ranked {
             let lower = candidate.to_ascii_lowercase();
-            if !seen.insert(lower.clone()) {
-                continue;
-            }
             if lower.contains(&target_lower) || contains_synonym(&lower, &target_lower) {
                 related_symbols.push(candidate.clone());
             }
-            let score = normalized_distance(&target_lower, &lower);
-            if score <= 0.75 || contains_synonym(&lower, &target_lower) {
-                scored.push((score, candidate));
-            }
         }
-        scored.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
-        let suggested: Vec<String> = scored.into_iter().map(|(_, name)| name).take(6).collect();
 
         let mut notes = Vec::new();
         if self.config.concept.is_some() {
@@ -657,7 +750,61 @@ impl SearchEngine {
             notes.push("no queries generated for provided input".to_string());
         }
 
-        (related_symbols, related_paths, suggested, notes)
+        (related_symbols, related_paths, ranked, notes)
+    }
+
+    fn fuzzy_prefix(&self, target: &str) -> Option<String> {
+        let cleaned: String = target
+            .chars()
+            .filter(|c| c.is_ascii_alphanumeric() || *c == '_')
+            .collect();
+        let prefix: String = cleaned.chars().take(3).collect();
+        if prefix.len() >= 2 {
+            Some(prefix)
+        } else {
+            None
+        }
+    }
+
+    async fn fuzzy_candidates(&self, prefix: &str) -> Vec<String> {
+        let queries = vec![prefix.to_string()];
+        match self
+            .rg_tool
+            .search_union(&self.config.root, &queries, &[])
+            .await
+        {
+            Ok(matches) => {
+                let mut tokens = Vec::new();
+                for m in matches {
+                    tokens.extend(tokenize(&m.lines));
+                    if let Some(stem) = m.path.file_stem().and_then(|s| s.to_str()) {
+                        tokens.push(stem.to_string());
+                    }
+                    if let Some(parent) = m
+                        .path
+                        .parent()
+                        .and_then(|p| p.file_name())
+                        .and_then(|s| s.to_str())
+                    {
+                        tokens.push(parent.to_string());
+                    }
+                }
+                tokens
+            }
+            Err(err) => {
+                tracing::debug!(error = %err, "fuzzy ripgrep probe failed");
+                Vec::new()
+            }
+        }
+    }
+
+    fn matches_kind(&self, kind: SymbolKind, hit: &SearchHit, hints: &[ContextHint]) -> bool {
+        let lang = detect_language_from_path(&hit.path).unwrap_or("other");
+        let mut labels: Vec<String> = hints.iter().map(|hint| hint.label.clone()).collect();
+        labels.push(hit.snippet.clone());
+        labels
+            .iter()
+            .any(|label| label_matches_kind(kind, label, lang))
     }
 
     fn format_origin_label(&mut self, origin: &HitOrigin, path: &Path) -> String {
@@ -1081,6 +1228,31 @@ impl SearchEngine {
 
         self.dedup_cache.retain_new(&mut dedup_hits);
 
+        let mut hint_cache: HashMap<(PathBuf, usize), Vec<ContextHint>> = HashMap::new();
+        if self.config.definitions_only || self.config.usages_only {
+            dedup_hits.retain(|hit| {
+                let hints = self.compute_context_hints(&hit.path, hit.line);
+                hint_cache.insert((hit.path.clone(), hit.line), hints.clone());
+                let is_definition = self.is_definition_hit(hit, &hints);
+                if self.config.definitions_only {
+                    is_definition
+                } else {
+                    !is_definition
+                }
+            });
+        }
+
+        if let Some(kind) = self.config.kind {
+            dedup_hits.retain(|hit| {
+                let hints = hint_cache
+                    .get(&(hit.path.clone(), hit.line))
+                    .cloned()
+                    .unwrap_or_else(|| self.compute_context_hints(&hit.path, hit.line));
+                hint_cache.insert((hit.path.clone(), hit.line), hints.clone());
+                self.matches_kind(kind, hit, &hints)
+            });
+        }
+
         self.state.observe(&self.config.symbol, &dedup_hits);
 
         let top_hits: Vec<TopHit> = dedup_hits
@@ -1120,7 +1292,11 @@ impl SearchEngine {
                     (None, false)
                 };
 
-                let hints = self.compute_context_hints(&hit.path, hit.line);
+                let hints = hint_cache
+                    .get(&(hit.path.clone(), hit.line))
+                    .cloned()
+                    .unwrap_or_else(|| self.compute_context_hints(&hit.path, hit.line));
+                let git_info = self.compute_git_info(&hit.path);
 
                 TopHit {
                     path: hit.path.to_string_lossy().to_string(),
@@ -1139,6 +1315,7 @@ impl SearchEngine {
                     body,
                     body_retrieved,
                     hints,
+                    git_info,
                 }
             })
             .collect();
@@ -1221,6 +1398,38 @@ fn contains_synonym(candidate_lower: &str, target_lower: &str) -> bool {
     false
 }
 
+fn label_matches_kind(kind: SymbolKind, label: &str, language: &str) -> bool {
+    let lower = label.to_ascii_lowercase();
+    match kind {
+        SymbolKind::Func => {
+            lower.starts_with("fn ")
+                || lower.contains(" fn ")
+                || lower.starts_with("func ")
+                || lower.contains(" func ")
+                || lower.contains(" function ")
+                || lower.starts_with("function ")
+                || lower.starts_with("init")
+                || lower.contains("->")
+                || lower.contains("=>")
+        }
+        SymbolKind::Struct => lower.contains("struct "),
+        SymbolKind::Class => lower.contains("class "),
+        SymbolKind::Enum => lower.contains("enum "),
+        SymbolKind::Trait => lower.contains("trait "),
+        SymbolKind::Protocol => lower.contains("protocol "),
+        SymbolKind::Interface => lower.contains("interface "),
+        SymbolKind::Const => {
+            lower.starts_with("const ")
+                || lower.contains(" const ")
+                || lower.starts_with("static ")
+                || lower.contains(" static ")
+                || (language.eq_ignore_ascii_case("swift")
+                    && (lower.starts_with("let ") || lower.starts_with("var ")))
+        }
+        SymbolKind::Actor => lower.contains("actor "),
+    }
+}
+
 fn split_tokens(raw: &str) -> Vec<String> {
     let mut tokens: Vec<String> = Vec::new();
     let mut current = String::new();
@@ -1242,34 +1451,40 @@ fn split_tokens(raw: &str) -> Vec<String> {
     tokens
 }
 
-fn normalized_distance(a: &str, b: &str) -> f32 {
-    let max_len = a.len().max(b.len()).max(1) as f32;
-    levenshtein(a, b) as f32 / max_len
-}
-
-fn levenshtein(a: &str, b: &str) -> usize {
-    let mut costs: Vec<usize> = (0..=b.len()).collect();
-    for (i, ca) in a.chars().enumerate() {
-        let mut last = i;
-        costs[0] = i + 1;
-        for (j, cb) in b.chars().enumerate() {
-            let new = if ca == cb {
-                last
-            } else {
-                1 + last.min(costs[j]).min(costs[j + 1])
-            };
-            last = costs[j + 1];
-            costs[j + 1] = new;
-        }
-    }
-    costs[b.len()]
-}
-
 fn synonyms_for(token: &str) -> Vec<&'static str> {
     match token.to_ascii_lowercase().as_str() {
         "speak" | "speech" | "voice" => vec!["speech", "voice", "say", "aloud", "talk"],
         "text" => vec!["string", "copy"],
         "delete" | "remove" => vec!["cleanup", "prune"],
         _ => Vec::new(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::label_matches_kind;
+    use crate::cli::SymbolKind;
+
+    #[test]
+    fn detects_function_kind() {
+        assert!(label_matches_kind(
+            SymbolKind::Func,
+            "fn run_cycle(args: SearchArgs)",
+            "rust"
+        ));
+    }
+
+    #[test]
+    fn detects_type_kinds() {
+        assert!(label_matches_kind(
+            SymbolKind::Struct,
+            "struct SearchSummary {",
+            "rust"
+        ));
+        assert!(label_matches_kind(
+            SymbolKind::Class,
+            "class NetworkClient {",
+            "swift"
+        ));
     }
 }

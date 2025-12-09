@@ -74,6 +74,7 @@ fn map_request(proto: proto::SearchRequest) -> SearchInput {
         symbol: proto.symbol,
         concept: option_from_string(proto.concept),
         language: option_from_string(proto.language),
+        kind: option_from_string(proto.kind),
         root: path_from_string(proto.root),
         timeout_secs: zeroable(proto.timeout_secs),
         max_matches: zeroable_usize(proto.max_matches),
@@ -84,6 +85,9 @@ fn map_request(proto: proto::SearchRequest) -> SearchInput {
         wildcard: Some(proto.wildcard),
         string: Some(proto.string),
         include_strings: Some(proto.include_strings),
+        ignore_case: Some(proto.ignore_case),
+        definitions_only: Some(proto.definitions_only),
+        usages_only: Some(proto.usages_only),
         path_glob: if proto.path_glob.is_empty() {
             None
         } else {
@@ -95,6 +99,7 @@ fn map_request(proto: proto::SearchRequest) -> SearchInput {
         context_before: zeroable_usize(proto.context_before),
         context_after: zeroable_usize(proto.context_after),
         body: Some(proto.body),
+        git_info: None,
         tool_flags: ToolFlagOverrides::from_map(proto.tool_flags),
     }
 }

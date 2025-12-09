@@ -5,7 +5,7 @@ use anyhow::{Context, Result};
 use globset::{Glob, GlobSet, GlobSetBuilder};
 
 use super::query::PatternMode;
-use crate::cli::SearchArgs;
+use crate::cli::{SearchArgs, SymbolKind};
 pub(crate) use crate::language::{
     expand_language_hint, extensions_for_languages, languages_include,
 };
@@ -20,10 +20,12 @@ pub(crate) struct SearchConfig {
     pub(crate) root: PathBuf,
     pub(crate) symbol: String,
     pub(crate) concept: Option<String>,
+    pub(crate) kind: Option<SymbolKind>,
     #[allow(dead_code)]
     pub(crate) language: Option<String>,
     pub(crate) language_tokens: Vec<String>,
     pub(crate) pattern_mode: PatternMode,
+    pub(crate) ignore_case: bool,
     pub(crate) timeout: Duration,
     pub(crate) max_matches: usize,
     #[allow(dead_code)]
@@ -41,6 +43,9 @@ pub(crate) struct SearchConfig {
     pub(crate) body: bool,
     pub(crate) max_body_bytes: usize,
     pub(crate) include_strings: bool,
+    pub(crate) definitions_only: bool,
+    pub(crate) usages_only: bool,
+    pub(crate) git_info: bool,
     pub(crate) path_globs: Option<GlobSet>,
 }
 
@@ -75,6 +80,10 @@ impl SearchConfig {
                 MAX_SYMBOL_LENGTH,
                 symbol.len()
             );
+        }
+
+        if args.definitions_only && args.usages_only {
+            anyhow::bail!("--definitions-only and --usages-only cannot be combined");
         }
 
         let mut path_glob_patterns = args.path_glob.clone();
@@ -134,8 +143,10 @@ impl SearchConfig {
         Ok(Self {
             root,
             symbol: symbol.to_string(),
+            kind: args.kind,
             language,
             language_tokens,
+            ignore_case: args.ignore_case,
             timeout,
             max_matches: usize::max(1, args.max_matches),
             concurrency,
@@ -162,6 +173,9 @@ impl SearchConfig {
                 PatternMode::Literal
             },
             include_strings: args.include_strings,
+            definitions_only: args.definitions_only,
+            usages_only: args.usages_only,
+            git_info: args.git_info,
             path_globs,
         })
     }

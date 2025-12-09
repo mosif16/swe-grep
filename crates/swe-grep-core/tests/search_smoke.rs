@@ -11,29 +11,44 @@ fn fixture_root() -> PathBuf {
     path
 }
 
-#[tokio::test]
-async fn finds_rust_symbol() {
-    let repo_root = fixture_root().join("fixtures/multi_lang");
-    let args = SearchArgs {
-        symbol: "login_user".to_string(),
-        path: Some(repo_root),
-        language: Some("rust".to_string()),
+fn base_args(symbol: &str, path: PathBuf, language: Option<&str>) -> SearchArgs {
+    SearchArgs {
+        symbol: symbol.to_string(),
+        concept: None,
+        regex: false,
+        wildcard: false,
+        string: false,
+        include_strings: false,
+        ignore_case: false,
+        definitions_only: false,
+        usages_only: false,
+        path: Some(path),
+        path_glob: Vec::new(),
+        language: language.map(|lang| lang.to_string()),
+        kind: None,
         timeout_secs: 3,
         max_matches: 20,
         concurrency: 8,
-        context_before: 0,
-        context_after: 0,
-        body: false,
         tools: ToolArgs {
             enable_index: false,
             enable_rga: false,
             use_fd: true,
             use_ast_grep: true,
         },
+        context_before: 0,
+        context_after: 0,
+        body: false,
+        git_info: false,
         index_dir: None,
         cache_dir: None,
         log_dir: None,
-    };
+    }
+}
+
+#[tokio::test]
+async fn finds_rust_symbol() {
+    let repo_root = fixture_root().join("fixtures/multi_lang");
+    let args = base_args("login_user", repo_root, Some("rust"));
 
     let summary = search::execute(args).await.expect("search should succeed");
     assert!(
@@ -51,26 +66,8 @@ async fn writes_log_when_requested() {
     let temp = tempdir().expect("failed to create tempdir");
     let log_dir = temp.path().join("logs");
 
-    let args = SearchArgs {
-        symbol: "getUser".to_string(),
-        path: Some(repo_root),
-        language: Some("ts".to_string()),
-        timeout_secs: 3,
-        max_matches: 20,
-        concurrency: 8,
-        context_before: 0,
-        context_after: 0,
-        body: false,
-        tools: ToolArgs {
-            enable_index: false,
-            enable_rga: false,
-            use_fd: true,
-            use_ast_grep: true,
-        },
-        index_dir: None,
-        cache_dir: None,
-        log_dir: Some(log_dir.clone()),
-    };
+    let mut args = base_args("getUser", repo_root, Some("ts"));
+    args.log_dir = Some(log_dir.clone());
 
     let _summary = search::execute(args).await.expect("search should succeed");
 
@@ -87,26 +84,9 @@ async fn writes_log_when_requested() {
 async fn surfaces_expanded_snippet_metadata() {
     let repo_root = fixture_root().join("fixtures/multi_lang");
 
-    let args = SearchArgs {
-        symbol: "login_user_allows_admin".to_string(),
-        path: Some(repo_root),
-        language: Some("rust".to_string()),
-        timeout_secs: 3,
-        max_matches: 20,
-        concurrency: 8,
-        context_before: 1,
-        context_after: 1,
-        body: false,
-        tools: ToolArgs {
-            enable_index: false,
-            enable_rga: false,
-            use_fd: true,
-            use_ast_grep: true,
-        },
-        index_dir: None,
-        cache_dir: None,
-        log_dir: None,
-    };
+    let mut args = base_args("login_user_allows_admin", repo_root, Some("rust"));
+    args.context_before = 1;
+    args.context_after = 1;
 
     let summary = search::execute(args).await.expect("search should succeed");
     let hit = summary
@@ -187,26 +167,7 @@ async fn surfaces_expanded_snippet_metadata() {
 async fn auto_expands_context_when_flags_omitted() {
     let repo_root = fixture_root().join("fixtures/multi_lang");
 
-    let args = SearchArgs {
-        symbol: "login_user_allows_admin".to_string(),
-        path: Some(repo_root),
-        language: Some("rust".to_string()),
-        timeout_secs: 3,
-        max_matches: 20,
-        concurrency: 8,
-        context_before: 0,
-        context_after: 0,
-        body: false,
-        tools: ToolArgs {
-            enable_index: false,
-            enable_rga: false,
-            use_fd: true,
-            use_ast_grep: true,
-        },
-        index_dir: None,
-        cache_dir: None,
-        log_dir: None,
-    };
+    let args = base_args("login_user_allows_admin", repo_root, Some("rust"));
 
     let summary = search::execute(args).await.expect("search should succeed");
     let hit = summary
@@ -248,26 +209,8 @@ async fn auto_expands_context_when_flags_omitted() {
 async fn retrieves_body_when_requested() {
     let repo_root = fixture_root().join("fixtures/multi_lang");
 
-    let args = SearchArgs {
-        symbol: "login_user_allows_admin".to_string(),
-        path: Some(repo_root),
-        language: Some("rust".to_string()),
-        timeout_secs: 3,
-        max_matches: 20,
-        concurrency: 8,
-        context_before: 0,
-        context_after: 0,
-        body: true,
-        tools: ToolArgs {
-            enable_index: false,
-            enable_rga: false,
-            use_fd: true,
-            use_ast_grep: true,
-        },
-        index_dir: None,
-        cache_dir: None,
-        log_dir: None,
-    };
+    let mut args = base_args("login_user_allows_admin", repo_root, Some("rust"));
+    args.body = true;
 
     let summary = search::execute(args).await.expect("search should succeed");
     let hit = summary
@@ -298,26 +241,7 @@ async fn retrieves_body_when_requested() {
 async fn surfaces_swift_context_hints() {
     let repo_root = fixture_root().join("fixtures/multi_lang");
 
-    let args = SearchArgs {
-        symbol: "hydrateAndNotify".to_string(),
-        path: Some(repo_root),
-        language: Some("swift".to_string()),
-        timeout_secs: 3,
-        max_matches: 20,
-        concurrency: 8,
-        context_before: 0,
-        context_after: 0,
-        body: false,
-        tools: ToolArgs {
-            enable_index: false,
-            enable_rga: false,
-            use_fd: true,
-            use_ast_grep: true,
-        },
-        index_dir: None,
-        cache_dir: None,
-        log_dir: None,
-    };
+    let args = base_args("hydrateAndNotify", repo_root, Some("swift"));
 
     let summary = search::execute(args).await.expect("search should succeed");
     let hit = summary

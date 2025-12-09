@@ -1,13 +1,14 @@
 mod config;
 mod engine;
 mod formatting;
+mod fuzzy;
 mod hits;
 mod query;
 mod state;
 mod stats;
 
 pub use formatting::ContextHint;
-pub use stats::{SearchSummary, StageStats, StartupStats, TopHit};
+pub use stats::{GitInfo, SearchSummary, StageStats, StartupStats, TopHit};
 
 use anyhow::Result;
 

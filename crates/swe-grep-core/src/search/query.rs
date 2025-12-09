@@ -21,6 +21,7 @@ pub(crate) struct QueryRewriter {
     symbol: String,
     languages: Vec<String>,
     mode: QueryMode,
+    ignore_case: bool,
 }
 
 impl QueryRewriter {
@@ -28,20 +29,23 @@ impl QueryRewriter {
         symbol: &str,
         languages: &[String],
         pattern_mode: PatternMode,
+        ignore_case: bool,
     ) -> Self {
         Self {
             symbol: symbol.to_string(),
             languages: languages.iter().cloned().collect(),
             mode: QueryMode::Symbol { pattern_mode },
+            ignore_case,
         }
     }
 
-    pub(crate) fn for_concept(concept: &str, languages: &[String]) -> Self {
+    pub(crate) fn for_concept(concept: &str, languages: &[String], ignore_case: bool) -> Self {
         let tokens = concept_tokens(concept);
         Self {
             symbol: concept.to_string(),
             languages: languages.iter().cloned().collect(),
             mode: QueryMode::Concept { tokens },
+            ignore_case,
         }
     }
 
@@ -63,7 +67,7 @@ impl QueryRewriter {
         }
         let type_hint = self.derive_type_hint();
 
-        let mut queries = match pattern_mode {
+        let queries = match pattern_mode {
             PatternMode::Literal => vec![
                 Self::escape_literal(s),
                 Self::escape_literal(&format!("{s} {type_hint}")),
@@ -97,6 +101,8 @@ impl QueryRewriter {
             }
         };
 
+        let mut queries = self.enforce_case_insensitive(queries);
+
         if !matches!(pattern_mode, PatternMode::LiteralString) {
             for lang in &self.languages {
                 for pattern in language::query_patterns_for(lang, s) {
@@ -112,6 +118,22 @@ impl QueryRewriter {
         }
 
         dedup_queries(queries)
+    }
+
+    fn enforce_case_insensitive(&self, patterns: Vec<String>) -> Vec<String> {
+        if !self.ignore_case {
+            return patterns;
+        }
+        patterns
+            .into_iter()
+            .map(|pattern| {
+                if pattern.starts_with("(?i)") {
+                    pattern
+                } else {
+                    format!("(?i){pattern}")
+                }
+            })
+            .collect()
     }
 
     fn build_concept_queries(&self, tokens: &[String]) -> Vec<String> {

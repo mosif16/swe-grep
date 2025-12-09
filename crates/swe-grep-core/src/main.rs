@@ -5,15 +5,17 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, anyhow};
 use clap::Parser;
+use regex::Regex;
+use serde::Serialize;
 
 use swe_grep::agent::{
-    AgentResult, AgentSettings, aggregate_output, render_compact, render_edit, render_table,
-    render_tree_grouped, stream_entry,
+    AgentResult, AgentSettings, aggregate_output, render_compact, render_edit, render_minimal,
+    render_table, render_tree_grouped, stream_entry,
 };
 use swe_grep::bench;
 use swe_grep::cli::{
-    Cli, Commands, OutputFormat, RemoveCommand, SearchArgs, SearchCommand, UsageCommand,
-    UsageFormat,
+    Cli, Commands, OutputFormat, RefsCommand, RefsFormat, RemoveCommand, SearchArgs, SearchCommand,
+    UsageCommand, UsageFormat,
 };
 use swe_grep::search;
 use swe_grep::service;
@@ -84,6 +86,7 @@ async fn run(cli: Cli) -> Result<(), AppError> {
     match cli.command {
         Commands::Search(cmd) => handle_search(cmd, disable_telemetry).await,
         Commands::Usages(cmd) => handle_usages(cmd, disable_telemetry).await,
+        Commands::Refs(cmd) => handle_refs(cmd, disable_telemetry).await,
         Commands::Remove(cmd) => handle_remove(cmd, disable_telemetry).await,
         Commands::Bench(args) => {
             if !disable_telemetry {
@@ -128,7 +131,11 @@ async fn handle_search(cmd: SearchCommand, disable_telemetry: bool) -> Result<()
     if cmd.json_pretty
         && matches!(
             cmd.format,
-            OutputFormat::Table | OutputFormat::Compact | OutputFormat::Tree | OutputFormat::Edit
+            OutputFormat::Table
+                | OutputFormat::Compact
+                | OutputFormat::Tree
+                | OutputFormat::Edit
+                | OutputFormat::Minimal
         )
     {
         return Err(AppError::Usage(
@@ -138,6 +145,16 @@ async fn handle_search(cmd: SearchCommand, disable_telemetry: bool) -> Result<()
     if cmd.trim_body.is_some() && !cmd.agent {
         return Err(AppError::Usage(
             "--trim-body is only available in --agent mode".to_string(),
+        ));
+    }
+    if cmd.full_body && !cmd.agent {
+        return Err(AppError::Usage(
+            "--full-body is only available in --agent mode".to_string(),
+        ));
+    }
+    if cmd.full_body && cmd.trim_body.is_some() {
+        return Err(AppError::Usage(
+            "--full-body cannot be combined with --trim-body".to_string(),
         ));
     }
     if cmd.stream && !cmd.agent {
@@ -168,6 +185,7 @@ async fn handle_search(cmd: SearchCommand, disable_telemetry: bool) -> Result<()
             cmd.stream,
             cmd.definitions,
             cmd.trim_body,
+            cmd.full_body,
             cmd.concise,
             cmd.json_pretty,
             cmd.quiet,
@@ -214,13 +232,14 @@ async fn run_agent_search(
     stream: bool,
     definitions: bool,
     trim_body: Option<usize>,
+    full_body: bool,
     concise: bool,
     json_pretty: bool,
     quiet: bool,
     progress: bool,
 ) -> Result<(), AppError> {
     let mut trim_body = trim_body;
-    apply_agent_defaults(&mut args, &mut trim_body);
+    apply_agent_defaults(&mut args, &mut trim_body, full_body);
     let settings = AgentSettings {
         include_definitions: definitions,
         trim_body,
@@ -300,6 +319,10 @@ async fn run_agent_search(
             let edit = render_edit(&output.hits);
             println!("{edit}");
         }
+        OutputFormat::Minimal => {
+            let minimal = render_minimal(&output.hits);
+            println!("{minimal}");
+        }
     }
 
     if had_error {
@@ -324,6 +347,118 @@ async fn handle_usages(cmd: UsageCommand, disable_telemetry: bool) -> Result<(),
     let summary = search::execute(args).await?;
     let output = render_usage_output(&summary, cmd.format)?;
     println!("{output}");
+    Ok(())
+}
+
+#[derive(Serialize)]
+struct CallerRef {
+    file: String,
+    line: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    snippet: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    origin: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    git_info: Option<search::GitInfo>,
+}
+
+#[derive(Serialize)]
+struct CalleeRef {
+    symbol: String,
+    file: String,
+    line: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    snippet: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    git_info: Option<search::GitInfo>,
+}
+
+#[derive(Serialize)]
+struct RefsOutput {
+    symbol: String,
+    callers: Vec<CallerRef>,
+    callees: Vec<CalleeRef>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    warnings: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    notes: Vec<String>,
+}
+
+async fn handle_refs(cmd: RefsCommand, disable_telemetry: bool) -> Result<(), AppError> {
+    if !disable_telemetry {
+        telemetry::init()?;
+    }
+
+    let callers_requested = cmd.callers || (!cmd.callers && !cmd.callees);
+    let callees_requested = cmd.callees;
+
+    let mut args = cmd.search.clone();
+    if args.context_before == 0 && args.context_after == 0 {
+        args.context_before = 2;
+        args.context_after = 2;
+    }
+    if !args.body {
+        args.body = true;
+    }
+
+    let summary = search::execute(args).await?;
+
+    let mut caller_hits: Vec<CallerRef> = Vec::new();
+    let mut definition_hits: Vec<&search::TopHit> = Vec::new();
+
+    for hit in &summary.top_hits {
+        let is_definition = is_definition_hit(hit);
+        if is_definition {
+            definition_hits.push(hit);
+        }
+        if callers_requested && (!is_definition || summary.top_hits.len() == 1) {
+            caller_hits.push(CallerRef {
+                file: hit.path.clone(),
+                line: hit.line,
+                snippet: pick_snippet(hit),
+                origin: Some(hit.origin_label.clone()),
+                git_info: hit.git_info.clone(),
+            });
+        }
+    }
+
+    if callers_requested && caller_hits.is_empty() {
+        if let Some(first) = summary.top_hits.first() {
+            caller_hits.push(CallerRef {
+                file: first.path.clone(),
+                line: first.line,
+                snippet: pick_snippet(first),
+                origin: Some(first.origin_label.clone()),
+                git_info: first.git_info.clone(),
+            });
+        }
+    }
+
+    let callees = if callees_requested {
+        extract_callees(&definition_hits, &summary.symbol)
+    } else {
+        Vec::new()
+    };
+
+    let output = RefsOutput {
+        symbol: summary.symbol.clone(),
+        callers: caller_hits,
+        callees,
+        warnings: summary.warnings.clone(),
+        notes: summary.notes.clone(),
+    };
+
+    match cmd.format {
+        RefsFormat::Json => {
+            let rendered = serde_json::to_string_pretty(&output)?;
+            println!("{rendered}");
+        }
+        RefsFormat::Tree => {
+            let rendered = render_refs_tree(&output);
+            println!("{rendered}");
+        }
+    }
+
     Ok(())
 }
 
@@ -401,13 +536,17 @@ fn collect_symbols(cmd: &SearchCommand) -> Result<Vec<String>, AppError> {
 
 const AGENT_DEFAULT_TRIM_BODY: usize = 50;
 
-fn apply_agent_defaults(args: &mut SearchArgs, trim_body: &mut Option<usize>) {
+fn apply_agent_defaults(args: &mut SearchArgs, trim_body: &mut Option<usize>, full_body: bool) {
     if args.context_before == 0 && args.context_after == 0 {
         args.context_before = 2;
         args.context_after = 2;
     }
     if !args.body {
         args.body = true;
+    }
+    if full_body {
+        *trim_body = None;
+        return;
     }
     if trim_body.is_none() {
         *trim_body = Some(AGENT_DEFAULT_TRIM_BODY);
@@ -542,6 +681,187 @@ fn collect_imports(summary: &search::SearchSummary) -> Vec<String> {
     collected
 }
 
+fn is_definition_hit(hit: &search::TopHit) -> bool {
+    if hit
+        .hints
+        .iter()
+        .any(|hint| matches!(hint.kind.as_str(), "declaration" | "impl" | "type"))
+    {
+        return true;
+    }
+
+    let Some(text) = hit
+        .snippet
+        .as_deref()
+        .or(hit.raw_snippet.as_deref())
+        .map(|s| s.to_ascii_lowercase())
+    else {
+        return false;
+    };
+
+    let trimmed = text.trim_start();
+    trimmed.starts_with("fn ")
+        || trimmed.starts_with("func ")
+        || trimmed.starts_with("pub fn")
+        || trimmed.starts_with("struct ")
+        || trimmed.starts_with("class ")
+        || trimmed.starts_with("enum ")
+        || trimmed.starts_with("trait ")
+        || trimmed.starts_with("impl ")
+}
+
+fn pick_snippet(hit: &search::TopHit) -> Option<String> {
+    hit.snippet
+        .as_deref()
+        .or(hit.expanded_snippet.as_deref())
+        .or(hit.raw_snippet.as_deref())
+        .map(normalize_line_snippet)
+}
+
+fn normalize_line_snippet(value: &str) -> String {
+    let collapsed = value
+        .split_whitespace()
+        .filter(|s| !s.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ");
+    if collapsed.len() > 160 {
+        format!("{}...", &collapsed[..157])
+    } else {
+        collapsed
+    }
+}
+
+fn extract_callees(definitions: &[&search::TopHit], symbol: &str) -> Vec<CalleeRef> {
+    let call_regex = Regex::new(r"(?m)\b([A-Za-z_][A-Za-z0-9_]*)\s*\(")
+        .unwrap_or_else(|_| Regex::new("$^").unwrap());
+    let stoplist: HashSet<&'static str> = [
+        "if",
+        "for",
+        "while",
+        "loop",
+        "match",
+        "switch",
+        "return",
+        "await",
+        "self",
+        "super",
+        "this",
+        "macro_rules",
+        "let",
+        "var",
+        "func",
+        "function",
+        "class",
+        "struct",
+        "enum",
+        "impl",
+        "where",
+    ]
+    .into_iter()
+    .collect();
+
+    let mut seen: HashSet<(String, usize, String)> = HashSet::new();
+    let mut results: Vec<CalleeRef> = Vec::new();
+    let lowered_symbol = symbol.to_ascii_lowercase();
+
+    for hit in definitions {
+        let Some(body) = hit.body.as_deref() else {
+            continue;
+        };
+        let start = hit.line.saturating_sub(50);
+        let end = hit.line.saturating_add(120);
+
+        for (idx, line) in body.lines().enumerate() {
+            let line_no = idx + 1;
+            if line_no < start || line_no > end {
+                continue;
+            }
+            for caps in call_regex.captures_iter(line) {
+                let name = caps
+                    .get(1)
+                    .map(|m| m.as_str().to_string())
+                    .unwrap_or_default();
+                if name.is_empty() {
+                    continue;
+                }
+                let lowered = name.to_ascii_lowercase();
+                if lowered == lowered_symbol || stoplist.contains(lowered.as_str()) {
+                    continue;
+                }
+                let key = (lowered.clone(), line_no, hit.path.clone());
+                if seen.insert(key) {
+                    results.push(CalleeRef {
+                        symbol: name,
+                        file: hit.path.clone(),
+                        line: line_no,
+                        snippet: Some(normalize_line_snippet(line)),
+                        git_info: hit.git_info.clone(),
+                    });
+                    if results.len() >= 50 {
+                        return results;
+                    }
+                }
+            }
+        }
+    }
+
+    results
+}
+
+fn render_refs_tree(output: &RefsOutput) -> String {
+    let mut lines = Vec::new();
+    lines.push(output.symbol.clone());
+
+    lines.push("|-- callers:".to_string());
+    if output.callers.is_empty() {
+        lines.push("|   <none>".to_string());
+    } else {
+        for caller in &output.callers {
+            let preview = caller
+                .snippet
+                .as_deref()
+                .unwrap_or("<no snippet>")
+                .to_string();
+            lines.push(format!("|   {}:{} {}", caller.file, caller.line, preview));
+        }
+    }
+
+    lines.push("\\-- callees:".to_string());
+    if output.callees.is_empty() {
+        lines.push("    <none>".to_string());
+    } else {
+        for callee in &output.callees {
+            let preview = callee
+                .snippet
+                .as_deref()
+                .unwrap_or("<no snippet>")
+                .to_string();
+            lines.push(format!(
+                "    {} -> {}:{} {}",
+                output.symbol, callee.file, callee.line, preview
+            ));
+        }
+    }
+
+    if !output.warnings.is_empty() {
+        lines.push(String::new());
+        lines.push("warnings:".to_string());
+        for warning in &output.warnings {
+            lines.push(format!("- {warning}"));
+        }
+    }
+
+    if !output.notes.is_empty() {
+        lines.push(String::new());
+        lines.push("notes:".to_string());
+        for note in &output.notes {
+            lines.push(format!("- {note}"));
+        }
+    }
+
+    lines.join("\n")
+}
+
 struct RemovalPlan {
     symbol: String,
     references: BTreeMap<String, usize>,
@@ -628,6 +948,7 @@ fn clear_cache_for_command(cli: &Cli) -> Result<(), AppError> {
     let root = match &cli.command {
         Commands::Search(cmd) => resolve_root(&cmd.search)?,
         Commands::Usages(cmd) => resolve_root(&cmd.search)?,
+        Commands::Refs(cmd) => resolve_root(&cmd.search)?,
         Commands::Remove(cmd) => resolve_root(&cmd.search)?,
         Commands::Serve(args) => {
             if let Some(path) = &args.path {
@@ -708,6 +1029,10 @@ mod tests {
             wildcard: false,
             string: false,
             include_strings: false,
+            ignore_case: false,
+            definitions_only: false,
+            usages_only: false,
+            kind: None,
             path: None,
             path_glob: Vec::new(),
             language: None,
@@ -723,6 +1048,7 @@ mod tests {
             context_before: 0,
             context_after: 0,
             body: false,
+            git_info: false,
             index_dir: None,
             cache_dir: None,
             log_dir: None,
@@ -744,6 +1070,7 @@ mod tests {
             progress: false,
             quiet: false,
             trim_body: None,
+            full_body: false,
             definitions: false,
         };
 

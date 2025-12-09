@@ -24,6 +24,10 @@ message SearchRequest {
   bool include_strings = 19;
   bool string = 20;
   repeated string path_glob = 21;
+  string kind = 22;
+  bool ignore_case = 23;
+  bool definitions_only = 24;
+  bool usages_only = 25;
 }
 
 message SearchResponse {

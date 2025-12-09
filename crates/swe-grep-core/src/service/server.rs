@@ -3,10 +3,11 @@ use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result, anyhow, bail};
+use clap::ValueEnum;
 use tokio::try_join;
 
-use crate::cli::{SearchArgs, ServeArgs, ToolArgs};
+use crate::cli::{SearchArgs, ServeArgs, SymbolKind, ToolArgs};
 use crate::search::{self, SearchSummary};
 
 use super::{grpc, http};
@@ -122,6 +123,7 @@ impl SearchExecutor {
             symbol,
             concept,
             language,
+            kind,
             root,
             timeout_secs,
             max_matches,
@@ -132,6 +134,9 @@ impl SearchExecutor {
             wildcard,
             string,
             include_strings,
+            ignore_case,
+            definitions_only,
+            usages_only,
             path_glob,
             index_dir,
             cache_dir,
@@ -139,6 +144,7 @@ impl SearchExecutor {
             context_before,
             context_after,
             body,
+            git_info,
             tool_flags,
         } = request;
 
@@ -178,12 +184,27 @@ impl SearchExecutor {
         let body = body.unwrap_or(false);
         let string = string.unwrap_or(false);
         let path_glob = path_glob.unwrap_or_default();
+        let git_info = git_info.unwrap_or(false);
+        let ignore_case = ignore_case.unwrap_or(false);
+        let definitions_only = definitions_only.unwrap_or(false);
+        let usages_only = usages_only.unwrap_or(false);
+
+        if definitions_only && usages_only {
+            bail!("--definitions-only and --usages-only cannot be combined");
+        }
+        let kind = match kind {
+            Some(raw) => {
+                Some(SymbolKind::from_str(&raw, true).map_err(|_| anyhow!("invalid kind: {raw}"))?)
+            }
+            None => None,
+        };
 
         let mut args = SearchArgs {
             symbol,
             concept,
             path: Some(root_path),
             language,
+            kind,
             timeout_secs,
             max_matches,
             concurrency,
@@ -196,10 +217,14 @@ impl SearchExecutor {
             context_before,
             context_after,
             body,
+            git_info,
             regex: regex.unwrap_or(false),
             wildcard: wildcard.unwrap_or(false),
             string,
             include_strings: include_strings.unwrap_or(false),
+            ignore_case,
+            definitions_only,
+            usages_only,
             path_glob,
             index_dir,
             cache_dir,
@@ -218,6 +243,7 @@ pub struct SearchInput {
     pub symbol: String,
     pub concept: Option<String>,
     pub language: Option<String>,
+    pub kind: Option<String>,
     pub root: Option<PathBuf>,
     pub timeout_secs: Option<u64>,
     pub max_matches: Option<usize>,
@@ -228,6 +254,9 @@ pub struct SearchInput {
     pub wildcard: Option<bool>,
     pub string: Option<bool>,
     pub include_strings: Option<bool>,
+    pub ignore_case: Option<bool>,
+    pub definitions_only: Option<bool>,
+    pub usages_only: Option<bool>,
     pub path_glob: Option<Vec<String>>,
     pub index_dir: Option<PathBuf>,
     pub cache_dir: Option<PathBuf>,
@@ -235,6 +264,7 @@ pub struct SearchInput {
     pub context_before: Option<usize>,
     pub context_after: Option<usize>,
     pub body: Option<bool>,
+    pub git_info: Option<bool>,
     pub tool_flags: ToolFlagOverrides,
 }
 

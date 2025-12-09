@@ -35,6 +35,8 @@ cargo run -p swe-grep -- search --symbol foo --timeout-secs 2
 - Path globs: `--path-glob "src/**/*.tsx"` narrows scope without forcing a language hint; accepts comma-separated patterns.
 - Output formats: `--format compact|tree|edit` (agent mode) for fast scanning, grouped results, or edit-tool ready `path:line:snippet` lines.
 - Usage graph: `swe-grep usages --symbol Foo --path .` emits a tree of references/types/imports; `--format json|compact` are available for automation.
+- Cross-reference: `swe-grep refs --symbol Foo --callers|--callees --path .` surfaces callers and best-effort callees.
+- Git metadata: add `--git-info` to search/usages/refs to append the last commit hash/date per hit.
 - Removal planning: `swe-grep remove --symbol Foo --dry-run` lists files to modify/delete; add `--apply` to delete obvious symbol-owned files cautiously.
 - Cache hygiene: `--clear-cache` wipes `.swe-grep-cache` and `.swe-grep-index` before executing the chosen subcommand.
 - Batch everywhere: multiple symbols now work without `--agent` (default mode emits a JSON array); agent mode still supports streaming and table output.

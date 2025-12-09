@@ -33,6 +33,7 @@ pub struct RipgrepTool {
     context_after: usize,
     max_columns: usize,
     threads: usize,
+    ignore_case: bool,
     matcher_cache: Arc<Mutex<LruCache<String, RegexMatcher>>>,
 }
 
@@ -44,6 +45,7 @@ impl RipgrepTool {
         context_after: usize,
         max_columns: usize,
         threads: usize,
+        ignore_case: bool,
     ) -> Self {
         let cache_size =
             NonZeroUsize::new(MATCHER_CACHE_CAPACITY).unwrap_or(NonZeroUsize::new(1).unwrap());
@@ -54,6 +56,7 @@ impl RipgrepTool {
             context_after,
             max_columns,
             threads: usize::max(1, threads),
+            ignore_case,
             matcher_cache: Arc::new(Mutex::new(LruCache::new(cache_size))),
         }
     }
@@ -149,7 +152,12 @@ impl RipgrepTool {
         }
 
         let mut builder = RegexMatcherBuilder::new();
-        builder.case_smart(true).line_terminator(Some(b'\n'));
+        if self.ignore_case {
+            builder.case_insensitive(true).case_smart(false);
+        } else {
+            builder.case_smart(true);
+        }
+        builder.line_terminator(Some(b'\n'));
         let matcher = builder
             .build_many(&normalized)
             .context("failed to compile ripgrep patterns")?;
@@ -225,9 +233,14 @@ impl RipgrepTool {
             .arg(self.threads.to_string())
             .arg("--max-columns")
             .arg(self.max_columns.to_string())
-            .arg("--smart-case")
             .arg("--max-count")
             .arg(self.max_matches.to_string());
+
+        if self.ignore_case {
+            cmd.arg("--ignore-case");
+        } else {
+            cmd.arg("--smart-case");
+        }
 
         if self.context_before > 0 {
             cmd.arg("--before-context")

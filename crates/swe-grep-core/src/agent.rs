@@ -3,7 +3,7 @@ use std::path::Path;
 
 use serde::Serialize;
 
-use crate::search::{SearchSummary, TopHit};
+use crate::search::{GitInfo, SearchSummary, TopHit};
 
 const CLI_VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -47,6 +47,8 @@ pub struct AgentHit {
     pub origin: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub score: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub git_info: Option<GitInfo>,
 }
 
 #[derive(Serialize)]
@@ -315,6 +317,7 @@ fn map_hit(symbol: &str, hit: &TopHit, settings: &AgentSettings) -> AgentHit {
         } else {
             Some(hit.score)
         },
+        git_info: hit.git_info.clone(),
     }
 }
 
@@ -440,6 +443,27 @@ pub fn render_edit(results: &[AgentHit]) -> String {
                 .unwrap_or_else(|| "<no snippet>".to_string());
             let collapsed = collapse_whitespace(&preview);
             format!("{}:{}: {}", hit.file, hit.line, collapsed)
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+pub fn render_minimal(results: &[AgentHit]) -> String {
+    let mut rows = results.to_vec();
+    rows.sort_by(|a, b| a.file.cmp(&b.file).then_with(|| a.line.cmp(&b.line)));
+    rows.into_iter()
+        .map(|hit| {
+            let snippet = hit
+                .snippet
+                .clone()
+                .or(hit.def.clone())
+                .unwrap_or_else(|| "<no snippet>".to_string());
+            format!(
+                "{}:{}:{}",
+                hit.file,
+                hit.line,
+                collapse_whitespace(&snippet)
+            )
         })
         .collect::<Vec<_>>()
         .join("\n")

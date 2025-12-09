@@ -26,6 +26,8 @@ pub enum Commands {
     Search(SearchCommand),
     /// Visualize dependencies/usages for a symbol.
     Usages(UsageCommand),
+    /// Explore callers/callees for a symbol.
+    Refs(RefsCommand),
     /// Generate a removal/refactor plan for a symbol.
     Remove(RemoveCommand),
     /// Run benchmark scenarios and collect performance metrics.
@@ -44,7 +46,7 @@ pub struct SearchCommand {
     #[arg(long, default_value_t = false, action = ArgAction::SetTrue)]
     pub agent: bool,
 
-    /// Output format when agent mode is enabled (json or table).
+    /// Output format when agent mode is enabled (json/table/compact/tree/edit/minimal).
     #[arg(long, default_value = "json", value_enum)]
     pub format: OutputFormat,
 
@@ -84,6 +86,10 @@ pub struct SearchCommand {
     #[arg(long)]
     pub trim_body: Option<usize>,
 
+    /// Disable trimming for fetched bodies (agent mode only).
+    #[arg(long, default_value_t = false, action = ArgAction::SetTrue)]
+    pub full_body: bool,
+
     /// Attempt to extract a nearby definition/signature for each hit.
     #[arg(long, default_value_t = false, action = ArgAction::SetTrue)]
     pub definitions: bool,
@@ -97,6 +103,20 @@ pub enum OutputFormat {
     Compact,
     Tree,
     Edit,
+    Minimal,
+}
+
+#[derive(Copy, Clone, Debug, ValueEnum)]
+pub enum SymbolKind {
+    Struct,
+    Class,
+    Func,
+    Enum,
+    Trait,
+    Protocol,
+    Interface,
+    Const,
+    Actor,
 }
 
 /// Shared tool toggles for search execution.
@@ -146,6 +166,18 @@ pub struct SearchArgs {
     #[arg(long, default_value_t = false, action = ArgAction::SetTrue)]
     pub include_strings: bool,
 
+    /// Perform case-insensitive matching.
+    #[arg(short = 'i', long = "ignore-case", default_value_t = false, action = ArgAction::SetTrue)]
+    pub ignore_case: bool,
+
+    /// Only show definition sites (struct, fn, class, etc.), excluding usages.
+    #[arg(long = "definitions-only", default_value_t = false, action = ArgAction::SetTrue)]
+    pub definitions_only: bool,
+
+    /// Only show usage sites, excluding definitions.
+    #[arg(long = "usages-only", default_value_t = false, action = ArgAction::SetTrue)]
+    pub usages_only: bool,
+
     /// Root directory of the repository; defaults to the current working directory.
     #[arg(long)]
     pub path: Option<PathBuf>,
@@ -157,6 +189,10 @@ pub struct SearchArgs {
     /// Optional explicit language hint for AST-Grep (e.g. rust, tsx, swift, auto-swift-ts).
     #[arg(long, value_name = "LANGUAGE")]
     pub language: Option<String>,
+
+    /// Filter results by declaration type.
+    #[arg(long, value_enum)]
+    pub kind: Option<SymbolKind>,
 
     /// Timeout applied per tool invocation (seconds).
     #[arg(long, default_value_t = 3)]
@@ -184,6 +220,10 @@ pub struct SearchArgs {
     /// Retrieve full file bodies for each surfaced hit.
     #[arg(long = "body", action = ArgAction::SetTrue, default_value_t = false)]
     pub body: bool,
+
+    /// Attach git metadata (last commit hash/date) for each hit when available.
+    #[arg(long = "git-info", action = ArgAction::SetTrue, default_value_t = false)]
+    pub git_info: bool,
 
     /// Override the default path for the Tantivy index directory.
     #[arg(long)]
@@ -214,6 +254,31 @@ pub enum UsageFormat {
     Tree,
     Json,
     Compact,
+}
+
+/// Arguments for the `refs` subcommand.
+#[derive(clap::Args, Debug)]
+pub struct RefsCommand {
+    #[command(flatten)]
+    pub search: SearchArgs,
+
+    /// Include locations that call the symbol.
+    #[arg(long, default_value_t = false, action = ArgAction::SetTrue)]
+    pub callers: bool,
+
+    /// Extract callees from the symbol's body.
+    #[arg(long, default_value_t = false, action = ArgAction::SetTrue)]
+    pub callees: bool,
+
+    /// Output style for references.
+    #[arg(long, value_enum, default_value = "json")]
+    pub format: RefsFormat,
+}
+
+#[derive(Copy, Clone, Debug, ValueEnum)]
+pub enum RefsFormat {
+    Json,
+    Tree,
 }
 
 /// Arguments for the `remove` subcommand.

@@ -290,6 +290,12 @@ pub struct SearchSummary {
 }
 
 #[derive(Clone, Serialize)]
+pub struct GitInfo {
+    pub last_commit: String,
+    pub last_modified: String,
+}
+
+#[derive(Clone, Serialize)]
 pub struct TopHit {
     pub path: String,
     pub line: usize,
@@ -318,6 +324,8 @@ pub struct TopHit {
     pub body_retrieved: bool,
     #[serde(default, skip_serializing_if = "hints_is_empty")]
     pub hints: Vec<ContextHint>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub git_info: Option<GitInfo>,
 }
 
 pub(crate) fn distribute_latency(latency_ms: u64, buckets: usize) -> Vec<u64> {

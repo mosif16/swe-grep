@@ -26,6 +26,8 @@ pub struct HttpSearchRequest {
     #[serde(default)]
     pub language: Option<String>,
     #[serde(default)]
+    pub kind: Option<String>,
+    #[serde(default)]
     pub root: Option<String>,
     #[serde(default)]
     pub timeout_secs: Option<u64>,
@@ -60,6 +62,8 @@ pub struct HttpSearchRequest {
     #[serde(default)]
     pub body: Option<bool>,
     #[serde(default)]
+    pub git_info: Option<bool>,
+    #[serde(default)]
     pub regex: Option<bool>,
     #[serde(default)]
     pub wildcard: Option<bool>,
@@ -67,6 +71,12 @@ pub struct HttpSearchRequest {
     pub string: Option<bool>,
     #[serde(default)]
     pub include_strings: Option<bool>,
+    #[serde(default)]
+    pub ignore_case: Option<bool>,
+    #[serde(default)]
+    pub definitions_only: Option<bool>,
+    #[serde(default)]
+    pub usages_only: Option<bool>,
     #[serde(default)]
     pub path_glob: Option<Vec<String>>,
 }
@@ -84,6 +94,7 @@ impl From<HttpSearchRequest> for SearchInput {
             symbol: req.symbol,
             concept: req.concept,
             language: req.language,
+            kind: req.kind,
             root: req.root.map(PathBuf::from),
             timeout_secs: req.timeout_secs,
             max_matches: req.max_matches,
@@ -94,6 +105,9 @@ impl From<HttpSearchRequest> for SearchInput {
             wildcard: req.wildcard,
             string: req.string,
             include_strings: req.include_strings,
+            ignore_case: req.ignore_case,
+            definitions_only: req.definitions_only,
+            usages_only: req.usages_only,
             path_glob: req.path_glob,
             index_dir: req.index_dir.map(PathBuf::from),
             cache_dir: req.cache_dir.map(PathBuf::from),
@@ -102,6 +116,7 @@ impl From<HttpSearchRequest> for SearchInput {
             context_before: req.context_before,
             context_after: req.context_after,
             body: req.body,
+            git_info: req.git_info,
         }
     }
 }
