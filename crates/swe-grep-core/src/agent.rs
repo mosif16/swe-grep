@@ -11,6 +11,8 @@ const CLI_VERSION: &str = env!("CARGO_PKG_VERSION");
 pub struct AgentSettings {
     pub include_definitions: bool,
     pub trim_body: Option<usize>,
+    pub body_head: Option<usize>,
+    pub body_tail: Option<usize>,
     pub concise: bool,
 }
 
@@ -71,6 +73,8 @@ pub struct AgentOutput {
     pub notes: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub concept: Option<String>,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub ast_fallback: bool,
     pub truncated: bool,
 }
 
@@ -94,6 +98,8 @@ pub struct AgentStreamEntry {
     pub notes: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub concept: Option<String>,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub ast_fallback: bool,
     pub truncated: bool,
     pub done: bool,
 }
@@ -111,6 +117,7 @@ pub struct AgentResult {
     pub related_paths: Vec<String>,
     pub notes: Vec<String>,
     pub concept: Option<String>,
+    pub ast_fallback: bool,
 }
 
 impl AgentResult {
@@ -137,6 +144,7 @@ impl AgentResult {
                 .collect(),
             notes: summary.notes.clone(),
             concept: summary.concept.clone(),
+            ast_fallback: summary.ast_fallback,
         }
     }
 }
@@ -152,6 +160,7 @@ pub fn aggregate_output(root: &Path, symbols: &[String], results: &[AgentResult]
     let mut related_paths: HashSet<String> = HashSet::new();
     let mut notes: HashSet<String> = HashSet::new();
     let mut concept: Option<String> = None;
+    let mut ast_fallback = false;
 
     for result in results {
         hits.extend(result.hits.clone());
@@ -173,6 +182,7 @@ pub fn aggregate_output(root: &Path, symbols: &[String], results: &[AgentResult]
         suggested_symbols.extend(result.suggested_symbols.clone());
         related_paths.extend(result.related_paths.clone());
         notes.extend(result.notes.clone());
+        ast_fallback |= result.ast_fallback;
         if concept.is_none() {
             concept = result.concept.clone();
         }
@@ -206,6 +216,7 @@ pub fn aggregate_output(root: &Path, symbols: &[String], results: &[AgentResult]
         related_paths,
         notes,
         concept,
+        ast_fallback,
         truncated,
     }
 }
@@ -227,6 +238,7 @@ pub fn stream_entry(result: &AgentResult, done: bool) -> AgentStreamEntry {
         related_paths: result.related_paths.clone(),
         notes: result.notes.clone(),
         concept: result.concept.clone(),
+        ast_fallback: result.ast_fallback,
         truncated: result.truncated,
         done,
     }
@@ -284,12 +296,18 @@ fn map_hit(symbol: &str, hit: &TopHit, settings: &AgentSettings) -> AgentHit {
     } else {
         hit.snippet.clone().or_else(|| hit.raw_snippet.clone())
     };
-    let (body, body_truncated, body_retrieved) = if settings.concise {
-        (None, false, false)
-    } else {
-        let (body, truncated) = trim_body(hit.body.as_deref(), settings.trim_body);
-        (body, truncated, hit.body_retrieved)
-    };
+    let (body, body_truncated, body_retrieved) =
+        if settings.concise {
+            (None, false, false)
+        } else {
+            let (body, truncated) = format_body(
+                hit.body.as_deref(),
+                settings.trim_body,
+                settings.body_head,
+                settings.body_tail,
+            );
+            (body, truncated, hit.body_retrieved)
+        };
 
     AgentHit {
         symbol: symbol.to_string(),
@@ -321,10 +339,42 @@ fn map_hit(symbol: &str, hit: &TopHit, settings: &AgentSettings) -> AgentHit {
     }
 }
 
-fn trim_body(body: Option<&str>, trim: Option<usize>) -> (Option<String>, bool) {
+fn format_body(
+    body: Option<&str>,
+    trim: Option<usize>,
+    head: Option<usize>,
+    tail: Option<usize>,
+) -> (Option<String>, bool) {
     let Some(body) = body else {
         return (None, false);
     };
+
+    let lines: Vec<&str> = body.lines().collect();
+    let head_count = head.unwrap_or(0);
+    let tail_count = tail.unwrap_or(0);
+
+    if head.is_some() || tail.is_some() {
+        let keep_head = head_count.min(lines.len());
+        let keep_tail = tail_count.min(lines.len().saturating_sub(keep_head));
+        let total_keep = keep_head + keep_tail;
+        if total_keep == 0 {
+            return (Some(String::new()), !lines.is_empty());
+        }
+        if total_keep >= lines.len() {
+            return (Some(body.to_string()), false);
+        }
+
+        let mut segments: Vec<String> = Vec::new();
+        if keep_head > 0 {
+            segments.push(lines[..keep_head].join("\n"));
+        }
+        segments.push("...".to_string());
+        if keep_tail > 0 {
+            segments.push(lines[lines.len().saturating_sub(keep_tail)..].join("\n"));
+        }
+        return (Some(segments.join("\n")), true);
+    }
+
     let Some(limit) = trim else {
         return (Some(body.to_string()), false);
     };
@@ -332,12 +382,13 @@ fn trim_body(body: Option<&str>, trim: Option<usize>) -> (Option<String>, bool) 
         return (Some(String::new()), true);
     }
 
-    let mut lines: Vec<&str> = body.lines().collect();
     if lines.len() <= limit {
         return (Some(body.to_string()), false);
     }
-    lines.truncate(limit);
-    (Some(lines.join("\n")), true)
+
+    let mut shortened = lines;
+    shortened.truncate(limit);
+    (Some(shortened.join("\n")), true)
 }
 
 fn extract_definition(hit: &TopHit, symbol: &str) -> String {

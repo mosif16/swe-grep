@@ -147,6 +147,11 @@ async fn handle_search(cmd: SearchCommand, disable_telemetry: bool) -> Result<()
             "--trim-body is only available in --agent mode".to_string(),
         ));
     }
+    if (cmd.body_head.is_some() || cmd.body_tail.is_some()) && !cmd.agent {
+        return Err(AppError::Usage(
+            "--body-head/--body-tail are only available in --agent mode".to_string(),
+        ));
+    }
     if cmd.full_body && !cmd.agent {
         return Err(AppError::Usage(
             "--full-body is only available in --agent mode".to_string(),
@@ -155,6 +160,16 @@ async fn handle_search(cmd: SearchCommand, disable_telemetry: bool) -> Result<()
     if cmd.full_body && cmd.trim_body.is_some() {
         return Err(AppError::Usage(
             "--full-body cannot be combined with --trim-body".to_string(),
+        ));
+    }
+    if cmd.full_body && (cmd.body_head.is_some() || cmd.body_tail.is_some()) {
+        return Err(AppError::Usage(
+            "--full-body cannot be combined with --body-head/--body-tail".to_string(),
+        ));
+    }
+    if (cmd.body_head.is_some() || cmd.body_tail.is_some()) && cmd.trim_body.is_some() {
+        return Err(AppError::Usage(
+            "--body-head/--body-tail cannot be combined with --trim-body".to_string(),
         ));
     }
     if cmd.stream && !cmd.agent {
@@ -185,6 +200,8 @@ async fn handle_search(cmd: SearchCommand, disable_telemetry: bool) -> Result<()
             cmd.stream,
             cmd.definitions,
             cmd.trim_body,
+            cmd.body_head,
+            cmd.body_tail,
             cmd.full_body,
             cmd.concise,
             cmd.json_pretty,
@@ -232,6 +249,8 @@ async fn run_agent_search(
     stream: bool,
     definitions: bool,
     trim_body: Option<usize>,
+    body_head: Option<usize>,
+    body_tail: Option<usize>,
     full_body: bool,
     concise: bool,
     json_pretty: bool,
@@ -239,10 +258,12 @@ async fn run_agent_search(
     progress: bool,
 ) -> Result<(), AppError> {
     let mut trim_body = trim_body;
-    apply_agent_defaults(&mut args, &mut trim_body, full_body);
+    apply_agent_defaults(&mut args, &mut trim_body, full_body, body_head, body_tail);
     let settings = AgentSettings {
         include_definitions: definitions,
         trim_body,
+        body_head,
+        body_tail,
         concise,
     };
 
@@ -536,7 +557,13 @@ fn collect_symbols(cmd: &SearchCommand) -> Result<Vec<String>, AppError> {
 
 const AGENT_DEFAULT_TRIM_BODY: usize = 50;
 
-fn apply_agent_defaults(args: &mut SearchArgs, trim_body: &mut Option<usize>, full_body: bool) {
+fn apply_agent_defaults(
+    args: &mut SearchArgs,
+    trim_body: &mut Option<usize>,
+    full_body: bool,
+    body_head: Option<usize>,
+    body_tail: Option<usize>,
+) {
     if args.context_before == 0 && args.context_after == 0 {
         args.context_before = 2;
         args.context_after = 2;
@@ -545,6 +572,10 @@ fn apply_agent_defaults(args: &mut SearchArgs, trim_body: &mut Option<usize>, fu
         args.body = true;
     }
     if full_body {
+        *trim_body = None;
+        return;
+    }
+    if body_head.is_some() || body_tail.is_some() {
         *trim_body = None;
         return;
     }
@@ -579,6 +610,8 @@ fn render_usage_output(
     let settings = AgentSettings {
         include_definitions: true,
         trim_body: Some(8),
+        body_head: None,
+        body_tail: None,
         concise: true,
     };
     let agent_result = AgentResult::from_summary(&summary.symbol, summary, &settings);
@@ -1029,12 +1062,14 @@ mod tests {
             wildcard: false,
             string: false,
             include_strings: false,
+            code_only: false,
             ignore_case: false,
             definitions_only: false,
             usages_only: false,
             kind: None,
             path: None,
             path_glob: Vec::new(),
+            exclude_patterns: Vec::new(),
             language: None,
             timeout_secs: 3,
             max_matches: 20,
@@ -1070,6 +1105,8 @@ mod tests {
             progress: false,
             quiet: false,
             trim_body: None,
+            body_head: None,
+            body_tail: None,
             full_body: false,
             definitions: false,
         };

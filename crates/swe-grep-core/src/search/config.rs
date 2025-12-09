@@ -7,7 +7,7 @@ use globset::{Glob, GlobSet, GlobSetBuilder};
 use super::query::PatternMode;
 use crate::cli::{SearchArgs, SymbolKind};
 pub(crate) use crate::language::{
-    expand_language_hint, extensions_for_languages, languages_include,
+    code_extensions_for_languages, expand_language_hint, extensions_for_languages, languages_include,
 };
 
 pub(crate) const DEFAULT_MAX_COLUMNS: usize = 200;
@@ -43,10 +43,14 @@ pub(crate) struct SearchConfig {
     pub(crate) body: bool,
     pub(crate) max_body_bytes: usize,
     pub(crate) include_strings: bool,
+    #[allow(dead_code)]
+    pub(crate) code_only: bool,
     pub(crate) definitions_only: bool,
     pub(crate) usages_only: bool,
     pub(crate) git_info: bool,
     pub(crate) path_globs: Option<GlobSet>,
+    pub(crate) exclude_globs: Option<GlobSet>,
+    pub(crate) extension_filter: Option<Vec<String>>,
 }
 
 impl SearchConfig {
@@ -139,6 +143,17 @@ impl SearchConfig {
             .any(|lang| lang.eq_ignore_ascii_case("css") || lang.eq_ignore_ascii_case("scss"));
         let use_ast = args.tools.use_ast_grep && !uses_css_like && !args.string;
         let path_globs = build_globset(&root, &path_glob_patterns)?;
+        let exclude_globs = build_globset(&root, &args.exclude_patterns)?;
+        let include_strings = args.include_strings && !args.code_only;
+        let extension_filter = if args.code_only {
+            Some(code_extensions_for_languages(&language_tokens))
+        } else {
+            extensions_for_languages(&language_tokens, include_strings).map(|exts| {
+                exts.into_iter()
+                    .map(|value| value.to_string())
+                    .collect::<Vec<_>>()
+            })
+        };
 
         Ok(Self {
             root,
@@ -172,16 +187,19 @@ impl SearchConfig {
             } else {
                 PatternMode::Literal
             },
-            include_strings: args.include_strings,
+            include_strings,
+            code_only: args.code_only,
             definitions_only: args.definitions_only,
             usages_only: args.usages_only,
             git_info: args.git_info,
             path_globs,
+            exclude_globs,
+            extension_filter,
         })
     }
 }
 
-pub(crate) fn passes_extension_filter(path: &Path, extensions: Option<&[&str]>) -> bool {
+pub(crate) fn passes_extension_filter(path: &Path, extensions: Option<&[String]>) -> bool {
     match extensions {
         Some(exts) => path
             .extension()

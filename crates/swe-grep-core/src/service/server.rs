@@ -134,10 +134,12 @@ impl SearchExecutor {
             wildcard,
             string,
             include_strings,
+            code_only,
             ignore_case,
             definitions_only,
             usages_only,
             path_glob,
+            exclude_patterns,
             index_dir,
             cache_dir,
             log_dir,
@@ -184,10 +186,13 @@ impl SearchExecutor {
         let body = body.unwrap_or(false);
         let string = string.unwrap_or(false);
         let path_glob = path_glob.unwrap_or_default();
+        let exclude_patterns = exclude_patterns.unwrap_or_default();
         let git_info = git_info.unwrap_or(false);
         let ignore_case = ignore_case.unwrap_or(false);
         let definitions_only = definitions_only.unwrap_or(false);
         let usages_only = usages_only.unwrap_or(false);
+        let code_only = code_only.unwrap_or(false);
+        let include_strings = include_strings.unwrap_or(false) && !code_only;
 
         if definitions_only && usages_only {
             bail!("--definitions-only and --usages-only cannot be combined");
@@ -221,11 +226,13 @@ impl SearchExecutor {
             regex: regex.unwrap_or(false),
             wildcard: wildcard.unwrap_or(false),
             string,
-            include_strings: include_strings.unwrap_or(false),
+            include_strings,
+            code_only,
             ignore_case,
             definitions_only,
             usages_only,
             path_glob,
+            exclude_patterns,
             index_dir,
             cache_dir,
             log_dir,
@@ -254,10 +261,12 @@ pub struct SearchInput {
     pub wildcard: Option<bool>,
     pub string: Option<bool>,
     pub include_strings: Option<bool>,
+    pub code_only: Option<bool>,
     pub ignore_case: Option<bool>,
     pub definitions_only: Option<bool>,
     pub usages_only: Option<bool>,
     pub path_glob: Option<Vec<String>>,
+    pub exclude_patterns: Option<Vec<String>>,
     pub index_dir: Option<PathBuf>,
     pub cache_dir: Option<PathBuf>,
     pub log_dir: Option<PathBuf>,

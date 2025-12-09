@@ -28,6 +28,8 @@ message SearchRequest {
   bool ignore_case = 23;
   bool definitions_only = 24;
   bool usages_only = 25;
+  bool code_only = 26;
+  repeated string exclude = 27;
 }
 
 message SearchResponse {
@@ -118,6 +120,7 @@ message SearchSummary {
   repeated string related_paths = 18;
   repeated string notes = 19;
   bool truncated = 20;
+  bool ast_fallback = 21;
 }
 
 message HealthCheckRequest {}

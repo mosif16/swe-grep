@@ -11,6 +11,7 @@ use anyhow::{Context, Result, anyhow};
 use grep_matcher::LineTerminator;
 use grep_regex::{RegexMatcher, RegexMatcherBuilder};
 use grep_searcher::{BinaryDetection, Searcher, SearcherBuilder, Sink, SinkContext, SinkMatch};
+use globset::GlobSet;
 use ignore::WalkBuilder;
 use lru::LruCache;
 use rayon::ThreadPoolBuilder;
@@ -21,6 +22,7 @@ use tokio::process::Command;
 use tokio::task;
 use tokio::time::timeout;
 
+use crate::search::passes_extension_filter;
 use super::common::{ChildGuard, RgMessage};
 
 const MATCHER_CACHE_CAPACITY: usize = 64;
@@ -66,19 +68,32 @@ impl RipgrepTool {
         root: &Path,
         queries: &[String],
         paths: &[PathBuf],
+        excludes: Option<&GlobSet>,
+        extensions: Option<&[String]>,
     ) -> Result<Vec<RipgrepMatch>> {
         if queries.is_empty() {
             return Ok(Vec::new());
         }
 
-        match self.search_embedded(root, queries, paths).await {
+        let search_paths = self.collect_paths(root, paths, excludes, extensions)?;
+        if search_paths.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        match self
+            .search_embedded(root, queries, search_paths.clone())
+            .await
+        {
             Ok(results) => Ok(results),
             Err(embed_err) => {
                 tracing::warn!(
                     error = %embed_err,
                     "embedded ripgrep failed; falling back to external rg"
                 );
-                match self.search_external(root, queries, paths).await {
+                match self
+                    .search_external(root, queries, &search_paths)
+                    .await
+                {
                     Ok(results) => Ok(results),
                     Err(fallback_err) => Err(embed_err
                         .context(format!("fallback to external rg failed: {fallback_err}"))),
@@ -91,11 +106,10 @@ impl RipgrepTool {
         &self,
         root: &Path,
         queries: &[String],
-        paths: &[PathBuf],
+        search_paths: Vec<PathBuf>,
     ) -> Result<Vec<RipgrepMatch>> {
         let deadline = Instant::now() + self.timeout;
         let matcher = self.compile_matcher(queries)?;
-        let search_paths = self.collect_paths(root, paths)?;
         if search_paths.is_empty() {
             return Ok(Vec::new());
         }
@@ -165,7 +179,13 @@ impl RipgrepTool {
         Ok(matcher)
     }
 
-    fn collect_paths(&self, root: &Path, paths: &[PathBuf]) -> Result<Vec<PathBuf>> {
+    fn collect_paths(
+        &self,
+        root: &Path,
+        paths: &[PathBuf],
+        excludes: Option<&GlobSet>,
+        extensions: Option<&[String]>,
+    ) -> Result<Vec<PathBuf>> {
         let mut roots: Vec<PathBuf> = Vec::new();
         if paths.is_empty() {
             roots.push(root.to_path_buf());
@@ -205,7 +225,10 @@ impl RipgrepTool {
                         .unwrap_or(false)
                     {
                         let path = dir_entry.into_path();
-                        if seen.insert(path.clone()) {
+                        if seen.insert(path.clone())
+                            && !is_excluded(root, &path, excludes)
+                            && passes_extension_filter(&path, extensions)
+                        {
                             files.push(path);
                         }
                     }
@@ -353,6 +376,20 @@ impl RipgrepTool {
             .await
             .with_context(|| "ripgrep invocation timed out")?
     }
+}
+
+fn is_excluded(root: &Path, path: &Path, globs: Option<&GlobSet>) -> bool {
+    let Some(globs) = globs else {
+        return false;
+    };
+
+    let rel = path
+        .strip_prefix(root)
+        .map(|p| p.to_string_lossy().replace('\\', "/"))
+        .unwrap_or_else(|_| path.to_string_lossy().replace('\\', "/"));
+    let abs = path.to_string_lossy().replace('\\', "/");
+
+    globs.is_match(rel.as_str()) || globs.is_match(abs.as_str())
 }
 
 #[derive(Clone, Debug)]

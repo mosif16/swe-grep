@@ -286,6 +286,8 @@ pub struct SearchSummary {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub warnings: Vec<String>,
     #[serde(default, skip_serializing_if = "is_false")]
+    pub ast_fallback: bool,
+    #[serde(default, skip_serializing_if = "is_false")]
     pub truncated: bool,
 }
 

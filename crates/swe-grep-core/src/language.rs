@@ -293,6 +293,56 @@ pub fn languages_include(tokens: &[String], needle: &str) -> bool {
     tokens.iter().any(|token| token == needle)
 }
 
+pub fn code_extensions_for_languages(languages: &[String]) -> Vec<String> {
+    let mut results: Vec<String> = Vec::new();
+    let mut push_unique = |ext: &str| {
+        if !results
+            .iter()
+            .any(|existing| existing.eq_ignore_ascii_case(ext))
+        {
+            results.push(ext.to_string());
+        }
+    };
+
+    if languages.is_empty() {
+        for ext in [
+            "rs", "swift", "ts", "tsx", "js", "jsx", "kt", "kts", "py", "java", "go", "rb",
+            "php", "cs", "cpp", "cxx", "cc", "c", "h", "hpp", "hh", "m", "mm", "scala", "dart",
+            "css", "scss", "sass", "sql",
+        ] {
+            push_unique(ext);
+        }
+        return results;
+    }
+
+    for lang in languages {
+        match lang.as_str() {
+            "swift" => push_unique("swift"),
+            "tsx" => push_unique("tsx"),
+            "ts" | "typescript" => {
+                push_unique("ts");
+                push_unique("tsx");
+            }
+            "rust" => push_unique("rs"),
+            "js" | "javascript" => {
+                push_unique("js");
+                push_unique("jsx");
+            }
+            "jsx" => push_unique("jsx"),
+            "kt" | "kts" | "kotlin" => {
+                push_unique("kt");
+                push_unique("kts");
+            }
+            "py" | "python" => push_unique("py"),
+            "css" => push_unique("css"),
+            "scss" | "sass" => push_unique("scss"),
+            other => push_unique(other),
+        }
+    }
+
+    results
+}
+
 pub fn extensions_for_languages(
     languages: &[String],
     include_strings: bool,

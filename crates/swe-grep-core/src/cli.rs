@@ -86,6 +86,14 @@ pub struct SearchCommand {
     #[arg(long)]
     pub trim_body: Option<usize>,
 
+    /// Number of lines to include from the start of each body (agent mode only).
+    #[arg(long = "body-head")]
+    pub body_head: Option<usize>,
+
+    /// Number of lines to include from the end of each body (agent mode only).
+    #[arg(long = "body-tail")]
+    pub body_tail: Option<usize>,
+
     /// Disable trimming for fetched bodies (agent mode only).
     #[arg(long, default_value_t = false, action = ArgAction::SetTrue)]
     pub full_body: bool,
@@ -166,6 +174,10 @@ pub struct SearchArgs {
     #[arg(long, default_value_t = false, action = ArgAction::SetTrue)]
     pub include_strings: bool,
 
+    /// Exclude non-code files (markdown, txt, json configs) from results.
+    #[arg(long, default_value_t = false, action = ArgAction::SetTrue)]
+    pub code_only: bool,
+
     /// Perform case-insensitive matching.
     #[arg(short = 'i', long = "ignore-case", default_value_t = false, action = ArgAction::SetTrue)]
     pub ignore_case: bool,
@@ -185,6 +197,10 @@ pub struct SearchArgs {
     /// Glob patterns to limit the search scope (e.g. \"src/**/*.tsx\"); can be comma-separated.
     #[arg(long = "path-glob", value_delimiter = ',')]
     pub path_glob: Vec<String>,
+
+    /// Glob patterns to exclude from results (e.g., \"*.md,PLAN*\").
+    #[arg(long = "exclude", value_delimiter = ',')]
+    pub exclude_patterns: Vec<String>,
 
     /// Optional explicit language hint for AST-Grep (e.g. rust, tsx, swift, auto-swift-ts).
     #[arg(long, value_name = "LANGUAGE")]

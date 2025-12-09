@@ -85,6 +85,7 @@ fn map_request(proto: proto::SearchRequest) -> SearchInput {
         wildcard: Some(proto.wildcard),
         string: Some(proto.string),
         include_strings: Some(proto.include_strings),
+        code_only: Some(proto.code_only),
         ignore_case: Some(proto.ignore_case),
         definitions_only: Some(proto.definitions_only),
         usages_only: Some(proto.usages_only),
@@ -92,6 +93,11 @@ fn map_request(proto: proto::SearchRequest) -> SearchInput {
             None
         } else {
             Some(proto.path_glob)
+        },
+        exclude_patterns: if proto.exclude.is_empty() {
+            None
+        } else {
+            Some(proto.exclude)
         },
         index_dir: path_from_string(proto.index_dir),
         cache_dir: path_from_string(proto.cache_dir),
@@ -203,6 +209,7 @@ impl From<SearchSummary> for proto::SearchSummary {
             related_paths: summary.related_paths,
             notes: summary.notes,
             truncated: summary.truncated,
+            ast_fallback: summary.ast_fallback,
         }
     }
 }

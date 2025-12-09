@@ -19,9 +19,10 @@ use crate::tools::rga::RgaTool;
 #[cfg(feature = "indexing")]
 use swe_grep_indexer::{IndexConfig, TantivyIndex};
 
+use super::concept_expansion::{self, ConceptExpansion};
 use super::config::{
-    DEFAULT_INLINE_CONTEXT, SearchConfig, TRUNCATED_INLINE_CONTEXT, extensions_for_languages,
-    languages_include, normalize_path, passes_extension_filter,
+    DEFAULT_INLINE_CONTEXT, SearchConfig, TRUNCATED_INLINE_CONTEXT, languages_include,
+    normalize_path, passes_extension_filter,
 };
 use super::formatting::{
     ContextHint, format_snippet, gather_expanded_snippet, rust_context_hints, swift_context_hints,
@@ -37,8 +38,30 @@ use super::stats::{
 use crate::cli::SymbolKind;
 use crate::language::detect_language_from_path;
 
+const FILE_TYPE_SCORES: &[(&str, i32)] = &[
+    ("rs", 100),
+    ("swift", 100),
+    ("ts", 100),
+    ("tsx", 100),
+    ("js", 90),
+    ("jsx", 90),
+    ("py", 90),
+    ("go", 90),
+    ("toml", 50),
+    ("yaml", 50),
+    ("json", 40),
+    ("md", 10),
+    ("txt", 10),
+    ("rst", 10),
+];
+
+const DOC_EXTENSIONS: &[&str] = &["md", "txt", "rst"];
+const DEFINITION_BONUS: f32 = 0.35;
+const LANGUAGE_EXTENSION_BOOST: f32 = 1.15;
+
 pub(crate) struct SearchEngine {
     pub(crate) config: SearchConfig,
+    concept_expansion: Option<ConceptExpansion>,
     fd_tool: Option<FdTool>,
     rg_tool: RipgrepTool,
     rga_tool: Option<RgaTool>,
@@ -55,12 +78,18 @@ pub(crate) struct SearchEngine {
     language_cache: HashMap<PathBuf, &'static str>,
     body_cache: HashMap<PathBuf, BodyPayload>,
     warnings: Vec<String>,
+    ast_fallback: bool,
 }
 
 impl SearchEngine {
     pub(crate) fn new(config: SearchConfig) -> Result<Self> {
         let init_start = StdInstant::now();
         let mut startup_stats = StartupStats::default();
+
+        let concept_expansion = config
+            .concept
+            .as_ref()
+            .map(|concept| concept_expansion::expand_concept(concept));
 
         let fd_tool = None;
 
@@ -106,6 +135,7 @@ impl SearchEngine {
 
         Ok(Self {
             config,
+            concept_expansion,
             fd_tool,
             rg_tool,
             rga_tool,
@@ -122,12 +152,14 @@ impl SearchEngine {
             language_cache: HashMap::new(),
             body_cache: HashMap::new(),
             warnings: Vec::new(),
+            ast_fallback: false,
         })
     }
 
     pub(crate) async fn run_cycle(&mut self) -> Result<SearchSummary> {
         let mut stage_stats = StageStats::default();
         self.warnings.clear();
+        self.ast_fallback = false;
 
         tracing::info!(symbol = %self.config.symbol, "search_cycle_start");
 
@@ -262,9 +294,11 @@ impl SearchEngine {
         crate::telemetry::record_stage_latency("ast", stage_stats.disambiguate_ms);
         crate::telemetry::record_stage_latency("verify", stage_stats.verify_ms);
 
-        let (related_symbols, related_paths, suggested_symbols, notes) = self
+        let (related_symbols, related_paths, suggested_symbols, mut alt_notes) = self
             .suggest_alternatives(&discover_candidates, &verification, &rewrites)
             .await;
+        let mut notes = verification.notes;
+        notes.append(&mut alt_notes);
 
         let summary = SearchSummary {
             cycle: 1,
@@ -286,6 +320,7 @@ impl SearchEngine {
             stage_stats,
             reward: round_two(self.reward_total),
             warnings: self.warnings.clone(),
+            ast_fallback: self.ast_fallback,
             truncated: verification.dedup_count >= self.config.max_matches,
         };
 
@@ -310,10 +345,15 @@ impl SearchEngine {
 
     fn build_queries(&self) -> Vec<String> {
         if let Some(concept) = &self.config.concept {
+            let expansion = self
+                .concept_expansion
+                .clone()
+                .unwrap_or_else(|| concept_expansion::expand_concept(concept));
             return QueryRewriter::for_concept(
                 concept,
                 &self.config.language_tokens,
                 self.config.ignore_case,
+                expansion,
             )
             .build();
         }
@@ -335,7 +375,13 @@ impl SearchEngine {
         let probe_start = Instant::now();
         let matches = match self
             .rg_tool
-            .search_union(&self.config.root, rewrites, &[])
+            .search_union(
+                &self.config.root,
+                rewrites,
+                &[],
+                self.config.exclude_globs.as_ref(),
+                self.config.extension_filter.as_deref(),
+            )
             .await
         {
             Ok(matches) => matches,
@@ -412,13 +458,14 @@ impl SearchEngine {
             related_symbols: Vec::new(),
             suggested_symbols: Vec::new(),
             related_paths: Vec::new(),
-            notes: Vec::new(),
+            notes: verification.notes,
             fd_candidates: Vec::new(),
             ast_hits: Vec::new(),
             startup_stats: Some(self.startup_stats.clone()),
             stage_stats,
             reward: round_two(self.reward_total),
             warnings: self.warnings.clone(),
+            ast_fallback: self.ast_fallback,
             truncated: verification.dedup_count >= self.config.max_matches,
         };
 
@@ -529,6 +576,32 @@ impl SearchEngine {
             last_commit: commit.to_string(),
             last_modified: date.to_string(),
         })
+    }
+
+    fn apply_concept_boost(&self, hit: &mut SearchHit, expansion: &ConceptExpansion) {
+        let mut content = String::new();
+        content.push_str(&hit.snippet);
+        if let Some(raw) = &hit.raw_snippet {
+            content.push('\n');
+            content.push_str(raw);
+        }
+        content.push('\n');
+        content.push_str(&hit.path.to_string_lossy());
+
+        let (primary_hits, synonym_hits) = expansion.count_matches(&content);
+        if primary_hits == 0 && synonym_hits == 0 {
+            return;
+        }
+
+        let mut boost = 0.0;
+        if primary_hits > 0 {
+            boost += 0.4 + 0.05 * (primary_hits.saturating_sub(1) as f32);
+        }
+        if synonym_hits > 0 {
+            boost += 0.15 + 0.03 * (synonym_hits.saturating_sub(1) as f32);
+        }
+
+        hit.score += boost;
     }
 
     fn should_attach_body(&self, path: &Path) -> bool {
@@ -678,8 +751,15 @@ impl SearchEngine {
             cause
                 .downcast_ref::<std::io::Error>()
                 .map(|io| io.kind() == ErrorKind::NotFound)
-                .unwrap_or(false)
+            .unwrap_or(false)
         })
+    }
+
+    fn is_simple_identifier(symbol: &str) -> bool {
+        !symbol.is_empty()
+            && symbol
+                .chars()
+                .all(|ch| ch.is_ascii_alphanumeric() || ch == '_' || ch == '$')
     }
 
     async fn suggest_alternatives(
@@ -770,7 +850,13 @@ impl SearchEngine {
         let queries = vec![prefix.to_string()];
         match self
             .rg_tool
-            .search_union(&self.config.root, &queries, &[])
+            .search_union(
+                &self.config.root,
+                &queries,
+                &[],
+                self.config.exclude_globs.as_ref(),
+                self.config.extension_filter.as_deref(),
+            )
             .await
         {
             Ok(matches) => {
@@ -853,6 +939,23 @@ impl SearchEngine {
     }
 
     fn matches_path_globs(&self, path: &Path) -> bool {
+        if !passes_extension_filter(path, self.config.extension_filter.as_deref()) {
+            return false;
+        }
+
+        if let Some(globs) = &self.config.exclude_globs {
+            let rel = path.to_string_lossy().replace('\\', "/");
+            let abs_path = if path.is_absolute() {
+                path.to_path_buf()
+            } else {
+                self.config.root.join(path)
+            };
+            let abs = abs_path.to_string_lossy().replace('\\', "/");
+            if globs.is_match(rel.as_str()) || globs.is_match(abs.as_str()) {
+                return false;
+            }
+        }
+
         if let Some(globs) = &self.config.path_globs {
             let rel = path.to_string_lossy().replace('\\', "/");
             let abs_path = if path.is_absolute() {
@@ -865,6 +968,48 @@ impl SearchEngine {
         } else {
             true
         }
+    }
+
+    fn file_type_multiplier(&self, path: &Path) -> f32 {
+        let ext = path
+            .extension()
+            .and_then(|ext| ext.to_str())
+            .map(|ext| ext.to_ascii_lowercase());
+        let base = ext
+            .as_deref()
+            .and_then(file_score_for_extension)
+            .map(|score| score as f32 / 100.0)
+            .unwrap_or(1.0);
+
+        if self.language_matches_path(path, ext.as_deref()) {
+            base * LANGUAGE_EXTENSION_BOOST
+        } else {
+            base
+        }
+    }
+
+    fn language_matches_path(&self, path: &Path, ext: Option<&str>) -> bool {
+        if self.config.language_tokens.is_empty() {
+            return false;
+        }
+        if let Some(ext) = ext {
+            if self
+                .config
+                .language_tokens
+                .iter()
+                .any(|token| token.eq_ignore_ascii_case(ext))
+            {
+                return true;
+            }
+        }
+        if let Some(language) = detect_language_from_path(path) {
+            return self
+                .config
+                .language_tokens
+                .iter()
+                .any(|token| token.eq_ignore_ascii_case(language));
+        }
+        false
     }
 
     fn context_padding(&self, hit: &SearchHit) -> (usize, usize, bool) {
@@ -936,9 +1081,8 @@ impl SearchEngine {
     async fn discover(&mut self) -> Vec<PathBuf> {
         let root = self.config.root.clone();
         let symbol = self.config.symbol.clone();
-        let extension_filters =
-            extensions_for_languages(&self.config.language_tokens, self.config.include_strings);
-        let extensions = extension_filters.as_deref();
+        let extension_filter = self.config.extension_filter.clone();
+        let extensions = extension_filter.as_deref();
         let mut candidates: Vec<PathBuf> = Vec::new();
         let mut seen: HashSet<PathBuf> = HashSet::new();
 
@@ -1082,7 +1226,13 @@ impl SearchEngine {
         crate::telemetry::record_tool_invocation("rg");
         match self
             .rg_tool
-            .search_union(&self.config.root, rewrites, scope)
+            .search_union(
+                &self.config.root,
+                rewrites,
+                scope,
+                self.config.exclude_globs.as_ref(),
+                self.config.extension_filter.as_deref(),
+            )
             .await
         {
             Ok(matches) => {
@@ -1124,21 +1274,25 @@ impl SearchEngine {
 
         crate::telemetry::record_tool_invocation("ast-grep");
 
-        ast_tool
+        match ast_tool
             .search_identifier(&root, symbol.as_str(), &language_tokens, scope)
             .await
-            .map(|matches| {
+        {
+            Ok(matches) => {
                 crate::telemetry::record_tool_results("ast-grep", matches.len());
                 matches
-            })
-            .unwrap_or_else(|err| {
+            }
+            Err(err) => {
                 if Self::is_not_found_error(&err) {
                     self.ast_unavailable = true;
                     tracing::debug!(
                         error = %err,
                         "ast-grep not found on PATH; disabling AST disambiguation"
                     );
-                } else if let Some(pattern_err) = err.downcast_ref::<AstPatternError>() {
+                    return Vec::new();
+                }
+
+                if let Some(pattern_err) = err.downcast_ref::<AstPatternError>() {
                     tracing::debug!(
                         symbol = %symbol,
                         pattern = %pattern_err.pattern(),
@@ -1152,16 +1306,62 @@ impl SearchEngine {
                     tracing::warn!(error = %err, "ast-grep invocation failed");
                     self.push_warning(format!("ast-grep invocation failed: {err}"));
                 }
+
+                if Self::is_simple_identifier(&symbol) {
+                    self.ast_fallback = true;
+                    self.push_warning(format!(
+                        "ast-grep failed for `{symbol}`; using regex fallback"
+                    ));
+                    return self.regex_disambiguate(scope).await;
+                }
+
                 Vec::new()
-            })
+            }
+        }
+    }
+
+    async fn regex_disambiguate(&mut self, scope: &[PathBuf]) -> Vec<AstGrepMatch> {
+        let queries = self.build_queries();
+        match self
+            .rg_tool
+            .search_union(
+                &self.config.root,
+                &queries,
+                scope,
+                self.config.exclude_globs.as_ref(),
+                self.config.extension_filter.as_deref(),
+            )
+            .await
+        {
+            Ok(matches) => matches
+                .into_iter()
+                .filter_map(|m| {
+                    normalize_path(&self.config.root, &m.path)
+                        .ok()
+                        .filter(|p| self.matches_path_globs(p))
+                        .map(|path| AstGrepMatch {
+                            path,
+                            line: m.line_number.saturating_sub(1),
+                        })
+                })
+                .collect(),
+            Err(err) => {
+                self.push_warning(format!(
+                    "regex fallback after ast-grep failure failed: {err}"
+                ));
+                Vec::new()
+            }
+        }
     }
 
     #[cfg(feature = "indexing")]
     async fn ensure_index(&mut self) -> Result<&TantivyIndex> {
         if self.index.is_none() {
-            let extensions =
-                extensions_for_languages(&self.config.language_tokens, self.config.include_strings)
-                    .map(|exts| exts.into_iter().map(|s| s.to_string()).collect::<Vec<_>>());
+            let extensions = self
+                .config
+                .extension_filter
+                .clone()
+                .map(|exts| exts.into_iter().map(|s| s.to_string()).collect::<Vec<_>>());
             let index_config = IndexConfig {
                 root: self.config.root.clone(),
                 index_dir: self.config.index_dir.clone(),
@@ -1207,6 +1407,10 @@ impl SearchEngine {
                 hit.origin = HitOrigin::AstGrep;
             }
 
+            if let Some(expansion) = &self.concept_expansion {
+                self.apply_concept_boost(&mut hit, expansion);
+            }
+
             dedup
                 .entry(key)
                 .and_modify(|existing| {
@@ -1218,22 +1422,42 @@ impl SearchEngine {
         }
 
         let mut dedup_hits: Vec<SearchHit> = dedup.into_values().collect();
+        let mut hint_cache: HashMap<(PathBuf, usize), Vec<ContextHint>> = HashMap::new();
+        let mut definition_hits: HashSet<(PathBuf, usize)> = HashSet::new();
+
+        for hit in dedup_hits.iter_mut() {
+            let key = (hit.path.clone(), hit.line);
+            let hints = self.compute_context_hints(&hit.path, hit.line);
+            hint_cache.insert(key.clone(), hints.clone());
+
+            if self.is_definition_hit(hit, &hints) {
+                definition_hits.insert(key.clone());
+                hit.score += DEFINITION_BONUS;
+            }
+
+            hit.score *= self.file_type_multiplier(&hit.path);
+        }
+
         dedup_hits.sort_by(|a, b| {
-            b.score
-                .partial_cmp(&a.score)
-                .unwrap_or(std::cmp::Ordering::Equal)
+            let a_def = definition_hits.contains(&(a.path.clone(), a.line));
+            let b_def = definition_hits.contains(&(b.path.clone(), b.line));
+            b_def
+                .cmp(&a_def)
+                .then_with(|| {
+                    b.score
+                        .partial_cmp(&a.score)
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                })
                 .then_with(|| a.path.cmp(&b.path))
                 .then_with(|| a.line.cmp(&b.line))
         });
 
         self.dedup_cache.retain_new(&mut dedup_hits);
 
-        let mut hint_cache: HashMap<(PathBuf, usize), Vec<ContextHint>> = HashMap::new();
         if self.config.definitions_only || self.config.usages_only {
             dedup_hits.retain(|hit| {
-                let hints = self.compute_context_hints(&hit.path, hit.line);
-                hint_cache.insert((hit.path.clone(), hit.line), hints.clone());
-                let is_definition = self.is_definition_hit(hit, &hints);
+                let key = (hit.path.clone(), hit.line);
+                let is_definition = definition_hits.contains(&key);
                 if self.config.definitions_only {
                     is_definition
                 } else {
@@ -1245,12 +1469,31 @@ impl SearchEngine {
         if let Some(kind) = self.config.kind {
             dedup_hits.retain(|hit| {
                 let hints = hint_cache
-                    .get(&(hit.path.clone(), hit.line))
-                    .cloned()
-                    .unwrap_or_else(|| self.compute_context_hints(&hit.path, hit.line));
-                hint_cache.insert((hit.path.clone(), hit.line), hints.clone());
-                self.matches_kind(kind, hit, &hints)
+                    .entry((hit.path.clone(), hit.line))
+                    .or_insert_with(|| self.compute_context_hints(&hit.path, hit.line));
+                self.matches_kind(kind, hit, hints)
             });
+        }
+
+        let mut notes: Vec<String> = Vec::new();
+        let mut doc_mentions: Vec<String> = dedup_hits
+            .iter()
+            .filter(|hit| is_doc_path(&hit.path))
+            .map(|hit| format!("{}:{}", hit.path.to_string_lossy(), hit.line))
+            .collect();
+        let doc_total = doc_mentions.len();
+        let has_code_hit = dedup_hits
+            .iter()
+            .any(|hit| !is_doc_path(&hit.path));
+        if has_code_hit && doc_total > 0 {
+            dedup_hits.retain(|hit| !is_doc_path(&hit.path));
+            doc_mentions.sort();
+            let preview: Vec<String> = doc_mentions.into_iter().take(5).collect();
+            let mut summary = format!("Also mentioned in docs: {}", preview.join(", "));
+            if doc_total > preview.len() {
+                summary.push_str(&format!(" (+{} more)", doc_total - preview.len()));
+            }
+            notes.push(summary);
         }
 
         self.state.observe(&self.config.symbol, &dedup_hits);
@@ -1345,6 +1588,7 @@ impl SearchEngine {
                 .collect(),
             metrics,
             language_counts,
+            notes,
         })
     }
 }
@@ -1357,6 +1601,7 @@ struct VerificationOutcome {
     ast_hits: Vec<(PathBuf, usize)>,
     metrics: SearchMetrics,
     language_counts: BTreeMap<String, usize>,
+    notes: Vec<String>,
 }
 
 fn collect_candidate_symbols(paths: &[PathBuf]) -> Vec<String> {
@@ -1396,6 +1641,26 @@ fn contains_synonym(candidate_lower: &str, target_lower: &str) -> bool {
         }
     }
     false
+}
+
+fn file_score_for_extension(ext: &str) -> Option<i32> {
+    FILE_TYPE_SCORES
+        .iter()
+        .find(|(candidate, _)| candidate.eq_ignore_ascii_case(ext))
+        .map(|(_, score)| *score)
+}
+
+fn is_doc_extension(ext: &str) -> bool {
+    DOC_EXTENSIONS
+        .iter()
+        .any(|candidate| candidate.eq_ignore_ascii_case(ext))
+}
+
+fn is_doc_path(path: &Path) -> bool {
+    path.extension()
+        .and_then(|ext| ext.to_str())
+        .map(|ext| is_doc_extension(&ext.to_ascii_lowercase()))
+        .unwrap_or(false)
 }
 
 fn label_matches_kind(kind: SymbolKind, label: &str, language: &str) -> bool {
@@ -1462,7 +1727,9 @@ fn synonyms_for(token: &str) -> Vec<&'static str> {
 
 #[cfg(test)]
 mod tests {
-    use super::label_matches_kind;
+    use std::path::Path;
+
+    use super::{file_score_for_extension, is_doc_path, label_matches_kind};
     use crate::cli::SymbolKind;
 
     #[test]
@@ -1486,5 +1753,17 @@ mod tests {
             "class NetworkClient {",
             "swift"
         ));
+    }
+
+    #[test]
+    fn scores_code_extensions_higher_than_docs() {
+        assert_eq!(file_score_for_extension("rs"), Some(100));
+        assert_eq!(file_score_for_extension("md"), Some(10));
+    }
+
+    #[test]
+    fn identifies_doc_paths() {
+        assert!(is_doc_path(Path::new("README.md")));
+        assert!(!is_doc_path(Path::new("src/lib.rs")));
     }
 }

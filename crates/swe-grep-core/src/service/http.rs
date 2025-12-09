@@ -72,6 +72,8 @@ pub struct HttpSearchRequest {
     #[serde(default)]
     pub include_strings: Option<bool>,
     #[serde(default)]
+    pub code_only: Option<bool>,
+    #[serde(default)]
     pub ignore_case: Option<bool>,
     #[serde(default)]
     pub definitions_only: Option<bool>,
@@ -79,6 +81,8 @@ pub struct HttpSearchRequest {
     pub usages_only: Option<bool>,
     #[serde(default)]
     pub path_glob: Option<Vec<String>>,
+    #[serde(default)]
+    pub exclude: Option<Vec<String>>,
 }
 
 impl From<HttpSearchRequest> for SearchInput {
@@ -105,10 +109,12 @@ impl From<HttpSearchRequest> for SearchInput {
             wildcard: req.wildcard,
             string: req.string,
             include_strings: req.include_strings,
+            code_only: req.code_only,
             ignore_case: req.ignore_case,
             definitions_only: req.definitions_only,
             usages_only: req.usages_only,
             path_glob: req.path_glob,
+            exclude_patterns: req.exclude,
             index_dir: req.index_dir.map(PathBuf::from),
             cache_dir: req.cache_dir.map(PathBuf::from),
             log_dir: req.log_dir.map(PathBuf::from),

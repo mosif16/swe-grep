@@ -1,5 +1,6 @@
 use std::collections::HashSet;
 
+use super::concept_expansion::ConceptExpansion;
 use crate::language;
 
 #[derive(Debug, Clone, Copy)]
@@ -13,7 +14,7 @@ pub(crate) enum PatternMode {
 #[derive(Debug)]
 enum QueryMode {
     Symbol { pattern_mode: PatternMode },
-    Concept { tokens: Vec<String> },
+    Concept { expansion: ConceptExpansion },
 }
 
 #[derive(Debug)]
@@ -39,12 +40,16 @@ impl QueryRewriter {
         }
     }
 
-    pub(crate) fn for_concept(concept: &str, languages: &[String], ignore_case: bool) -> Self {
-        let tokens = concept_tokens(concept);
+    pub(crate) fn for_concept(
+        concept: &str,
+        languages: &[String],
+        ignore_case: bool,
+        expansion: ConceptExpansion,
+    ) -> Self {
         Self {
             symbol: concept.to_string(),
             languages: languages.iter().cloned().collect(),
-            mode: QueryMode::Concept { tokens },
+            mode: QueryMode::Concept { expansion },
             ignore_case,
         }
     }
@@ -56,7 +61,7 @@ impl QueryRewriter {
         }
         match &self.mode {
             QueryMode::Symbol { pattern_mode } => self.build_symbol_queries(*pattern_mode),
-            QueryMode::Concept { tokens } => self.build_concept_queries(tokens),
+            QueryMode::Concept { expansion } => self.build_concept_queries(expansion),
         }
     }
 
@@ -136,16 +141,28 @@ impl QueryRewriter {
             .collect()
     }
 
-    fn build_concept_queries(&self, tokens: &[String]) -> Vec<String> {
-        if tokens.is_empty() {
+    fn build_concept_queries(&self, expansion: &ConceptExpansion) -> Vec<String> {
+        let primary = expansion.primary();
+        let all_terms = expansion.all_terms();
+
+        if primary.is_empty() && all_terms.is_empty() {
             return Vec::new();
         }
         let mut queries: Vec<String> = Vec::new();
-        let collapsed = tokens.join(".*");
-        queries.push(format!("(?i){}", Self::escape_literal(&collapsed)));
+
+        let phrase_terms = if primary.is_empty() {
+            all_terms.clone()
+        } else {
+            primary.to_vec()
+        };
+
+        if !phrase_terms.is_empty() {
+            let collapsed = phrase_terms.join(".*");
+            queries.push(format!("(?i){}", Self::escape_literal(&collapsed)));
+        }
 
         // Build sliding window pairs to capture nearby phrases.
-        for window in tokens.windows(2) {
+        for window in phrase_terms.windows(2) {
             if let [first, second] = window {
                 let pattern = format!(
                     "(?i){}.*{}",
@@ -157,8 +174,8 @@ impl QueryRewriter {
         }
 
         // Single-token fallbacks
-        for token in tokens {
-            queries.push(format!("(?i){}", Self::escape_literal(token)));
+        for token in all_terms {
+            queries.push(format!("(?i){}", Self::escape_literal(&token)));
         }
 
         dedup_queries(queries)
@@ -225,22 +242,6 @@ where
         }
     }
     deduped
-}
-
-fn concept_tokens(concept: &str) -> Vec<String> {
-    let mut tokens: Vec<String> = concept
-        .split(|ch: char| ch.is_whitespace() || ch == '-' || ch == '_' || ch == '.')
-        .filter_map(|raw| {
-            let trimmed = raw.trim();
-            if trimmed.len() <= 1 {
-                None
-            } else {
-                Some(trimmed.to_string())
-            }
-        })
-        .collect();
-    tokens.dedup();
-    tokens
 }
 
 fn wildcard_to_regex(value: &str) -> String {
