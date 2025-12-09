@@ -4,11 +4,11 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 use globset::{Glob, GlobSet, GlobSetBuilder};
 
+use super::query::PatternMode;
 use crate::cli::SearchArgs;
 pub(crate) use crate::language::{
     expand_language_hint, extensions_for_languages, languages_include,
 };
-use super::query::PatternMode;
 
 pub(crate) const DEFAULT_MAX_COLUMNS: usize = 200;
 pub(crate) const DEFAULT_MAX_BODY_BYTES: usize = 512 * 1024;
@@ -87,8 +87,8 @@ impl SearchConfig {
             }
         }
 
-        let root = path
-            .unwrap_or(std::env::current_dir().context("failed to resolve current directory")?);
+        let root =
+            path.unwrap_or(std::env::current_dir().context("failed to resolve current directory")?);
         let root = root.canonicalize().with_context(|| {
             format!(
                 "failed to canonicalize repository root path: {}",
@@ -216,8 +216,8 @@ fn build_globset(root: &Path, patterns: &[String]) -> Result<Option<GlobSet>> {
             variants.push(root.join(raw).to_string_lossy().replace('\\', "/"));
         }
         for pattern in variants {
-            let glob = Glob::new(&pattern)
-                .with_context(|| format!("invalid glob pattern: {raw}"))?;
+            let glob =
+                Glob::new(&pattern).with_context(|| format!("invalid glob pattern: {raw}"))?;
             builder.add(glob);
         }
     }

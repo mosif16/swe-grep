@@ -24,7 +24,7 @@ swe-grep search --symbol <identifier> --path <repo-root>
 - `--enable-index` – use Tantivy indices (build with `--features indexing`).
 - `--context-before/--context-after` – request additional lines for each hit.
 - `--body` – stream the full UTF-8 file for the surfaced hits (512 KiB guardrail). Rust and Swift hits now return the full body even without this flag.
-- `--cache-dir` – persist symbol and directory hints to this directory. The folder is created lazily when state is flushed, so misses leave the path untouched.
+- `--cache-dir` – persist symbol and directory hints to this directory. The folder is created lazily when state is flushed; if creation fails (e.g., unwritable path) persistence is disabled quietly for the run.
 
 ## 2. Output contract
 
@@ -78,7 +78,9 @@ Agents typically:
    is `true`, the full source is already embedded in the hit and can be cached.
 3. Inspect `hints` to jump straight to the surrounding declaration, type, or extension (Rust/Swift populate these automatically).
 4. Inspect `stage_stats` to detect degraded runs (e.g., non-zero `discover_ms`
-   means fast path was bypassed).
+   means fast path was bypassed). Optional tools (`fd`, `ast-grep`) disable
+   themselves after a single “command not found” and stop emitting user-facing
+   warnings; real runtime errors still appear in `warnings`.
 
 `swe-grep` automatically widens context windows when the caller omits
 `--context-before/--context-after`. Literal runs now ship with ±2 lines of

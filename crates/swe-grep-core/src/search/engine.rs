@@ -1,5 +1,6 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
+use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 use std::time::{Instant as StdInstant, SystemTime, UNIX_EPOCH};
 
@@ -39,6 +40,8 @@ pub(crate) struct SearchEngine {
     rg_tool: RipgrepTool,
     rga_tool: Option<RgaTool>,
     ast_tool: Option<AstGrepTool>,
+    fd_unavailable: bool,
+    ast_unavailable: bool,
     #[cfg(feature = "indexing")]
     index: Option<TantivyIndex>,
     dedup_cache: SearchCache,
@@ -103,6 +106,8 @@ impl SearchEngine {
             rg_tool,
             rga_tool,
             ast_tool,
+            fd_unavailable: false,
+            ast_unavailable: false,
             #[cfg(feature = "indexing")]
             index: None,
             dedup_cache: SearchCache::default(),
@@ -516,7 +521,7 @@ impl SearchEngine {
     }
 
     fn ensure_fd_tool(&mut self) -> Option<&FdTool> {
-        if !self.config.use_fd {
+        if !self.config.use_fd || self.fd_unavailable {
             return None;
         }
         if self.fd_tool.is_none() {
@@ -533,7 +538,7 @@ impl SearchEngine {
     }
 
     fn ensure_ast_tool(&mut self) -> Option<&AstGrepTool> {
-        if !self.config.use_ast {
+        if !self.config.use_ast || self.ast_unavailable {
             return None;
         }
         if self.ast_tool.is_none() {
@@ -570,6 +575,15 @@ impl SearchEngine {
         self.warnings.push(message.into());
     }
 
+    fn is_not_found_error(err: &anyhow::Error) -> bool {
+        err.chain().any(|cause| {
+            cause
+                .downcast_ref::<std::io::Error>()
+                .map(|io| io.kind() == ErrorKind::NotFound)
+                .unwrap_or(false)
+        })
+    }
+
     fn suggest_alternatives(
         &self,
         discover_candidates: &[PathBuf],
@@ -591,7 +605,11 @@ impl SearchEngine {
         candidates.extend(self.state.known_symbols());
         candidates.extend(collect_candidate_symbols(discover_candidates));
         candidates.extend(collect_candidate_symbols(&verification.fd_candidates));
-        let ast_paths: Vec<PathBuf> = verification.ast_hits.iter().map(|(p, _)| p.clone()).collect();
+        let ast_paths: Vec<PathBuf> = verification
+            .ast_hits
+            .iter()
+            .map(|(p, _)| p.clone())
+            .collect();
         candidates.extend(collect_candidate_symbols(&ast_paths));
 
         let mut related_paths: Vec<String> = Vec::new();
@@ -668,6 +686,9 @@ impl SearchEngine {
 
     fn should_run_ast(&self) -> bool {
         if !self.config.use_ast {
+            return false;
+        }
+        if self.ast_unavailable {
             return false;
         }
         if self.config.concept.is_some() {
@@ -779,8 +800,13 @@ impl SearchEngine {
             match fd_tool.run(&root, symbol.as_str()).await {
                 Ok(results) => results,
                 Err(err) => {
-                    self.push_warning(format!("fd invocation failed: {err}"));
-                    tracing::warn!(error = %err, "fd invocation failed");
+                    if Self::is_not_found_error(&err) {
+                        self.fd_unavailable = true;
+                        tracing::debug!(error = %err, "fd not found on PATH; disabling fd hints");
+                    } else {
+                        self.push_warning(format!("fd invocation failed: {err}"));
+                        tracing::warn!(error = %err, "fd invocation failed");
+                    }
                     Vec::new()
                 }
             }
@@ -959,7 +985,13 @@ impl SearchEngine {
                 matches
             })
             .unwrap_or_else(|err| {
-                if let Some(pattern_err) = err.downcast_ref::<AstPatternError>() {
+                if Self::is_not_found_error(&err) {
+                    self.ast_unavailable = true;
+                    tracing::debug!(
+                        error = %err,
+                        "ast-grep not found on PATH; disabling AST disambiguation"
+                    );
+                } else if let Some(pattern_err) = err.downcast_ref::<AstPatternError>() {
                     tracing::debug!(
                         symbol = %symbol,
                         pattern = %pattern_err.pattern(),
@@ -980,11 +1012,9 @@ impl SearchEngine {
     #[cfg(feature = "indexing")]
     async fn ensure_index(&mut self) -> Result<&TantivyIndex> {
         if self.index.is_none() {
-            let extensions = extensions_for_languages(
-                &self.config.language_tokens,
-                self.config.include_strings,
-            )
-                .map(|exts| exts.into_iter().map(|s| s.to_string()).collect::<Vec<_>>());
+            let extensions =
+                extensions_for_languages(&self.config.language_tokens, self.config.include_strings)
+                    .map(|exts| exts.into_iter().map(|s| s.to_string()).collect::<Vec<_>>());
             let index_config = IndexConfig {
                 root: self.config.root.clone(),
                 index_dir: self.config.index_dir.clone(),

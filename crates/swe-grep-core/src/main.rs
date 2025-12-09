@@ -7,8 +7,8 @@ use anyhow::{Context, anyhow};
 use clap::Parser;
 
 use swe_grep::agent::{
-    aggregate_output, render_compact, render_edit, render_table, render_tree_grouped, stream_entry,
-    AgentResult, AgentSettings,
+    AgentResult, AgentSettings, aggregate_output, render_compact, render_edit, render_table,
+    render_tree_grouped, stream_entry,
 };
 use swe_grep::bench;
 use swe_grep::cli::{
@@ -502,8 +502,10 @@ fn collect_type_hints(summary: &search::SearchSummary) -> Vec<String> {
     let mut seen: HashSet<String> = HashSet::new();
     for hit in &summary.top_hits {
         for hint in &hit.hints {
-            if matches!(hint.kind.as_str(), "declaration" | "module" | "type" | "impl")
-                && seen.insert(hint.label.clone())
+            if matches!(
+                hint.kind.as_str(),
+                "declaration" | "module" | "type" | "impl"
+            ) && seen.insert(hint.label.clone())
             {
                 labels.push(hint.label.clone());
             }
@@ -612,10 +614,7 @@ fn render_removal_plan(plan: &RemovalPlan, applied: bool) -> String {
     }
 
     if !plan.suggestions.is_empty() {
-        lines.push(format!(
-            "Related symbols: {}",
-            plan.suggestions.join(", ")
-        ));
+        lines.push(format!("Related symbols: {}", plan.suggestions.join(", ")));
     }
 
     if applied {

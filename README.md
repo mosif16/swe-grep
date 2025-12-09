@@ -89,6 +89,12 @@ cargo run -p swe-grep -- serve --http-addr 127.0.0.1:8080 --grpc-addr 127.0.0.1:
 
 ## Notes
 
-- The AST pattern emitted by `ast-grep` currently prints a warning when no matches are found; it’s benign but worth revisiting while hardening the pattern.
+- Persistent hints now degrade quietly when the cache directory is missing or unwritable; state is disabled without surfacing user-visible warnings.
+- fd/ast-grep are treated as optional: a single “command not found” disables the tool for the run with only debug logs; real runtime failures still surface in `warnings`.
+- The AST pattern emitted by `ast-grep` still prints a warning when no matches are found; it’s benign but worth revisiting while hardening the pattern.
 - Keep `.swe-grep-cache/` out of version control; it is safe to delete if you want a clean slate for heuristics.
 - Per-language telemetry (discover/probe/ast/verify counters + latency) is emitted with every cycle in `SearchSummary`; consume the `stage_stats.language_metrics` map to track Swift/TypeScript/Rust coverage in benchmarks and regression dashboards.
+
+## Changelog
+
+- Recent commits are summarized in `docs/changelog.md`; see that file for a latest-first snapshot or run `git log` for full history.

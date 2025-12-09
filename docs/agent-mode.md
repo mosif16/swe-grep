@@ -4,7 +4,7 @@ Agent mode shapes CLI output for programmatic consumption and bundles sensible d
 
 - Defaults: telemetry off, bodies fetched (first 50 lines by default), compact context, deterministic sorting.
 - Exit codes: `0` success (hits or none), `1` usage/argument error, `2` runtime error.
-- Noise control: data on stdout only; logs on stderr; `--quiet` silences logs entirely (tracing subscriber disabled in agent/quiet mode).
+- Noise control: data on stdout only; logs on stderr; `--quiet` silences logs entirely (tracing subscriber disabled in agent/quiet mode). Optional tools (`fd`, `ast-grep`) auto-disable after a single “command not found” and stop emitting user-facing warnings; real runtime errors still appear in `warnings`.
 - Convenience: `--concise` drops context/origin/score/body, `--json-pretty` formats JSON, `--trim-body N` overrides the 50-line default, `--progress` emits `[idx/total] Searching <symbol>...` on stderr.
 - Strings/paths: `--string` generates quoted variants for literal string lookups; `--path-glob "src/**/*.tsx"` narrows scope without forcing a language hint.
 

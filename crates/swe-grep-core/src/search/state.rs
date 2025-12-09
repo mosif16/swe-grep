@@ -3,7 +3,7 @@ use std::fs;
 use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use serde::{Deserialize, Serialize};
 
 use crate::search::hits::SearchHit;
@@ -19,17 +19,28 @@ pub(crate) struct PersistentState {
     file_path: PathBuf,
     data: PersistentStateData,
     dirty: bool,
+    enabled: bool,
 }
 
 impl PersistentState {
     pub(crate) fn load(root: &Path, cache_dir: &Path) -> Result<Self> {
         let file_path = cache_dir.join("state.json");
-        let data = if file_path.exists() {
+        let mut enabled = true;
+
+        let data = if let Err(err) = fs::create_dir_all(cache_dir) {
+            tracing::debug!(
+                path = %cache_dir.display(),
+                error = %err,
+                "cache directory unavailable; disabling persistent state"
+            );
+            enabled = false;
+            PersistentStateData::default()
+        } else if file_path.exists() {
             match fs::read_to_string(&file_path) {
                 Ok(contents) => match serde_json::from_str(&contents) {
                     Ok(parsed) => parsed,
                     Err(err) => {
-                        tracing::warn!(
+                        tracing::debug!(
                             path = %file_path.display(),
                             error = %err,
                             "failed to parse persistent state JSON; resetting to default"
@@ -38,11 +49,12 @@ impl PersistentState {
                     }
                 },
                 Err(err) => {
-                    tracing::warn!(
+                    tracing::debug!(
                         path = %file_path.display(),
                         error = %err,
-                        "failed to read persistent state file"
+                        "failed to read persistent state file; disabling persistence"
                     );
+                    enabled = false;
                     PersistentStateData::default()
                 }
             }
@@ -54,6 +66,7 @@ impl PersistentState {
             file_path,
             data,
             dirty: false,
+            enabled,
         })
     }
 
@@ -179,29 +192,70 @@ impl PersistentState {
     }
 
     pub(crate) fn save(&mut self) -> Result<()> {
+        if !self.enabled {
+            self.dirty = false;
+            return Ok(());
+        }
         if !self.dirty {
             return Ok(());
         }
         if let Some(parent) = self.file_path.parent() {
-            fs::create_dir_all(parent).with_context(|| {
-                format!("failed to create cache directory {}", parent.display())
-            })?;
+            if let Err(err) = fs::create_dir_all(parent) {
+                tracing::debug!(
+                    path = %parent.display(),
+                    error = %err,
+                    "cache directory unavailable; disabling persistent state"
+                );
+                self.enabled = false;
+                self.dirty = false;
+                return Ok(());
+            }
         }
         let tmp_path = self.file_path.with_extension("json.tmp");
-        let file = fs::File::create(&tmp_path)
-            .with_context(|| format!("failed to create {}", tmp_path.display()))?;
-        let mut writer = BufWriter::new(file);
-        serde_json::to_writer_pretty(&mut writer, &self.data)
-            .context("failed to serialize persistent state")?;
-        writer
-            .flush()
-            .with_context(|| format!("failed to flush {}", tmp_path.display()))?;
-        fs::rename(&tmp_path, &self.file_path).with_context(|| {
-            format!(
-                "failed to move persistent state into place {}",
-                self.file_path.display()
-            )
-        })?;
+        match fs::File::create(&tmp_path) {
+            Ok(file) => {
+                let mut writer = BufWriter::new(file);
+                if let Err(err) = serde_json::to_writer_pretty(&mut writer, &self.data) {
+                    tracing::debug!(
+                        error = %err,
+                        "failed to serialize persistent state; disabling persistence"
+                    );
+                    self.enabled = false;
+                    self.dirty = false;
+                    return Ok(());
+                }
+                if let Err(err) = writer.flush() {
+                    tracing::debug!(
+                        error = %err,
+                        "failed to flush persistent state; disabling persistence"
+                    );
+                    self.enabled = false;
+                    self.dirty = false;
+                    return Ok(());
+                }
+            }
+            Err(err) => {
+                tracing::debug!(
+                    path = %tmp_path.display(),
+                    error = %err,
+                    "failed to create temporary state file; disabling persistence"
+                );
+                self.enabled = false;
+                self.dirty = false;
+                return Ok(());
+            }
+        }
+        if let Err(err) = fs::rename(&tmp_path, &self.file_path) {
+            tracing::debug!(
+                from = %tmp_path.display(),
+                to = %self.file_path.display(),
+                error = %err,
+                "failed to move persistent state into place; disabling persistence"
+            );
+            self.enabled = false;
+            self.dirty = false;
+            return Ok(());
+        }
         self.dirty = false;
         Ok(())
     }

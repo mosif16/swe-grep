@@ -390,7 +390,13 @@ pub fn render_compact(results: &[AgentHit]) -> String {
                 .clone()
                 .or(hit.snippet.clone())
                 .unwrap_or_else(|| "<no snippet>".to_string());
-            format!("{} {}:{} {}", hit.symbol, hit.file, hit.line, collapse_whitespace(&preview))
+            format!(
+                "{} {}:{} {}",
+                hit.symbol,
+                hit.file,
+                hit.line,
+                collapse_whitespace(&preview)
+            )
         })
         .collect::<Vec<_>>()
         .join("\n")
@@ -413,7 +419,10 @@ pub fn render_tree_grouped(results: &[AgentHit]) -> String {
                 .or(hit.snippet.clone())
                 .unwrap_or_else(|| "<no snippet>".to_string());
             let collapsed = collapse_whitespace(&preview);
-            buffer.push_str(&format!("{connector} {}:{} {collapsed}\n", hit.symbol, hit.line));
+            buffer.push_str(&format!(
+                "{connector} {}:{} {collapsed}\n",
+                hit.symbol, hit.line
+            ));
         }
     }
     buffer

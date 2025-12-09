@@ -24,7 +24,11 @@ pub(crate) struct QueryRewriter {
 }
 
 impl QueryRewriter {
-    pub(crate) fn for_symbol(symbol: &str, languages: &[String], pattern_mode: PatternMode) -> Self {
+    pub(crate) fn for_symbol(
+        symbol: &str,
+        languages: &[String],
+        pattern_mode: PatternMode,
+    ) -> Self {
         Self {
             symbol: symbol.to_string(),
             languages: languages.iter().cloned().collect(),
@@ -121,8 +125,11 @@ impl QueryRewriter {
         // Build sliding window pairs to capture nearby phrases.
         for window in tokens.windows(2) {
             if let [first, second] = window {
-                let pattern =
-                    format!("(?i){}.*{}", Self::escape_literal(first), Self::escape_literal(second));
+                let pattern = format!(
+                    "(?i){}.*{}",
+                    Self::escape_literal(first),
+                    Self::escape_literal(second)
+                );
                 queries.push(pattern);
             }
         }
