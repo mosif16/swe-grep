@@ -1,3 +1,4 @@
+use std::collections::{BTreeMap, HashSet};
 use std::path::Path;
 
 use serde::Serialize;
@@ -58,6 +59,16 @@ pub struct AgentOutput {
     pub errors: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub warnings: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub related_symbols: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub suggested_symbols: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub related_paths: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub notes: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub concept: Option<String>,
     pub truncated: bool,
 }
 
@@ -71,6 +82,16 @@ pub struct AgentStreamEntry {
     pub errors: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub warnings: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub related_symbols: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub suggested_symbols: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub related_paths: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub notes: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub concept: Option<String>,
     pub truncated: bool,
     pub done: bool,
 }
@@ -83,6 +104,11 @@ pub struct AgentResult {
     pub errors: Vec<String>,
     pub warnings: Vec<String>,
     pub truncated: bool,
+    pub related_symbols: Vec<String>,
+    pub suggested_symbols: Vec<String>,
+    pub related_paths: Vec<String>,
+    pub notes: Vec<String>,
+    pub concept: Option<String>,
 }
 
 impl AgentResult {
@@ -100,6 +126,15 @@ impl AgentResult {
             errors: Vec::new(),
             warnings: summary.warnings.clone(),
             truncated: summary.truncated,
+            related_symbols: summary.related_symbols.clone(),
+            suggested_symbols: summary.suggested_symbols.clone(),
+            related_paths: summary
+                .related_paths
+                .iter()
+                .map(|p| p.to_string())
+                .collect(),
+            notes: summary.notes.clone(),
+            concept: summary.concept.clone(),
         }
     }
 }
@@ -110,6 +145,11 @@ pub fn aggregate_output(root: &Path, symbols: &[String], results: &[AgentResult]
     let mut warnings: Vec<String> = Vec::new();
     let mut latency_ms: u64 = 0;
     let mut truncated = false;
+    let mut related_symbols: HashSet<String> = HashSet::new();
+    let mut suggested_symbols: HashSet<String> = HashSet::new();
+    let mut related_paths: HashSet<String> = HashSet::new();
+    let mut notes: HashSet<String> = HashSet::new();
+    let mut concept: Option<String> = None;
 
     for result in results {
         hits.extend(result.hits.clone());
@@ -127,7 +167,23 @@ pub fn aggregate_output(root: &Path, symbols: &[String], results: &[AgentResult]
                 .iter()
                 .map(|warn| format!("{}: {}", result.symbol, warn)),
         );
+        related_symbols.extend(result.related_symbols.clone());
+        suggested_symbols.extend(result.suggested_symbols.clone());
+        related_paths.extend(result.related_paths.clone());
+        notes.extend(result.notes.clone());
+        if concept.is_none() {
+            concept = result.concept.clone();
+        }
     }
+
+    let mut related_symbols: Vec<String> = related_symbols.into_iter().collect();
+    let mut suggested_symbols: Vec<String> = suggested_symbols.into_iter().collect();
+    let mut related_paths: Vec<String> = related_paths.into_iter().collect();
+    let mut notes: Vec<String> = notes.into_iter().collect();
+    related_symbols.sort();
+    suggested_symbols.sort();
+    related_paths.sort();
+    notes.sort();
 
     AgentOutput {
         version: 1,
@@ -143,6 +199,11 @@ pub fn aggregate_output(root: &Path, symbols: &[String], results: &[AgentResult]
         },
         errors,
         warnings,
+        related_symbols,
+        suggested_symbols,
+        related_paths,
+        notes,
+        concept,
         truncated,
     }
 }
@@ -159,6 +220,11 @@ pub fn stream_entry(result: &AgentResult, done: bool) -> AgentStreamEntry {
         },
         errors: result.errors.clone(),
         warnings: result.warnings.clone(),
+        related_symbols: result.related_symbols.clone(),
+        suggested_symbols: result.suggested_symbols.clone(),
+        related_paths: result.related_paths.clone(),
+        notes: result.notes.clone(),
+        concept: result.concept.clone(),
         truncated: result.truncated,
         done,
     }
@@ -312,6 +378,62 @@ fn first_content_line(snippet: &str) -> Option<String> {
 
 fn is_false(value: &bool) -> bool {
     !*value
+}
+
+pub fn render_compact(results: &[AgentHit]) -> String {
+    let mut rows = results.to_vec();
+    rows.sort_by(|a, b| a.file.cmp(&b.file).then_with(|| a.line.cmp(&b.line)));
+    rows.into_iter()
+        .map(|hit| {
+            let preview = hit
+                .def
+                .clone()
+                .or(hit.snippet.clone())
+                .unwrap_or_else(|| "<no snippet>".to_string());
+            format!("{} {}:{} {}", hit.symbol, hit.file, hit.line, collapse_whitespace(&preview))
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+pub fn render_tree_grouped(results: &[AgentHit]) -> String {
+    let mut grouped: BTreeMap<String, Vec<&AgentHit>> = BTreeMap::new();
+    for hit in results {
+        grouped.entry(hit.file.clone()).or_default().push(hit);
+    }
+    let mut buffer = String::new();
+    for (file, hits) in grouped {
+        buffer.push_str(&file);
+        buffer.push('\n');
+        for (idx, hit) in hits.iter().enumerate() {
+            let connector = if idx + 1 == hits.len() { "\\--" } else { "|--" };
+            let preview = hit
+                .def
+                .clone()
+                .or(hit.snippet.clone())
+                .unwrap_or_else(|| "<no snippet>".to_string());
+            let collapsed = collapse_whitespace(&preview);
+            buffer.push_str(&format!("{connector} {}:{} {collapsed}\n", hit.symbol, hit.line));
+        }
+    }
+    buffer
+}
+
+pub fn render_edit(results: &[AgentHit]) -> String {
+    let mut rows = results.to_vec();
+    rows.sort_by(|a, b| a.file.cmp(&b.file).then_with(|| a.line.cmp(&b.line)));
+    rows.into_iter()
+        .map(|hit| {
+            let preview = hit
+                .snippet
+                .clone()
+                .or(hit.def.clone())
+                .unwrap_or_else(|| "<no snippet>".to_string());
+            let collapsed = collapse_whitespace(&preview);
+            format!("{}:{}: {}", hit.file, hit.line, collapsed)
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 fn truncate_tail(value: &str, max_len: usize) -> String {

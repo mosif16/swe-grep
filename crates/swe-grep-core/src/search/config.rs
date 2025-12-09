@@ -7,6 +7,7 @@ use crate::cli::SearchArgs;
 pub(crate) use crate::language::{
     expand_language_hint, extensions_for_languages, languages_include,
 };
+use super::query::PatternMode;
 
 pub(crate) const DEFAULT_MAX_COLUMNS: usize = 200;
 pub(crate) const DEFAULT_MAX_BODY_BYTES: usize = 512 * 1024;
@@ -17,9 +18,11 @@ pub(crate) const MAX_SYMBOL_LENGTH: usize = 256;
 pub(crate) struct SearchConfig {
     pub(crate) root: PathBuf,
     pub(crate) symbol: String,
+    pub(crate) concept: Option<String>,
     #[allow(dead_code)]
     pub(crate) language: Option<String>,
     pub(crate) language_tokens: Vec<String>,
+    pub(crate) pattern_mode: PatternMode,
     pub(crate) timeout: Duration,
     pub(crate) max_matches: usize,
     #[allow(dead_code)]
@@ -36,14 +39,34 @@ pub(crate) struct SearchConfig {
     pub(crate) max_columns: usize,
     pub(crate) body: bool,
     pub(crate) max_body_bytes: usize,
+    pub(crate) include_strings: bool,
 }
 
 impl SearchConfig {
     pub(crate) fn try_from_args(args: SearchArgs) -> Result<Self> {
-        let symbol = args.symbol.trim();
-        if symbol.is_empty() {
+        if args.regex && args.wildcard {
+            anyhow::bail!("--regex and --wildcard cannot be combined");
+        }
+
+        let concept = args
+            .concept
+            .as_ref()
+            .map(|c| c.trim().to_string())
+            .filter(|c| !c.is_empty());
+
+        let raw_symbol = args.symbol.trim();
+        if raw_symbol.is_empty() && concept.is_none() {
             anyhow::bail!("symbol is required");
         }
+        let symbol = if raw_symbol.is_empty() {
+            concept
+                .as_ref()
+                .map(|c| c.as_str())
+                .unwrap_or_default()
+                .to_string()
+        } else {
+            raw_symbol.to_string()
+        };
         if symbol.len() > MAX_SYMBOL_LENGTH {
             anyhow::bail!(
                 "symbol exceeds maximum length of {} characters (got {})",
@@ -112,6 +135,15 @@ impl SearchConfig {
             max_columns: DEFAULT_MAX_COLUMNS,
             body: args.body,
             max_body_bytes: DEFAULT_MAX_BODY_BYTES,
+            concept,
+            pattern_mode: if args.regex {
+                PatternMode::Regex
+            } else if args.wildcard {
+                PatternMode::Wildcard
+            } else {
+                PatternMode::Literal
+            },
+            include_strings: args.include_strings,
         })
     }
 }

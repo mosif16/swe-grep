@@ -22,6 +22,8 @@ type SharedExecutor = Arc<SearchExecutor>;
 pub struct HttpSearchRequest {
     pub symbol: String,
     #[serde(default)]
+    pub concept: Option<String>,
+    #[serde(default)]
     pub language: Option<String>,
     #[serde(default)]
     pub root: Option<String>,
@@ -57,6 +59,12 @@ pub struct HttpSearchRequest {
     pub context_after: Option<usize>,
     #[serde(default)]
     pub body: Option<bool>,
+    #[serde(default)]
+    pub regex: Option<bool>,
+    #[serde(default)]
+    pub wildcard: Option<bool>,
+    #[serde(default)]
+    pub include_strings: Option<bool>,
 }
 
 impl From<HttpSearchRequest> for SearchInput {
@@ -70,6 +78,7 @@ impl From<HttpSearchRequest> for SearchInput {
 
         SearchInput {
             symbol: req.symbol,
+            concept: req.concept,
             language: req.language,
             root: req.root.map(PathBuf::from),
             timeout_secs: req.timeout_secs,
@@ -77,6 +86,9 @@ impl From<HttpSearchRequest> for SearchInput {
             concurrency: req.concurrency,
             enable_index: req.enable_index,
             enable_rga: req.enable_rga,
+            regex: req.regex,
+            wildcard: req.wildcard,
+            include_strings: req.include_strings,
             index_dir: req.index_dir.map(PathBuf::from),
             cache_dir: req.cache_dir.map(PathBuf::from),
             log_dir: req.log_dir.map(PathBuf::from),
@@ -131,7 +143,13 @@ async fn search(
     State(executor): State<SharedExecutor>,
     Json(request): Json<HttpSearchRequest>,
 ) -> Result<Json<HttpSearchResponse>, (StatusCode, Json<ErrorResponse>)> {
-    if request.symbol.trim().is_empty() {
+    if request.symbol.trim().is_empty()
+        && request
+            .concept
+            .as_deref()
+            .map(|c| c.trim().is_empty())
+            .unwrap_or(true)
+    {
         return Err((
             StatusCode::BAD_REQUEST,
             Json(ErrorResponse {

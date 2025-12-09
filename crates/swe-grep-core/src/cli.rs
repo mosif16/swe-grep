@@ -12,6 +12,10 @@ pub struct Cli {
     #[arg(long, global = true, action = ArgAction::SetTrue)]
     pub disable_telemetry: bool,
 
+    /// Clear swe-grep caches (state + index) before running the command.
+    #[arg(long, global = true, action = ArgAction::SetTrue)]
+    pub clear_cache: bool,
+
     #[command(subcommand)]
     pub command: Commands,
 }
@@ -20,6 +24,10 @@ pub struct Cli {
 pub enum Commands {
     /// Search the repository for occurrences of a symbol.
     Search(SearchCommand),
+    /// Visualize dependencies/usages for a symbol.
+    Usages(UsageCommand),
+    /// Generate a removal/refactor plan for a symbol.
+    Remove(RemoveCommand),
     /// Run benchmark scenarios and collect performance metrics.
     Bench(BenchArgs),
     /// Serve the SWE-Grep API over HTTP and gRPC.
@@ -86,6 +94,9 @@ pub struct SearchCommand {
 pub enum OutputFormat {
     Json,
     Table,
+    Compact,
+    Tree,
+    Edit,
 }
 
 /// Shared tool toggles for search execution.
@@ -114,6 +125,22 @@ pub struct SearchArgs {
     /// Symbol or identifier to search for.
     #[arg(long, default_value_t = String::new())]
     pub symbol: String,
+
+    /// Conceptual/semantic search phrase (e.g. "text to speech"); substitutes for --symbol when provided.
+    #[arg(long)]
+    pub concept: Option<String>,
+
+    /// Treat --symbol as a raw regular expression (disables automatic escaping).
+    #[arg(long, default_value_t = false, action = ArgAction::SetTrue)]
+    pub regex: bool,
+
+    /// Allow shell-style wildcards (*, ?) inside --symbol (converted to regex).
+    #[arg(long, default_value_t = false, action = ArgAction::SetTrue)]
+    pub wildcard: bool,
+
+    /// Include localization/string resources (xcstrings/strings/arb/json) in the search surface.
+    #[arg(long, default_value_t = false, action = ArgAction::SetTrue)]
+    pub include_strings: bool,
 
     /// Root directory of the repository; defaults to the current working directory.
     #[arg(long)]
@@ -161,6 +188,39 @@ pub struct SearchArgs {
     /// Directory to append structured search logs (JSON Lines).
     #[arg(long)]
     pub log_dir: Option<PathBuf>,
+}
+
+/// Arguments for the `usages` subcommand.
+#[derive(clap::Args, Debug)]
+pub struct UsageCommand {
+    #[command(flatten)]
+    pub search: SearchArgs,
+
+    /// Output style for the usage graph.
+    #[arg(long, value_enum, default_value = "tree")]
+    pub format: UsageFormat,
+}
+
+#[derive(Copy, Clone, Debug, ValueEnum)]
+pub enum UsageFormat {
+    Tree,
+    Json,
+    Compact,
+}
+
+/// Arguments for the `remove` subcommand.
+#[derive(clap::Args, Debug)]
+pub struct RemoveCommand {
+    #[command(flatten)]
+    pub search: SearchArgs,
+
+    /// Emit a plan without touching files.
+    #[arg(long, default_value_t = false, action = ArgAction::SetTrue)]
+    pub dry_run: bool,
+
+    /// Apply deletions for obvious symbol-owned files (best-effort, cautious).
+    #[arg(long, default_value_t = false, action = ArgAction::SetTrue)]
+    pub apply: bool,
 }
 
 /// Arguments for the `bench` subcommand.

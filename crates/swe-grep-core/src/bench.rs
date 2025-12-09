@@ -175,6 +175,10 @@ fn build_search_args(repo_root: &Path, scenario: &Scenario, bench: &BenchArgs) -
 
     SearchArgs {
         symbol: scenario.symbol.clone(),
+        concept: None,
+        regex: false,
+        wildcard: false,
+        include_strings: false,
         path: Some(repo_root.to_path_buf()),
         language: scenario.language.clone(),
         timeout_secs: scenario.timeout_secs.unwrap_or(3),

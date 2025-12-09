@@ -72,6 +72,7 @@ impl SweGrepService for SweGrepGrpc {
 fn map_request(proto: proto::SearchRequest) -> SearchInput {
     SearchInput {
         symbol: proto.symbol,
+        concept: option_from_string(proto.concept),
         language: option_from_string(proto.language),
         root: path_from_string(proto.root),
         timeout_secs: zeroable(proto.timeout_secs),
@@ -79,6 +80,9 @@ fn map_request(proto: proto::SearchRequest) -> SearchInput {
         concurrency: zeroable_usize(proto.concurrency),
         enable_index: Some(proto.enable_index),
         enable_rga: Some(proto.enable_rga),
+        regex: Some(proto.regex),
+        wildcard: Some(proto.wildcard),
+        include_strings: Some(proto.include_strings),
         index_dir: path_from_string(proto.index_dir),
         cache_dir: path_from_string(proto.cache_dir),
         log_dir: path_from_string(proto.log_dir),
@@ -117,6 +121,7 @@ impl From<SearchSummary> for proto::SearchSummary {
     fn from(summary: SearchSummary) -> Self {
         let stage_stats = Some(convert_stage_stats(summary.stage_stats));
         let startup_stats = summary.startup_stats.map(convert_startup_stats);
+        let max_matches = summary.max_matches.min(u32::MAX as usize) as u32;
 
         proto::SearchSummary {
             cycle: summary.cycle,
@@ -147,6 +152,7 @@ impl From<SearchSummary> for proto::SearchSummary {
                         context_end,
                         body: hit.body.unwrap_or_default(),
                         body_retrieved: hit.body_retrieved,
+                        auto_expanded_context: hit.auto_expanded_context,
                         hints: hit
                             .hints
                             .into_iter()
@@ -178,6 +184,14 @@ impl From<SearchSummary> for proto::SearchSummary {
             reward: summary.reward,
             startup_stats,
             warnings: summary.warnings,
+            root: summary.root.to_string_lossy().to_string(),
+            concept: summary.concept.unwrap_or_default(),
+            max_matches,
+            related_symbols: summary.related_symbols,
+            suggested_symbols: summary.suggested_symbols,
+            related_paths: summary.related_paths,
+            notes: summary.notes,
+            truncated: summary.truncated,
         }
     }
 }

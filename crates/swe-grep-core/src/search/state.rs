@@ -94,6 +94,10 @@ impl PersistentState {
             .collect()
     }
 
+    pub(crate) fn known_symbols(&self) -> Vec<String> {
+        self.data.symbol_hits.keys().cloned().collect()
+    }
+
     const MAX_SYMBOLS: usize = 500;
     const MAX_DIRECTORIES: usize = 200;
 

@@ -291,8 +291,14 @@ pub fn languages_include(tokens: &[String], needle: &str) -> bool {
     tokens.iter().any(|token| token == needle)
 }
 
-pub fn extensions_for_languages(languages: &[String]) -> Option<Vec<&'static str>> {
+pub fn extensions_for_languages(
+    languages: &[String],
+    include_strings: bool,
+) -> Option<Vec<&'static str>> {
     let mut results: Vec<&'static str> = Vec::new();
+    if languages.is_empty() {
+        return None;
+    }
     for lang in languages {
         match lang.as_str() {
             "swift" => {
@@ -345,6 +351,13 @@ pub fn extensions_for_languages(languages: &[String]) -> Option<Vec<&'static str
                 }
             }
             _ => {}
+        }
+    }
+    if include_strings {
+        for ext in ["xcstrings", "strings", "arb", "xliff", "json"] {
+            if !results.contains(&ext) {
+                results.push(ext);
+            }
         }
     }
     if results.is_empty() {

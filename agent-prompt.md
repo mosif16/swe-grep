@@ -29,6 +29,18 @@ swe-grep search --symbol "MySymbol" --body --path .
 
 # More results
 swe-grep search --symbol "error" --max-matches 100 --path .
+
+# Discovery / Refactor helpers
+swe-grep search --concept "text to speech" --path .
+swe-grep search --symbol "*Foo*" --wildcard --path .
+swe-grep search --symbol "foo|bar" --regex --path .
+swe-grep search --include-strings --symbol "Practice aloud" --path .
+swe-grep usages --symbol FooFeature --path .
+swe-grep remove --symbol FooFeature --dry-run --path .
+swe-grep search --agent --symbols Alpha,Beta --format compact
+swe-grep search --agent --symbols Alpha,Beta --format tree
+swe-grep search --agent --symbols Alpha,Beta --format edit
+swe-grep --clear-cache search --symbol Foo --path .
 ```
 
 ## Workflow

@@ -1,14 +1,20 @@
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 use std::fs;
 use std::io::{self, Read, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, anyhow};
 use clap::Parser;
 
-use swe_grep::agent::{aggregate_output, render_table, stream_entry, AgentResult, AgentSettings};
+use swe_grep::agent::{
+    aggregate_output, render_compact, render_edit, render_table, render_tree_grouped, stream_entry,
+    AgentResult, AgentSettings,
+};
 use swe_grep::bench;
-use swe_grep::cli::{Cli, Commands, OutputFormat, SearchArgs, SearchCommand};
+use swe_grep::cli::{
+    Cli, Commands, OutputFormat, RemoveCommand, SearchArgs, SearchCommand, UsageCommand,
+    UsageFormat,
+};
 use swe_grep::search;
 use swe_grep::service;
 use swe_grep::telemetry;
@@ -71,8 +77,13 @@ async fn main() {
 }
 
 async fn run(cli: Cli) -> Result<(), AppError> {
+    if cli.clear_cache {
+        clear_cache_for_command(&cli)?;
+    }
     match cli.command {
         Commands::Search(cmd) => handle_search(cmd, cli.disable_telemetry).await,
+        Commands::Usages(cmd) => handle_usages(cmd, cli.disable_telemetry).await,
+        Commands::Remove(cmd) => handle_remove(cmd, cli.disable_telemetry).await,
         Commands::Bench(args) => {
             if !cli.disable_telemetry {
                 telemetry::init()?;
@@ -93,11 +104,6 @@ async fn run(cli: Cli) -> Result<(), AppError> {
 async fn handle_search(cmd: SearchCommand, disable_telemetry: bool) -> Result<(), AppError> {
     let symbols = collect_symbols(&cmd)?;
 
-    if !cmd.agent && symbols.len() > 1 {
-        return Err(AppError::Usage(
-            "multiple symbols require --agent mode".to_string(),
-        ));
-    }
     if cmd.progress && !cmd.agent {
         return Err(AppError::Usage(
             "--progress is only available in --agent mode".to_string(),
@@ -118,7 +124,12 @@ async fn handle_search(cmd: SearchCommand, disable_telemetry: bool) -> Result<()
             "--json-pretty cannot be combined with --stream".to_string(),
         ));
     }
-    if cmd.json_pretty && matches!(cmd.format, OutputFormat::Table) {
+    if cmd.json_pretty
+        && matches!(
+            cmd.format,
+            OutputFormat::Table | OutputFormat::Compact | OutputFormat::Tree | OutputFormat::Edit
+        )
+    {
         return Err(AppError::Usage(
             "--json-pretty requires --format json".to_string(),
         ));
@@ -133,9 +144,9 @@ async fn handle_search(cmd: SearchCommand, disable_telemetry: bool) -> Result<()
             "--stream is only available in --agent mode".to_string(),
         ));
     }
-    if cmd.stream && matches!(cmd.format, OutputFormat::Table) {
+    if cmd.stream && !matches!(cmd.format, OutputFormat::Json) {
         return Err(AppError::Usage(
-            "--format table cannot be combined with --stream".to_string(),
+            "--stream currently only supports --format json".to_string(),
         ));
     }
 
@@ -168,14 +179,28 @@ async fn handle_search(cmd: SearchCommand, disable_telemetry: bool) -> Result<()
 }
 
 async fn run_default_search(mut args: SearchArgs, symbols: Vec<String>) -> Result<(), AppError> {
-    let symbol = symbols
-        .first()
-        .cloned()
-        .ok_or_else(|| AppError::Usage("symbol is required".to_string()))?;
-    args.symbol = symbol;
+    if symbols.is_empty() {
+        return Err(AppError::Usage("symbol is required".to_string()));
+    }
+    if symbols.len() == 1 {
+        if args.symbol.is_empty() {
+            args.symbol = symbols[0].clone();
+        }
+        let summary = search::execute(args).await?;
+        let json = serde_json::to_string_pretty(&summary)?;
+        println!("{json}");
+        return Ok(());
+    }
 
-    let summary = search::execute(args).await?;
-    let json = serde_json::to_string_pretty(&summary)?;
+    let mut summaries = Vec::new();
+    for symbol in symbols {
+        let mut per_symbol_args = args.clone();
+        per_symbol_args.symbol = symbol;
+        let summary = search::execute(per_symbol_args).await?;
+        summaries.push(summary);
+    }
+
+    let json = serde_json::to_string_pretty(&summaries)?;
     println!("{json}");
 
     Ok(())
@@ -262,6 +287,18 @@ async fn run_agent_search(
             let table = render_table(&output.hits);
             println!("{table}");
         }
+        OutputFormat::Compact => {
+            let compact = render_compact(&output.hits);
+            println!("{compact}");
+        }
+        OutputFormat::Tree => {
+            let tree = render_tree_grouped(&output.hits);
+            println!("{tree}");
+        }
+        OutputFormat::Edit => {
+            let edit = render_edit(&output.hits);
+            println!("{edit}");
+        }
     }
 
     if had_error {
@@ -271,25 +308,65 @@ async fn run_agent_search(
     Ok(())
 }
 
+async fn handle_usages(cmd: UsageCommand, disable_telemetry: bool) -> Result<(), AppError> {
+    if !disable_telemetry {
+        telemetry::init()?;
+    }
+    let mut args = cmd.search.clone();
+    if args.context_before == 0 && args.context_after == 0 {
+        args.context_before = 2;
+        args.context_after = 2;
+    }
+    if !args.body {
+        args.body = true;
+    }
+    let summary = search::execute(args).await?;
+    let output = render_usage_output(&summary, cmd.format)?;
+    println!("{output}");
+    Ok(())
+}
+
+async fn handle_remove(cmd: RemoveCommand, disable_telemetry: bool) -> Result<(), AppError> {
+    if !disable_telemetry {
+        telemetry::init()?;
+    }
+    let summary = search::execute(cmd.search.clone()).await?;
+    let plan = build_removal_plan(&summary);
+
+    if cmd.apply && !cmd.dry_run {
+        apply_removal_plan(&plan)?;
+    }
+
+    let rendered = render_removal_plan(&plan, cmd.apply && !cmd.dry_run);
+    println!("{rendered}");
+    Ok(())
+}
+
 fn collect_symbols(cmd: &SearchCommand) -> Result<Vec<String>, AppError> {
     let mut collected: Vec<String> = Vec::new();
     let mut seen: HashSet<String> = HashSet::new();
 
-    let mut push_symbol = |value: &str| {
+    let push_symbol = |target: &mut Vec<String>, seen: &mut HashSet<String>, value: &str| {
         let trimmed = value.trim();
         if trimmed.is_empty() {
             return;
         }
         if seen.insert(trimmed.to_string()) {
-            collected.push(trimmed.to_string());
+            target.push(trimmed.to_string());
         }
     };
 
-    push_symbol(&cmd.search.symbol);
+    push_symbol(&mut collected, &mut seen, &cmd.search.symbol);
+
+    if collected.is_empty() {
+        if let Some(concept) = &cmd.search.concept {
+            push_symbol(&mut collected, &mut seen, concept);
+        }
+    }
 
     if let Some(list) = &cmd.symbols {
         for symbol in list.split(',') {
-            push_symbol(symbol);
+            push_symbol(&mut collected, &mut seen, symbol);
         }
     }
 
@@ -297,7 +374,7 @@ fn collect_symbols(cmd: &SearchCommand) -> Result<Vec<String>, AppError> {
         let contents = fs::read_to_string(path)
             .with_context(|| format!("failed to read symbols file {}", path.display()))?;
         for line in contents.lines() {
-            push_symbol(line);
+            push_symbol(&mut collected, &mut seen, line);
         }
     }
 
@@ -307,7 +384,7 @@ fn collect_symbols(cmd: &SearchCommand) -> Result<Vec<String>, AppError> {
             .read_to_string(&mut buffer)
             .with_context(|| "failed to read symbols from stdin")?;
         for line in buffer.lines() {
-            push_symbol(line);
+            push_symbol(&mut collected, &mut seen, line);
         }
     }
 
@@ -355,6 +432,235 @@ fn emit_json_line<T: serde::Serialize>(value: &T) -> Result<(), AppError> {
     Ok(())
 }
 
+fn render_usage_output(
+    summary: &search::SearchSummary,
+    format: UsageFormat,
+) -> Result<String, AppError> {
+    let settings = AgentSettings {
+        include_definitions: true,
+        trim_body: Some(8),
+        concise: true,
+    };
+    let agent_result = AgentResult::from_summary(&summary.symbol, summary, &settings);
+
+    let rendered = match format {
+        UsageFormat::Tree => render_usage_tree(summary, &agent_result),
+        UsageFormat::Compact => render_compact(&agent_result.hits),
+        UsageFormat::Json => serde_json::to_string_pretty(summary)?,
+    };
+    Ok(rendered)
+}
+
+fn render_usage_tree(summary: &search::SearchSummary, result: &AgentResult) -> String {
+    let mut lines = Vec::new();
+    lines.push(summary.symbol.clone());
+    if let Some(first) = summary.top_hits.first() {
+        lines.push(format!("({})", first.path));
+    }
+
+    if !result.hits.is_empty() {
+        let mut grouped: BTreeMap<String, Vec<&swe_grep::agent::AgentHit>> = BTreeMap::new();
+        for hit in &result.hits {
+            grouped.entry(hit.file.clone()).or_default().push(hit);
+        }
+        let mut usage_lines = Vec::new();
+        for (file, hits) in grouped {
+            let refs = hits
+                .iter()
+                .take(3)
+                .map(|hit| format!("{}:{}", file, hit.line))
+                .collect::<Vec<_>>()
+                .join(", ");
+            usage_lines.push(refs);
+        }
+        if !usage_lines.is_empty() {
+            lines.push(format!("|-- used by: {}", usage_lines.join("; ")));
+        }
+    }
+
+    let types = collect_type_hints(summary);
+    if !types.is_empty() {
+        lines.push(format!("|-- types: {}", types.join(", ")));
+    }
+
+    let imports = collect_imports(summary);
+    if !imports.is_empty() {
+        lines.push(format!("\\-- imports: {}", imports.join(", ")));
+    } else if !summary.suggested_symbols.is_empty() {
+        lines.push(format!(
+            "\\-- related symbols: {}",
+            summary.suggested_symbols.join(", ")
+        ));
+    }
+
+    lines.join("\n")
+}
+
+fn collect_type_hints(summary: &search::SearchSummary) -> Vec<String> {
+    let mut labels: Vec<String> = Vec::new();
+    let mut seen: HashSet<String> = HashSet::new();
+    for hit in &summary.top_hits {
+        for hint in &hit.hints {
+            if matches!(hint.kind.as_str(), "declaration" | "module" | "type" | "impl")
+                && seen.insert(hint.label.clone())
+            {
+                labels.push(hint.label.clone());
+            }
+        }
+    }
+    labels.truncate(5);
+    labels
+}
+
+fn collect_imports(summary: &search::SearchSummary) -> Vec<String> {
+    let mut imports: HashSet<String> = HashSet::new();
+    for hit in &summary.top_hits {
+        for snippet in [
+            hit.snippet.as_deref(),
+            hit.expanded_snippet.as_deref(),
+            hit.raw_snippet.as_deref(),
+        ]
+        .iter()
+        .flatten()
+        {
+            for line in snippet.lines() {
+                let trimmed = line.trim();
+                if trimmed.starts_with("import ")
+                    || trimmed.starts_with("use ")
+                    || trimmed.starts_with("from ")
+                {
+                    imports.insert(trimmed.to_string());
+                }
+            }
+        }
+    }
+    let mut collected: Vec<String> = imports.into_iter().collect();
+    collected.truncate(5);
+    collected
+}
+
+struct RemovalPlan {
+    symbol: String,
+    references: BTreeMap<String, usize>,
+    delete_candidates: Vec<String>,
+    suggestions: Vec<String>,
+}
+
+fn build_removal_plan(summary: &search::SearchSummary) -> RemovalPlan {
+    let mut references: BTreeMap<String, usize> = BTreeMap::new();
+    for hit in &summary.top_hits {
+        *references.entry(hit.path.clone()).or_insert(0) += 1;
+    }
+
+    let mut delete_candidates: Vec<String> = Vec::new();
+    for path in references.keys() {
+        let stem_matches = Path::new(path)
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .map(|stem| stem.eq_ignore_ascii_case(&summary.symbol))
+            .unwrap_or(false);
+        if stem_matches {
+            delete_candidates.push(path.clone());
+        }
+    }
+
+    let suggestions = if summary.top_hits.is_empty() {
+        summary.suggested_symbols.clone()
+    } else {
+        Vec::new()
+    };
+
+    RemovalPlan {
+        symbol: summary.symbol.clone(),
+        references,
+        delete_candidates,
+        suggestions,
+    }
+}
+
+fn apply_removal_plan(plan: &RemovalPlan) -> Result<(), AppError> {
+    for path in &plan.delete_candidates {
+        let path_obj = PathBuf::from(path);
+        if path_obj.is_file() {
+            fs::remove_file(&path_obj)
+                .with_context(|| format!("failed to delete {}", path_obj.display()))?;
+        }
+    }
+    Ok(())
+}
+
+fn render_removal_plan(plan: &RemovalPlan, applied: bool) -> String {
+    let mut lines = Vec::new();
+    lines.push(format!("Removal plan for {}", plan.symbol));
+    if plan.references.is_empty() {
+        lines.push("Files to modify: <none found>".to_string());
+    } else {
+        lines.push("Files to modify:".to_string());
+        for (path, count) in &plan.references {
+            lines.push(format!("  - {} ({} references)", path, count));
+        }
+    }
+
+    if plan.delete_candidates.is_empty() {
+        lines.push("Files to delete: <none suggested>".to_string());
+    } else {
+        lines.push("Files to delete:".to_string());
+        for path in &plan.delete_candidates {
+            lines.push(format!("  - {}", path));
+        }
+    }
+
+    if !plan.suggestions.is_empty() {
+        lines.push(format!(
+            "Related symbols: {}",
+            plan.suggestions.join(", ")
+        ));
+    }
+
+    if applied {
+        lines.push("Applied deletions for the listed files.".to_string());
+    }
+
+    lines.join("\n")
+}
+
+fn clear_cache_for_command(cli: &Cli) -> Result<(), AppError> {
+    let root = match &cli.command {
+        Commands::Search(cmd) => resolve_root(&cmd.search)?,
+        Commands::Usages(cmd) => resolve_root(&cmd.search)?,
+        Commands::Remove(cmd) => resolve_root(&cmd.search)?,
+        Commands::Serve(args) => {
+            if let Some(path) = &args.path {
+                path.clone()
+            } else {
+                std::env::current_dir().context("failed to resolve current directory")?
+            }
+        }
+        Commands::Bench(args) => {
+            if let Some(path) = &args.cache_dir {
+                path.clone()
+            } else {
+                std::env::current_dir().context("failed to resolve current directory")?
+            }
+        }
+    };
+    clear_cache_dirs(&root)?;
+    Ok(())
+}
+
+fn clear_cache_dirs(root: &Path) -> Result<(), AppError> {
+    let cache_dir = root.join(".swe-grep-cache");
+    let index_dir = root.join(".swe-grep-index");
+
+    for dir in [cache_dir, index_dir] {
+        if dir.exists() {
+            fs::remove_dir_all(&dir)
+                .with_context(|| format!("failed to clear cache directory {}", dir.display()))?;
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -363,6 +669,10 @@ mod tests {
     fn search_args(symbol: &str) -> SearchArgs {
         SearchArgs {
             symbol: symbol.to_string(),
+            concept: None,
+            regex: false,
+            wildcard: false,
+            include_strings: false,
             path: None,
             language: None,
             timeout_secs: 3,

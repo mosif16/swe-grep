@@ -120,6 +120,7 @@ impl SearchExecutor {
     pub async fn execute(&self, request: SearchInput) -> Result<SearchSummary> {
         let SearchInput {
             symbol,
+            concept,
             language,
             root,
             timeout_secs,
@@ -127,6 +128,9 @@ impl SearchExecutor {
             concurrency,
             enable_index,
             enable_rga,
+            regex,
+            wildcard,
+            include_strings,
             index_dir,
             cache_dir,
             log_dir,
@@ -136,7 +140,12 @@ impl SearchExecutor {
             tool_flags,
         } = request;
 
-        if symbol.trim().is_empty() {
+        if symbol.trim().is_empty()
+            && concept
+                .as_deref()
+                .map(|c| c.trim().is_empty())
+                .unwrap_or(true)
+        {
             bail!("symbol is required");
         }
 
@@ -168,6 +177,7 @@ impl SearchExecutor {
 
         let mut args = SearchArgs {
             symbol,
+            concept,
             path: Some(root_path),
             language,
             timeout_secs,
@@ -182,6 +192,9 @@ impl SearchExecutor {
             context_before,
             context_after,
             body,
+            regex: regex.unwrap_or(false),
+            wildcard: wildcard.unwrap_or(false),
+            include_strings: include_strings.unwrap_or(false),
             index_dir,
             cache_dir,
             log_dir,
@@ -197,6 +210,7 @@ impl SearchExecutor {
 #[derive(Default)]
 pub struct SearchInput {
     pub symbol: String,
+    pub concept: Option<String>,
     pub language: Option<String>,
     pub root: Option<PathBuf>,
     pub timeout_secs: Option<u64>,
@@ -204,6 +218,9 @@ pub struct SearchInput {
     pub concurrency: Option<usize>,
     pub enable_index: Option<bool>,
     pub enable_rga: Option<bool>,
+    pub regex: Option<bool>,
+    pub wildcard: Option<bool>,
+    pub include_strings: Option<bool>,
     pub index_dir: Option<PathBuf>,
     pub cache_dir: Option<PathBuf>,
     pub log_dir: Option<PathBuf>,

@@ -18,6 +18,10 @@ message SearchRequest {
   uint32 context_before = 13;
   uint32 context_after = 14;
   bool body = 15;
+  string concept = 16;
+  bool regex = 17;
+  bool wildcard = 18;
+  bool include_strings = 19;
 }
 
 message SearchResponse {
@@ -40,6 +44,7 @@ message TopHit {
   string body = 13;
   bool body_retrieved = 14;
   repeated ContextHint hints = 15;
+  bool auto_expanded_context = 16;
 }
 
 message ContextHint {
@@ -99,6 +104,14 @@ message SearchSummary {
   float reward = 10;
   StartupStats startup_stats = 11;
   repeated string warnings = 12;
+  string root = 13;
+  string concept = 14;
+  uint32 max_matches = 15;
+  repeated string related_symbols = 16;
+  repeated string suggested_symbols = 17;
+  repeated string related_paths = 18;
+  repeated string notes = 19;
+  bool truncated = 20;
 }
 
 message HealthCheckRequest {}

@@ -260,11 +260,21 @@ pub struct SearchSummary {
     pub cycle: u32,
     pub root: PathBuf,
     pub symbol: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub concept: Option<String>,
     pub queries: Vec<String>,
     pub top_hits: Vec<TopHit>,
     pub deduped: usize,
     pub max_matches: usize,
     pub next_actions: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub related_symbols: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub suggested_symbols: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub related_paths: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub notes: Vec<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub fd_candidates: Vec<PathBuf>,
     #[serde(skip_serializing_if = "Vec::is_empty")]

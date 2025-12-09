@@ -25,7 +25,7 @@ use super::formatting::{
     ContextHint, format_snippet, gather_expanded_snippet, rust_context_hints, swift_context_hints,
 };
 use super::hits::{BodyPayload, HitOrigin, ProbeKind, SearchCache, SearchHit};
-use super::query::QueryRewriter;
+use super::query::{PatternMode, QueryRewriter};
 use super::state::PersistentState;
 use super::stats::{
     SearchMetrics, SearchSummary, StageStats, StartupStats, TopHit, aggregate_language_counts,
@@ -122,8 +122,7 @@ impl SearchEngine {
 
         tracing::info!(symbol = %self.config.symbol, "search_cycle_start");
 
-        let rewrites =
-            QueryRewriter::for_symbol(&self.config.symbol, &self.config.language_tokens).build();
+        let rewrites = self.build_queries();
         if let Some(summary) = self.try_fast_path(&rewrites).await? {
             return Ok(summary);
         }
@@ -254,15 +253,23 @@ impl SearchEngine {
         crate::telemetry::record_stage_latency("ast", stage_stats.disambiguate_ms);
         crate::telemetry::record_stage_latency("verify", stage_stats.verify_ms);
 
+        let (related_symbols, related_paths, suggested_symbols, notes) =
+            self.suggest_alternatives(&discover_candidates, &verification, &rewrites);
+
         let summary = SearchSummary {
             cycle: 1,
             root: self.config.root.clone(),
             symbol: self.config.symbol.clone(),
+            concept: self.config.concept.clone(),
             queries: rewrites,
             top_hits: verification.top_hits,
             deduped: verification.dedup_count,
             max_matches: self.config.max_matches,
             next_actions: verification.next_actions,
+            related_symbols,
+            suggested_symbols,
+            related_paths,
+            notes,
             fd_candidates: verification.fd_candidates,
             ast_hits: verification.ast_hits,
             startup_stats: Some(self.startup_stats.clone()),
@@ -289,6 +296,18 @@ impl SearchEngine {
         self.log_summary(&summary).await?;
 
         Ok(summary)
+    }
+
+    fn build_queries(&self) -> Vec<String> {
+        if let Some(concept) = &self.config.concept {
+            return QueryRewriter::for_concept(concept, &self.config.language_tokens).build();
+        }
+        QueryRewriter::for_symbol(
+            &self.config.symbol,
+            &self.config.language_tokens,
+            self.config.pattern_mode,
+        )
+        .build()
     }
 
     async fn try_fast_path(&mut self, rewrites: &[String]) -> Result<Option<SearchSummary>> {
@@ -367,11 +386,16 @@ impl SearchEngine {
             cycle: 1,
             root: self.config.root.clone(),
             symbol: self.config.symbol.clone(),
+            concept: self.config.concept.clone(),
             queries: rewrites.to_vec(),
             top_hits: verification.top_hits,
             deduped: verification.dedup_count,
             max_matches: self.config.max_matches,
             next_actions: verification.next_actions,
+            related_symbols: Vec::new(),
+            suggested_symbols: Vec::new(),
+            related_paths: Vec::new(),
+            notes: Vec::new(),
             fd_candidates: Vec::new(),
             ast_hits: Vec::new(),
             startup_stats: Some(self.startup_stats.clone()),
@@ -545,6 +569,78 @@ impl SearchEngine {
         self.warnings.push(message.into());
     }
 
+    fn suggest_alternatives(
+        &self,
+        discover_candidates: &[PathBuf],
+        verification: &VerificationOutcome,
+        rewrites: &[String],
+    ) -> (Vec<String>, Vec<String>, Vec<String>, Vec<String>) {
+        if !verification.top_hits.is_empty() {
+            return (Vec::new(), Vec::new(), Vec::new(), Vec::new());
+        }
+
+        let target = if let Some(concept) = &self.config.concept {
+            concept
+        } else {
+            &self.config.symbol
+        };
+        let target_lower = target.to_ascii_lowercase();
+
+        let mut candidates: Vec<String> = Vec::new();
+        candidates.extend(self.state.known_symbols());
+        candidates.extend(collect_candidate_symbols(discover_candidates));
+        candidates.extend(collect_candidate_symbols(&verification.fd_candidates));
+        let ast_paths: Vec<PathBuf> = verification.ast_hits.iter().map(|(p, _)| p.clone()).collect();
+        candidates.extend(collect_candidate_symbols(&ast_paths));
+
+        let mut related_paths: Vec<String> = Vec::new();
+        let mut related_symbols: Vec<String> = Vec::new();
+        for path in discover_candidates {
+            if let Some(text) = path.to_str() {
+                let lower = text.to_ascii_lowercase();
+                if lower.contains(&target_lower) || contains_synonym(&lower, &target_lower) {
+                    related_paths.push(text.to_string());
+                }
+            }
+        }
+        let mut seen_paths: HashSet<String> = HashSet::new();
+        related_paths.retain(|p| seen_paths.insert(p.clone()));
+
+        let mut scored: Vec<(f32, String)> = Vec::new();
+        let mut seen: HashSet<String> = HashSet::new();
+        for candidate in candidates {
+            let lower = candidate.to_ascii_lowercase();
+            if !seen.insert(lower.clone()) {
+                continue;
+            }
+            if lower.contains(&target_lower) || contains_synonym(&lower, &target_lower) {
+                related_symbols.push(candidate.clone());
+            }
+            let score = normalized_distance(&target_lower, &lower);
+            if score <= 0.75 || contains_synonym(&lower, &target_lower) {
+                scored.push((score, candidate));
+            }
+        }
+        scored.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+        let suggested: Vec<String> = scored.into_iter().map(|(_, name)| name).take(6).collect();
+
+        let mut notes = Vec::new();
+        if self.config.concept.is_some() {
+            notes.push("semantic/concept search enabled".to_string());
+        }
+        if !matches!(self.config.pattern_mode, PatternMode::Literal) {
+            notes.push("regex/wildcard mode disables AST disambiguation".to_string());
+        }
+        if self.config.include_strings {
+            notes.push("search includes localization resources".to_string());
+        }
+        if rewrites.is_empty() {
+            notes.push("no queries generated for provided input".to_string());
+        }
+
+        (related_symbols, related_paths, suggested, notes)
+    }
+
     fn format_origin_label(&mut self, origin: &HitOrigin, path: &Path) -> String {
         let tool = origin.as_str();
         if let Some(lang) = self.language_cache.get(path) {
@@ -559,12 +655,24 @@ impl SearchEngine {
     }
 
     fn is_literal_symbol(&self) -> bool {
+        if self.config.concept.is_some() {
+            return false;
+        }
+        if !matches!(self.config.pattern_mode, PatternMode::Literal) {
+            return false;
+        }
         let s = self.config.symbol.trim();
         !s.is_empty() && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
     }
 
     fn should_run_ast(&self) -> bool {
         if !self.config.use_ast {
+            return false;
+        }
+        if self.config.concept.is_some() {
+            return false;
+        }
+        if !matches!(self.config.pattern_mode, PatternMode::Literal) {
             return false;
         }
         let s = self.config.symbol.trim();
@@ -644,7 +752,8 @@ impl SearchEngine {
     async fn discover(&mut self) -> Vec<PathBuf> {
         let root = self.config.root.clone();
         let symbol = self.config.symbol.clone();
-        let extension_filters = extensions_for_languages(&self.config.language_tokens);
+        let extension_filters =
+            extensions_for_languages(&self.config.language_tokens, self.config.include_strings);
         let extensions = extension_filters.as_deref();
         let mut candidates: Vec<PathBuf> = Vec::new();
         let mut seen: HashSet<PathBuf> = HashSet::new();
@@ -848,7 +957,10 @@ impl SearchEngine {
     #[cfg(feature = "indexing")]
     async fn ensure_index(&mut self) -> Result<&TantivyIndex> {
         if self.index.is_none() {
-            let extensions = extensions_for_languages(&self.config.language_tokens)
+            let extensions = extensions_for_languages(
+                &self.config.language_tokens,
+                self.config.include_strings,
+            )
                 .map(|exts| exts.into_iter().map(|s| s.to_string()).collect::<Vec<_>>());
             let index_config = IndexConfig {
                 root: self.config.root.clone(),
@@ -1015,4 +1127,96 @@ struct VerificationOutcome {
     ast_hits: Vec<(PathBuf, usize)>,
     metrics: SearchMetrics,
     language_counts: BTreeMap<String, usize>,
+}
+
+fn collect_candidate_symbols(paths: &[PathBuf]) -> Vec<String> {
+    let mut results: Vec<String> = Vec::new();
+    for path in paths {
+        if let Some(stem) = path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .filter(|s| !s.is_empty())
+        {
+            results.push(stem.to_string());
+            results.extend(split_tokens(stem));
+        }
+        if let Some(dir) = path
+            .parent()
+            .and_then(|p| p.file_name())
+            .and_then(|s| s.to_str())
+        {
+            results.push(dir.to_string());
+        }
+    }
+    let mut seen: HashSet<String> = HashSet::new();
+    results
+        .into_iter()
+        .filter(|item| seen.insert(item.to_ascii_lowercase()))
+        .collect()
+}
+
+fn contains_synonym(candidate_lower: &str, target_lower: &str) -> bool {
+    let mut tokens = split_tokens(target_lower);
+    tokens.push(target_lower.to_string());
+    for token in tokens {
+        for synonym in synonyms_for(&token) {
+            if candidate_lower.contains(synonym) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+fn split_tokens(raw: &str) -> Vec<String> {
+    let mut tokens: Vec<String> = Vec::new();
+    let mut current = String::new();
+    for ch in raw.chars() {
+        if ch.is_ascii_alphanumeric() {
+            if ch.is_ascii_uppercase() && !current.is_empty() {
+                tokens.push(current.clone());
+                current.clear();
+            }
+            current.push(ch.to_ascii_lowercase());
+        } else if !current.is_empty() {
+            tokens.push(current.clone());
+            current.clear();
+        }
+    }
+    if !current.is_empty() {
+        tokens.push(current);
+    }
+    tokens
+}
+
+fn normalized_distance(a: &str, b: &str) -> f32 {
+    let max_len = a.len().max(b.len()).max(1) as f32;
+    levenshtein(a, b) as f32 / max_len
+}
+
+fn levenshtein(a: &str, b: &str) -> usize {
+    let mut costs: Vec<usize> = (0..=b.len()).collect();
+    for (i, ca) in a.chars().enumerate() {
+        let mut last = i;
+        costs[0] = i + 1;
+        for (j, cb) in b.chars().enumerate() {
+            let new = if ca == cb {
+                last
+            } else {
+                1 + last.min(costs[j]).min(costs[j + 1])
+            };
+            last = costs[j + 1];
+            costs[j + 1] = new;
+        }
+    }
+    costs[b.len()]
+}
+
+fn synonyms_for(token: &str) -> Vec<&'static str> {
+    match token.to_ascii_lowercase().as_str() {
+        "speak" | "speech" | "voice" => vec!["speech", "voice", "say", "aloud", "talk"],
+        "text" => vec!["string", "copy"],
+        "delete" | "remove" => vec!["cleanup", "prune"],
+        _ => Vec::new(),
+    }
 }

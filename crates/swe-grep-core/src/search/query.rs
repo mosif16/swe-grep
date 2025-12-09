@@ -2,17 +2,41 @@ use std::collections::HashSet;
 
 use crate::language;
 
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum PatternMode {
+    Literal,
+    Regex,
+    Wildcard,
+}
+
+#[derive(Debug)]
+enum QueryMode {
+    Symbol { pattern_mode: PatternMode },
+    Concept { tokens: Vec<String> },
+}
+
 #[derive(Debug)]
 pub(crate) struct QueryRewriter {
     symbol: String,
     languages: Vec<String>,
+    mode: QueryMode,
 }
 
 impl QueryRewriter {
-    pub(crate) fn for_symbol(symbol: &str, languages: &[String]) -> Self {
+    pub(crate) fn for_symbol(symbol: &str, languages: &[String], pattern_mode: PatternMode) -> Self {
         Self {
             symbol: symbol.to_string(),
             languages: languages.iter().cloned().collect(),
+            mode: QueryMode::Symbol { pattern_mode },
+        }
+    }
+
+    pub(crate) fn for_concept(concept: &str, languages: &[String]) -> Self {
+        let tokens = concept_tokens(concept);
+        Self {
+            symbol: concept.to_string(),
+            languages: languages.iter().cloned().collect(),
+            mode: QueryMode::Concept { tokens },
         }
     }
 
@@ -21,19 +45,78 @@ impl QueryRewriter {
         if s.is_empty() {
             return Vec::new();
         }
+        match &self.mode {
+            QueryMode::Symbol { pattern_mode } => self.build_symbol_queries(*pattern_mode),
+            QueryMode::Concept { tokens } => self.build_concept_queries(tokens),
+        }
+    }
+
+    fn build_symbol_queries(&self, pattern_mode: PatternMode) -> Vec<String> {
+        let s = self.symbol.trim();
+        if s.is_empty() {
+            return Vec::new();
+        }
         let type_hint = self.derive_type_hint();
 
-        let mut queries = vec![
-            Self::escape_literal(s),
-            Self::escape_literal(&format!("{s} {type_hint}")),
-            Self::escape_literal(&format!("{s} error")),
-            Self::escape_literal(&format!("{type_hint}.{s}")),
-        ];
+        let mut queries = match pattern_mode {
+            PatternMode::Literal => vec![
+                Self::escape_literal(s),
+                Self::escape_literal(&format!("{s} {type_hint}")),
+                Self::escape_literal(&format!("{s} error")),
+                Self::escape_literal(&format!("{type_hint}.{s}")),
+            ],
+            PatternMode::Regex => {
+                let mut patterns = Vec::new();
+                patterns.push(s.to_string());
+                if !s.starts_with("(?i)") {
+                    patterns.push(format!("(?i){s}"));
+                }
+                patterns
+            }
+            PatternMode::Wildcard => {
+                let regexified = wildcard_to_regex(s);
+                let mut patterns = vec![regexified.clone()];
+                if !regexified.starts_with("(?i)") {
+                    patterns.push(format!("(?i){regexified}"));
+                }
+                patterns
+            }
+        };
 
         for lang in &self.languages {
             for pattern in language::query_patterns_for(lang, s) {
-                queries.push(Self::escape_literal(&pattern));
+                let rendered = match pattern_mode {
+                    PatternMode::Literal => Self::escape_literal(&pattern),
+                    PatternMode::Regex => pattern,
+                    PatternMode::Wildcard => wildcard_to_regex(&pattern),
+                };
+                queries.push(rendered);
             }
+        }
+
+        dedup_queries(queries)
+    }
+
+    fn build_concept_queries(&self, tokens: &[String]) -> Vec<String> {
+        if tokens.is_empty() {
+            return Vec::new();
+        }
+        let mut queries: Vec<String> = Vec::new();
+        let collapsed = tokens.join(".*");
+        queries.push(format!("(?i){}", Self::escape_literal(&collapsed)));
+
+        // Build sliding window pairs to capture nearby phrases.
+        for window in tokens.windows(2) {
+            if let [first, second] = window {
+                let pattern =
+                    format!("(?i){}.*{}", Self::escape_literal(first), Self::escape_literal(second));
+                queries.push(pattern);
+            }
+        }
+
+        // Single-token fallbacks
+        for token in tokens {
+            queries.push(format!("(?i){}", Self::escape_literal(token)));
         }
 
         dedup_queries(queries)
@@ -100,4 +183,40 @@ where
         }
     }
     deduped
+}
+
+fn concept_tokens(concept: &str) -> Vec<String> {
+    let mut tokens: Vec<String> = concept
+        .split(|ch: char| ch.is_whitespace() || ch == '-' || ch == '_' || ch == '.')
+        .filter_map(|raw| {
+            let trimmed = raw.trim();
+            if trimmed.len() <= 1 {
+                None
+            } else {
+                Some(trimmed.to_string())
+            }
+        })
+        .collect();
+    tokens.dedup();
+    tokens
+}
+
+fn wildcard_to_regex(value: &str) -> String {
+    if value.is_empty() {
+        return String::new();
+    }
+    let mut pattern = String::new();
+    pattern.push_str("(?i)");
+    for ch in value.chars() {
+        match ch {
+            '*' => pattern.push_str(".*"),
+            '?' => pattern.push('.'),
+            '\\' | '.' | '+' | '[' | ']' | '{' | '}' | '(' | ')' | '^' | '$' | '|' => {
+                pattern.push('\\');
+                pattern.push(ch);
+            }
+            _ => pattern.push(ch),
+        }
+    }
+    pattern
 }
