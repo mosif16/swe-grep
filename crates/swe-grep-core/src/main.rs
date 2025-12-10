@@ -10,7 +10,7 @@ use serde::Serialize;
 
 use swe_grep::agent::{
     AgentResult, AgentSettings, aggregate_output, render_compact, render_edit, render_minimal,
-    render_table, render_tree_grouped, stream_entry,
+    render_table, render_tree_grouped, stream_entry, summarize_hits,
 };
 use swe_grep::bench;
 use swe_grep::cli::{
@@ -24,6 +24,7 @@ use swe_grep::telemetry;
 #[derive(Debug)]
 enum AppError {
     Usage(String),
+    AssertionFailed(String),
     Runtime(anyhow::Error),
 }
 
@@ -66,6 +67,10 @@ async fn main() {
     let exit_code = match run(cli).await {
         Ok(()) => 0,
         Err(AppError::Usage(msg)) => {
+            eprintln!("{msg}");
+            1
+        }
+        Err(AppError::AssertionFailed(msg)) => {
             eprintln!("{msg}");
             1
         }
@@ -182,6 +187,11 @@ async fn handle_search(cmd: SearchCommand, disable_telemetry: bool) -> Result<()
             "--stream currently only supports --format json".to_string(),
         ));
     }
+    if cmd.open && cmd.stream {
+        return Err(AppError::Usage(
+            "--open cannot be combined with --stream".to_string(),
+        ));
+    }
 
     if cmd.quiet || cmd.agent {
         telemetry::silence_tracing();
@@ -207,37 +217,76 @@ async fn handle_search(cmd: SearchCommand, disable_telemetry: bool) -> Result<()
             cmd.json_pretty,
             cmd.quiet,
             cmd.progress,
+            cmd.open,
+            cmd.open_command.clone(),
+            cmd.assert_absent,
         )
         .await
     } else {
-        run_default_search(cmd.search, symbols).await
+        run_default_search(
+            cmd.search,
+            symbols,
+            cmd.assert_absent,
+            cmd.open,
+            cmd.open_command,
+        )
+        .await
     }
 }
 
-async fn run_default_search(mut args: SearchArgs, symbols: Vec<String>) -> Result<(), AppError> {
+async fn run_default_search(
+    mut args: SearchArgs,
+    symbols: Vec<String>,
+    assert_absent: bool,
+    open: bool,
+    open_command: Option<String>,
+) -> Result<(), AppError> {
     if symbols.is_empty() {
         return Err(AppError::Usage("symbol is required".to_string()));
     }
+    let open_command = open_command.as_deref();
     if symbols.len() == 1 {
         if args.symbol.is_empty() {
             args.symbol = symbols[0].clone();
         }
-        let summary = search::execute(args).await?;
+        let mut summary = search::execute(args).await?;
+        if open {
+            summary.open_commands =
+                build_open_commands_from_top_hits(&summary.top_hits, open_command);
+        }
+        if assert_absent && !summary.top_hits.is_empty() {
+            return Err(AppError::AssertionFailed(format!(
+                "symbol `{}` found ({} hits)",
+                summary.symbol, summary.deduped
+            )));
+        }
         let json = serde_json::to_string_pretty(&summary)?;
         println!("{json}");
         return Ok(());
     }
 
     let mut summaries = Vec::new();
+    let mut found_hits = false;
     for symbol in symbols {
         let mut per_symbol_args = args.clone();
         per_symbol_args.symbol = symbol;
-        let summary = search::execute(per_symbol_args).await?;
+        let mut summary = search::execute(per_symbol_args).await?;
+        found_hits |= !summary.top_hits.is_empty();
+        if open {
+            summary.open_commands =
+                build_open_commands_from_top_hits(&summary.top_hits, open_command);
+        }
         summaries.push(summary);
     }
 
     let json = serde_json::to_string_pretty(&summaries)?;
     println!("{json}");
+
+    if assert_absent && found_hits {
+        return Err(AppError::AssertionFailed(
+            "symbol found while --assert-absent is enabled".to_string(),
+        ));
+    }
 
     Ok(())
 }
@@ -256,6 +305,9 @@ async fn run_agent_search(
     json_pretty: bool,
     quiet: bool,
     progress: bool,
+    open: bool,
+    open_command: Option<String>,
+    assert_absent: bool,
 ) -> Result<(), AppError> {
     let mut trim_body = trim_body;
     apply_agent_defaults(&mut args, &mut trim_body, full_body, body_head, body_tail);
@@ -270,7 +322,9 @@ async fn run_agent_search(
     let mut results = Vec::new();
     let mut root_hint: Option<PathBuf> = None;
     let mut had_error = false;
+    let mut found_hits = false;
     let total = symbols.len();
+    let open_command = open_command.as_deref();
 
     for (idx, symbol) in symbols.iter().enumerate() {
         let mut per_symbol_args = args.clone();
@@ -282,6 +336,7 @@ async fn run_agent_search(
 
         match search::execute(per_symbol_args).await {
             Ok(summary) => {
+                found_hits |= !summary.top_hits.is_empty();
                 root_hint.get_or_insert(summary.root.clone());
                 let result = AgentResult::from_summary(symbol, &summary, &settings);
                 if stream {
@@ -309,11 +364,25 @@ async fn run_agent_search(
         if had_error {
             return Err(AppError::Runtime(anyhow!("one or more searches failed")));
         }
+        if assert_absent && found_hits {
+            return Err(AppError::AssertionFailed(
+                "symbol found while --assert-absent is enabled".to_string(),
+            ));
+        }
         return Ok(());
     }
 
     let root = root_hint.unwrap_or(resolve_root(&args)?);
-    let output = aggregate_output(&root, &symbols, &results);
+    let mut output = aggregate_output(&root, &symbols, &results);
+    if open {
+        output.open_commands = build_open_commands_from_agent_hits(&output.hits, open_command);
+    }
+    if assert_absent && output.summary.count > 0 {
+        return Err(AppError::AssertionFailed(format!(
+            "symbol(s) found ({} hits)",
+            output.summary.count
+        )));
+    }
 
     match format {
         OutputFormat::Json => {
@@ -341,8 +410,27 @@ async fn run_agent_search(
             println!("{edit}");
         }
         OutputFormat::Minimal => {
+            println!("hits: {}", output.summary.count);
             let minimal = render_minimal(&output.hits);
             println!("{minimal}");
+        }
+        OutputFormat::Summary => {
+            let summary_view = swe_grep::agent::summarize_hits(&output.hits);
+            let rendered = if json_pretty {
+                serde_json::to_string_pretty(&summary_view)?
+            } else {
+                serde_json::to_string(&summary_view)?
+            };
+            println!("{rendered}");
+        }
+    }
+
+    if open
+        && !output.open_commands.is_empty()
+        && !matches!(format, OutputFormat::Json | OutputFormat::Summary)
+    {
+        for cmd in &output.open_commands {
+            println!("{cmd}");
         }
     }
 
@@ -601,6 +689,70 @@ fn emit_json_line<T: serde::Serialize>(value: &T) -> Result<(), AppError> {
     stdout.write_all(b"\n")?;
     stdout.flush()?;
     Ok(())
+}
+
+fn build_open_commands_from_top_hits(
+    hits: &[search::TopHit],
+    template: Option<&str>,
+) -> Vec<String> {
+    build_open_commands(
+        hits.iter().map(|hit| (hit.path.as_str(), hit.line)),
+        template,
+    )
+}
+
+fn build_open_commands_from_agent_hits(
+    hits: &[swe_grep::agent::AgentHit],
+    template: Option<&str>,
+) -> Vec<String> {
+    build_open_commands(
+        hits.iter().map(|hit| (hit.file.as_str(), hit.line)),
+        template,
+    )
+}
+
+fn build_open_commands<'a, I>(hits: I, template: Option<&str>) -> Vec<String>
+where
+    I: IntoIterator<Item = (&'a str, usize)>,
+{
+    let template = open_command_template(template);
+    let mut seen: HashSet<String> = HashSet::new();
+    hits.into_iter()
+        .filter_map(|(path, line)| {
+            if path.is_empty() {
+                return None;
+            }
+            let command = format_open_command(&template, path, line);
+            if seen.insert(command.clone()) {
+                Some(command)
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
+fn open_command_template(template: Option<&str>) -> String {
+    if let Some(custom) = template {
+        return custom.to_string();
+    }
+    if let Ok(editor) = std::env::var("EDITOR") {
+        let lowered = editor.to_ascii_lowercase();
+        if lowered.contains("code") {
+            return format!("{editor} -g {{path}}:{{line}}");
+        }
+        if lowered.contains("vim") || lowered.contains("nvim") {
+            return format!("{editor} +{{line}} {{path}}");
+        }
+        return format!("{editor} {{path}}");
+    }
+    "code -g {path}:{line}".to_string()
+}
+
+fn format_open_command(template: &str, path: &str, line: usize) -> String {
+    template
+        .replace("{path}", path)
+        .replace("{line}", &line.to_string())
 }
 
 fn render_usage_output(
@@ -1058,6 +1210,7 @@ mod tests {
         SearchArgs {
             symbol: symbol.to_string(),
             concept: None,
+            concept_expand: false,
             regex: false,
             wildcard: false,
             string: false,
@@ -1070,6 +1223,7 @@ mod tests {
             path: None,
             path_glob: Vec::new(),
             exclude_patterns: Vec::new(),
+            exclude_tests: false,
             language: None,
             timeout_secs: 3,
             max_matches: 20,
@@ -1083,6 +1237,8 @@ mod tests {
             context_before: 0,
             context_after: 0,
             body: false,
+            git_modified: false,
+            git_since: None,
             git_info: false,
             index_dir: None,
             cache_dir: None,
@@ -1109,6 +1265,9 @@ mod tests {
             body_tail: None,
             full_body: false,
             definitions: false,
+            open: false,
+            open_command: None,
+            assert_absent: false,
         };
 
         let symbols = collect_symbols(&cmd).expect("expected symbols to be collected");

@@ -1,5 +1,5 @@
-mod config;
 mod concept_expansion;
+mod config;
 mod engine;
 mod formatting;
 mod fuzzy;
@@ -8,9 +8,11 @@ mod query;
 mod state;
 mod stats;
 
-pub use formatting::ContextHint;
-pub use stats::{GitInfo, SearchSummary, StageStats, StartupStats, TopHit};
 pub(crate) use config::passes_extension_filter;
+pub use formatting::ContextHint;
+pub use stats::{
+    ConceptExpansionSummary, GitInfo, SearchSummary, StageStats, StartupStats, TopHit,
+};
 
 use anyhow::Result;
 

@@ -262,6 +262,8 @@ pub struct SearchSummary {
     pub symbol: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub concept: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub concept_expansion: Option<ConceptExpansionSummary>,
     pub queries: Vec<String>,
     pub top_hits: Vec<TopHit>,
     pub deduped: usize,
@@ -284,11 +286,23 @@ pub struct SearchSummary {
     pub stage_stats: StageStats,
     pub reward: f32,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub open_commands: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub warnings: Vec<String>,
     #[serde(default, skip_serializing_if = "is_false")]
     pub ast_fallback: bool,
     #[serde(default, skip_serializing_if = "is_false")]
     pub truncated: bool,
+}
+
+#[derive(Clone, Serialize)]
+pub struct ConceptExpansionSummary {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub primary: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub synonyms: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub phrases: Vec<String>,
 }
 
 #[derive(Clone, Serialize)]

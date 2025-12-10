@@ -3,7 +3,7 @@ use std::path::Path;
 
 use serde::Serialize;
 
-use crate::search::{GitInfo, SearchSummary, TopHit};
+use crate::search::{ConceptExpansionSummary, GitInfo, SearchSummary, TopHit};
 
 const CLI_VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -73,8 +73,12 @@ pub struct AgentOutput {
     pub notes: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub concept: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub concept_expansion: Option<ConceptExpansionSummary>,
     #[serde(default, skip_serializing_if = "is_false")]
     pub ast_fallback: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub open_commands: Vec<String>,
     pub truncated: bool,
 }
 
@@ -98,6 +102,8 @@ pub struct AgentStreamEntry {
     pub notes: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub concept: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub concept_expansion: Option<ConceptExpansionSummary>,
     #[serde(default, skip_serializing_if = "is_false")]
     pub ast_fallback: bool,
     pub truncated: bool,
@@ -117,6 +123,7 @@ pub struct AgentResult {
     pub related_paths: Vec<String>,
     pub notes: Vec<String>,
     pub concept: Option<String>,
+    pub concept_expansion: Option<ConceptExpansionSummary>,
     pub ast_fallback: bool,
 }
 
@@ -144,6 +151,7 @@ impl AgentResult {
                 .collect(),
             notes: summary.notes.clone(),
             concept: summary.concept.clone(),
+            concept_expansion: summary.concept_expansion.clone(),
             ast_fallback: summary.ast_fallback,
         }
     }
@@ -160,6 +168,7 @@ pub fn aggregate_output(root: &Path, symbols: &[String], results: &[AgentResult]
     let mut related_paths: HashSet<String> = HashSet::new();
     let mut notes: HashSet<String> = HashSet::new();
     let mut concept: Option<String> = None;
+    let mut concept_expansion: Option<ConceptExpansionSummary> = None;
     let mut ast_fallback = false;
 
     for result in results {
@@ -185,6 +194,9 @@ pub fn aggregate_output(root: &Path, symbols: &[String], results: &[AgentResult]
         ast_fallback |= result.ast_fallback;
         if concept.is_none() {
             concept = result.concept.clone();
+        }
+        if concept_expansion.is_none() {
+            concept_expansion = result.concept_expansion.clone();
         }
     }
 
@@ -216,7 +228,9 @@ pub fn aggregate_output(root: &Path, symbols: &[String], results: &[AgentResult]
         related_paths,
         notes,
         concept,
+        concept_expansion,
         ast_fallback,
+        open_commands: Vec::new(),
         truncated,
     }
 }
@@ -238,6 +252,7 @@ pub fn stream_entry(result: &AgentResult, done: bool) -> AgentStreamEntry {
         related_paths: result.related_paths.clone(),
         notes: result.notes.clone(),
         concept: result.concept.clone(),
+        concept_expansion: result.concept_expansion.clone(),
         ast_fallback: result.ast_fallback,
         truncated: result.truncated,
         done,
@@ -296,18 +311,17 @@ fn map_hit(symbol: &str, hit: &TopHit, settings: &AgentSettings) -> AgentHit {
     } else {
         hit.snippet.clone().or_else(|| hit.raw_snippet.clone())
     };
-    let (body, body_truncated, body_retrieved) =
-        if settings.concise {
-            (None, false, false)
-        } else {
-            let (body, truncated) = format_body(
-                hit.body.as_deref(),
-                settings.trim_body,
-                settings.body_head,
-                settings.body_tail,
-            );
-            (body, truncated, hit.body_retrieved)
-        };
+    let (body, body_truncated, body_retrieved) = if settings.concise {
+        (None, false, false)
+    } else {
+        let (body, truncated) = format_body(
+            hit.body.as_deref(),
+            settings.trim_body,
+            settings.body_head,
+            settings.body_tail,
+        );
+        (body, truncated, hit.body_retrieved)
+    };
 
     AgentHit {
         symbol: symbol.to_string(),
@@ -497,6 +511,35 @@ pub fn render_edit(results: &[AgentHit]) -> String {
         })
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+#[derive(Serialize)]
+pub struct FileSummary {
+    pub path: String,
+    pub hits: usize,
+}
+
+#[derive(Serialize)]
+pub struct SummaryView {
+    pub files: Vec<FileSummary>,
+    pub total: usize,
+}
+
+pub fn summarize_hits(results: &[AgentHit]) -> SummaryView {
+    let mut counts: BTreeMap<String, usize> = BTreeMap::new();
+    for hit in results {
+        *counts.entry(hit.file.clone()).or_default() += 1;
+    }
+    let mut files: Vec<FileSummary> = counts
+        .into_iter()
+        .map(|(path, hits)| FileSummary { path, hits })
+        .collect();
+    files.sort_by(|a, b| b.hits.cmp(&a.hits).then_with(|| a.path.cmp(&b.path)));
+
+    SummaryView {
+        files,
+        total: results.len(),
+    }
 }
 
 pub fn render_minimal(results: &[AgentHit]) -> String {

@@ -24,6 +24,8 @@ pub struct HttpSearchRequest {
     #[serde(default)]
     pub concept: Option<String>,
     #[serde(default)]
+    pub concept_expand: Option<bool>,
+    #[serde(default)]
     pub language: Option<String>,
     #[serde(default)]
     pub kind: Option<String>,
@@ -83,6 +85,12 @@ pub struct HttpSearchRequest {
     pub path_glob: Option<Vec<String>>,
     #[serde(default)]
     pub exclude: Option<Vec<String>>,
+    #[serde(default)]
+    pub exclude_tests: Option<bool>,
+    #[serde(default)]
+    pub git_modified: Option<bool>,
+    #[serde(default)]
+    pub git_since: Option<String>,
 }
 
 impl From<HttpSearchRequest> for SearchInput {
@@ -97,6 +105,7 @@ impl From<HttpSearchRequest> for SearchInput {
         SearchInput {
             symbol: req.symbol,
             concept: req.concept,
+            concept_expand: req.concept_expand,
             language: req.language,
             kind: req.kind,
             root: req.root.map(PathBuf::from),
@@ -115,6 +124,7 @@ impl From<HttpSearchRequest> for SearchInput {
             usages_only: req.usages_only,
             path_glob: req.path_glob,
             exclude_patterns: req.exclude,
+            exclude_tests: req.exclude_tests,
             index_dir: req.index_dir.map(PathBuf::from),
             cache_dir: req.cache_dir.map(PathBuf::from),
             log_dir: req.log_dir.map(PathBuf::from),
@@ -122,6 +132,8 @@ impl From<HttpSearchRequest> for SearchInput {
             context_before: req.context_before,
             context_after: req.context_after,
             body: req.body,
+            git_modified: req.git_modified,
+            git_since: req.git_since,
             git_info: req.git_info,
         }
     }

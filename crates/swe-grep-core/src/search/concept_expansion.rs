@@ -4,6 +4,14 @@ use std::collections::HashSet;
 pub(crate) struct ConceptExpansion {
     primary: Vec<String>,
     synonyms: Vec<String>,
+    phrases: Vec<String>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct ConceptHitCounts {
+    pub primary: usize,
+    pub synonyms: usize,
+    pub phrases: usize,
 }
 
 impl ConceptExpansion {
@@ -13,6 +21,10 @@ impl ConceptExpansion {
 
     pub(crate) fn synonyms(&self) -> &[String] {
         &self.synonyms
+    }
+
+    pub(crate) fn phrases(&self) -> &[String] {
+        &self.phrases
     }
 
     pub(crate) fn all_terms(&self) -> Vec<String> {
@@ -31,10 +43,16 @@ impl ConceptExpansion {
             }
         }
 
+        for phrase in &self.phrases {
+            if seen.insert(phrase.clone()) {
+                terms.push(phrase.clone());
+            }
+        }
+
         terms
     }
 
-    pub(crate) fn count_matches(&self, text: &str) -> (usize, usize) {
+    pub(crate) fn count_matches(&self, text: &str) -> ConceptHitCounts {
         let haystack = text.to_ascii_lowercase();
 
         let primary_hits = self
@@ -47,8 +65,17 @@ impl ConceptExpansion {
             .iter()
             .filter(|token| haystack.contains(token.as_str()))
             .count();
+        let phrase_hits = self
+            .phrases
+            .iter()
+            .filter(|token| haystack.contains(token.as_str()))
+            .count();
 
-        (primary_hits, synonym_hits)
+        ConceptHitCounts {
+            primary: primary_hits,
+            synonyms: synonym_hits,
+            phrases: phrase_hits,
+        }
     }
 }
 
@@ -56,6 +83,7 @@ pub(crate) fn expand_concept(phrase: &str) -> ConceptExpansion {
     let primary = tokenize(phrase);
     let mut synonyms: Vec<String> = Vec::new();
     let mut seen: HashSet<String> = primary.iter().cloned().collect();
+    let phrases = extract_phrases(phrase, &primary);
 
     for token in &primary {
         for synonym in synonyms_for(token) {
@@ -66,7 +94,11 @@ pub(crate) fn expand_concept(phrase: &str) -> ConceptExpansion {
         }
     }
 
-    ConceptExpansion { primary, synonyms }
+    ConceptExpansion {
+        primary,
+        synonyms,
+        phrases,
+    }
 }
 
 fn tokenize(phrase: &str) -> Vec<String> {
@@ -85,19 +117,105 @@ fn tokenize(phrase: &str) -> Vec<String> {
     tokens
 }
 
+fn extract_phrases(raw: &str, tokens: &[String]) -> Vec<String> {
+    let mut phrases: Vec<String> = Vec::new();
+    let mut seen: HashSet<String> = HashSet::new();
+
+    let normalized = collapse_whitespace(raw);
+    if normalized.split_whitespace().count() > 1 && seen.insert(normalized.clone()) {
+        phrases.push(normalized);
+    }
+
+    // Sliding windows over tokens to capture common two and three word phrases.
+    for window in tokens.windows(2) {
+        let phrase = window.join(" ");
+        if seen.insert(phrase.clone()) {
+            phrases.push(phrase);
+        }
+    }
+    for window in tokens.windows(3) {
+        let phrase = window.join(" ");
+        if seen.insert(phrase.clone()) {
+            phrases.push(phrase);
+        }
+    }
+
+    phrases
+}
+
+fn collapse_whitespace(value: &str) -> String {
+    value
+        .split_whitespace()
+        .filter(|segment| !segment.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_ascii_lowercase()
+}
+
 const PROGRAMMING_SYNONYMS: &[(&str, &[&str])] = &[
-    ("rag", &["retrieval", "embedding", "vector", "semantic"]),
+    (
+        "rag",
+        &[
+            "retrieval",
+            "embedding",
+            "vector",
+            "semantic",
+            "index",
+            "chunk",
+            "context",
+        ],
+    ),
     (
         "auth",
-        &["authentication", "login", "session", "token", "jwt", "oauth"],
+        &[
+            "authentication",
+            "authenticate",
+            "login",
+            "logout",
+            "session",
+            "token",
+            "jwt",
+            "oauth",
+            "credentials",
+        ],
     ),
-    ("authentication", &["auth", "login", "session", "token", "jwt"]),
-    ("login", &["auth", "authentication", "signin", "session"]),
-    ("token", &["jwt", "bearer", "oauth", "auth"]),
-    ("jwt", &["token", "auth"]),
+    (
+        "authentication",
+        &["auth", "login", "logout", "session", "token", "jwt"],
+    ),
+    (
+        "login",
+        &["auth", "authentication", "signin", "session", "oauth"],
+    ),
+    ("token", &["jwt", "bearer", "oauth", "auth", "session"]),
+    ("jwt", &["token", "auth", "bearer"]),
     ("session", &["auth", "login", "authentication"]),
-    ("cache", &["caching", "memoize", "store", "persist"]),
-    ("caching", &["cache", "memoize", "store", "persist"]),
+    (
+        "cache",
+        &[
+            "caching",
+            "memoize",
+            "store",
+            "persist",
+            "warm",
+            "invalidate",
+            "ttl",
+            "lru",
+        ],
+    ),
+    (
+        "caching",
+        &[
+            "cache",
+            "memoize",
+            "store",
+            "persist",
+            "warm",
+            "invalidate",
+            "ttl",
+            "lru",
+        ],
+    ),
     ("error", &["exception", "failure", "catch", "handle"]),
     ("queue", &["message", "worker", "job"]),
     ("db", &["database", "sql", "postgres", "mysql"]),
@@ -120,29 +238,46 @@ fn synonyms_for(token: &str) -> &'static [&'static str] {
 
 #[cfg(test)]
 mod tests {
-    use super::{expand_concept, ConceptExpansion};
+    use super::{ConceptExpansion, ConceptHitCounts, expand_concept};
 
     fn contains_term(expansion: &ConceptExpansion, value: &str) -> bool {
-        expansion
-            .synonyms()
-            .iter()
-            .any(|synonym| synonym == value)
+        expansion.synonyms().iter().any(|synonym| synonym == value)
     }
 
     #[test]
     fn expands_programming_synonyms() {
         let expansion = expand_concept("Auth flow");
-        assert_eq!(expansion.primary(), &["auth".to_string(), "flow".to_string()]);
+        assert_eq!(
+            expansion.primary(),
+            &["auth".to_string(), "flow".to_string()]
+        );
         assert!(contains_term(&expansion, "login"));
         assert!(contains_term(&expansion, "jwt"));
+        assert!(contains_term(&expansion, "logout"));
     }
 
     #[test]
     fn counts_primary_and_synonym_hits() {
         let expansion = expand_concept("cache warming");
-        let (primary_hits, synonym_hits) =
-            expansion.count_matches("memoize this cache warming pipeline");
-        assert_eq!(primary_hits, 2);
-        assert!(synonym_hits >= 1);
+        let ConceptHitCounts {
+            primary,
+            synonyms,
+            phrases,
+        } = expansion.count_matches("memoize this cache warming pipeline");
+        assert_eq!(primary, 2);
+        assert!(synonyms >= 1);
+        assert!(phrases >= 1);
+    }
+
+    #[test]
+    fn captures_phrases_and_windows() {
+        let expansion = expand_concept("RAG indexing pipeline");
+        assert!(
+            expansion
+                .phrases()
+                .contains(&"rag indexing pipeline".to_string())
+        );
+        assert!(expansion.phrases().contains(&"rag indexing".to_string()));
+        assert!(expansion.synonyms().contains(&"embedding".to_string()));
     }
 }

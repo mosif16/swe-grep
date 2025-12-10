@@ -8,10 +8,10 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, anyhow};
+use globset::GlobSet;
 use grep_matcher::LineTerminator;
 use grep_regex::{RegexMatcher, RegexMatcherBuilder};
 use grep_searcher::{BinaryDetection, Searcher, SearcherBuilder, Sink, SinkContext, SinkMatch};
-use globset::GlobSet;
 use ignore::WalkBuilder;
 use lru::LruCache;
 use rayon::ThreadPoolBuilder;
@@ -22,8 +22,8 @@ use tokio::process::Command;
 use tokio::task;
 use tokio::time::timeout;
 
-use crate::search::passes_extension_filter;
 use super::common::{ChildGuard, RgMessage};
+use crate::search::passes_extension_filter;
 
 const MATCHER_CACHE_CAPACITY: usize = 64;
 
@@ -90,10 +90,7 @@ impl RipgrepTool {
                     error = %embed_err,
                     "embedded ripgrep failed; falling back to external rg"
                 );
-                match self
-                    .search_external(root, queries, &search_paths)
-                    .await
-                {
+                match self.search_external(root, queries, &search_paths).await {
                     Ok(results) => Ok(results),
                     Err(fallback_err) => Err(embed_err
                         .context(format!("fallback to external rg failed: {fallback_err}"))),

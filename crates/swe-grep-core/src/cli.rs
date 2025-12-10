@@ -46,7 +46,7 @@ pub struct SearchCommand {
     #[arg(long, default_value_t = false, action = ArgAction::SetTrue)]
     pub agent: bool,
 
-    /// Output format when agent mode is enabled (json/table/compact/tree/edit/minimal).
+    /// Output format when agent mode is enabled (json/table/compact/tree/edit/minimal/summary).
     #[arg(long, default_value = "json", value_enum)]
     pub format: OutputFormat,
 
@@ -82,6 +82,14 @@ pub struct SearchCommand {
     #[arg(long, default_value_t = false, action = ArgAction::SetTrue)]
     pub quiet: bool,
 
+    /// Emit editor-friendly open commands for each hit (code -g file:line, vim +line file, etc.).
+    #[arg(long, default_value_t = false, action = ArgAction::SetTrue)]
+    pub open: bool,
+
+    /// Override the editor command template (use {path} and {line} tokens).
+    #[arg(long = "open-command")]
+    pub open_command: Option<String>,
+
     /// Trim fetched bodies to at most N lines (agent mode only).
     #[arg(long)]
     pub trim_body: Option<usize>,
@@ -101,6 +109,10 @@ pub struct SearchCommand {
     /// Attempt to extract a nearby definition/signature for each hit.
     #[arg(long, default_value_t = false, action = ArgAction::SetTrue)]
     pub definitions: bool,
+
+    /// Assert that the symbol does not exist; exits with status 1 if found.
+    #[arg(long = "assert-absent", default_value_t = false, action = ArgAction::SetTrue)]
+    pub assert_absent: bool,
 }
 
 /// Output format for agent mode.
@@ -112,6 +124,7 @@ pub enum OutputFormat {
     Tree,
     Edit,
     Minimal,
+    Summary,
 }
 
 #[derive(Copy, Clone, Debug, ValueEnum)]
@@ -158,6 +171,10 @@ pub struct SearchArgs {
     #[arg(long)]
     pub concept: Option<String>,
 
+    /// Emit the expanded concept terms that were searched.
+    #[arg(long = "concept-expand", default_value_t = false, action = ArgAction::SetTrue)]
+    pub concept_expand: bool,
+
     /// Treat --symbol as a raw regular expression (disables automatic escaping).
     #[arg(long, default_value_t = false, action = ArgAction::SetTrue)]
     pub regex: bool,
@@ -202,6 +219,10 @@ pub struct SearchArgs {
     #[arg(long = "exclude", value_delimiter = ',')]
     pub exclude_patterns: Vec<String>,
 
+    /// Exclude common test files and directories.
+    #[arg(long = "exclude-tests", default_value_t = false, action = ArgAction::SetTrue)]
+    pub exclude_tests: bool,
+
     /// Optional explicit language hint for AST-Grep (e.g. rust, tsx, swift, auto-swift-ts).
     #[arg(long, value_name = "LANGUAGE")]
     pub language: Option<String>,
@@ -236,6 +257,14 @@ pub struct SearchArgs {
     /// Retrieve full file bodies for each surfaced hit.
     #[arg(long = "body", action = ArgAction::SetTrue, default_value_t = false)]
     pub body: bool,
+
+    /// Restrict search to files changed in the working tree.
+    #[arg(long = "git-modified", default_value_t = false, action = ArgAction::SetTrue)]
+    pub git_modified: bool,
+
+    /// Restrict search to files changed since a commit (git diff --name-only <commit>).
+    #[arg(long = "git-since")]
+    pub git_since: Option<String>,
 
     /// Attach git metadata (last commit hash/date) for each hit when available.
     #[arg(long = "git-info", action = ArgAction::SetTrue, default_value_t = false)]

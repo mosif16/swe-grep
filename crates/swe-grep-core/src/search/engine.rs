@@ -32,8 +32,8 @@ use super::hits::{BodyPayload, HitOrigin, ProbeKind, SearchCache, SearchHit};
 use super::query::{PatternMode, QueryRewriter};
 use super::state::PersistentState;
 use super::stats::{
-    GitInfo, SearchMetrics, SearchSummary, StageStats, StartupStats, TopHit,
-    aggregate_language_counts, compute_metrics, elapsed_ms, elapsed_std_ms, round_two,
+    ConceptExpansionSummary, GitInfo, SearchMetrics, SearchSummary, StageStats, StartupStats,
+    TopHit, aggregate_language_counts, compute_metrics, elapsed_ms, elapsed_std_ms, round_two,
 };
 use crate::cli::SymbolKind;
 use crate::language::detect_language_from_path;
@@ -62,6 +62,7 @@ const LANGUAGE_EXTENSION_BOOST: f32 = 1.15;
 pub(crate) struct SearchEngine {
     pub(crate) config: SearchConfig,
     concept_expansion: Option<ConceptExpansion>,
+    git_scope: Option<HashSet<String>>,
     fd_tool: Option<FdTool>,
     rg_tool: RipgrepTool,
     rga_tool: Option<RgaTool>,
@@ -90,6 +91,7 @@ impl SearchEngine {
             .concept
             .as_ref()
             .map(|concept| concept_expansion::expand_concept(concept));
+        let git_scope = build_git_scope(&config)?;
 
         let fd_tool = None;
 
@@ -136,6 +138,7 @@ impl SearchEngine {
         Ok(Self {
             config,
             concept_expansion,
+            git_scope,
             fd_tool,
             rg_tool,
             rga_tool,
@@ -305,6 +308,7 @@ impl SearchEngine {
             root: self.config.root.clone(),
             symbol: self.config.symbol.clone(),
             concept: self.config.concept.clone(),
+            concept_expansion: self.concept_summary(),
             queries: rewrites,
             top_hits: verification.top_hits,
             deduped: verification.dedup_count,
@@ -319,6 +323,7 @@ impl SearchEngine {
             startup_stats: Some(self.startup_stats.clone()),
             stage_stats,
             reward: round_two(self.reward_total),
+            open_commands: Vec::new(),
             warnings: self.warnings.clone(),
             ast_fallback: self.ast_fallback,
             truncated: verification.dedup_count >= self.config.max_matches,
@@ -450,6 +455,7 @@ impl SearchEngine {
             root: self.config.root.clone(),
             symbol: self.config.symbol.clone(),
             concept: self.config.concept.clone(),
+            concept_expansion: self.concept_summary(),
             queries: rewrites.to_vec(),
             top_hits: verification.top_hits,
             deduped: verification.dedup_count,
@@ -464,6 +470,7 @@ impl SearchEngine {
             startup_stats: Some(self.startup_stats.clone()),
             stage_stats,
             reward: round_two(self.reward_total),
+            open_commands: Vec::new(),
             warnings: self.warnings.clone(),
             ast_fallback: self.ast_fallback,
             truncated: verification.dedup_count >= self.config.max_matches,
@@ -588,20 +595,36 @@ impl SearchEngine {
         content.push('\n');
         content.push_str(&hit.path.to_string_lossy());
 
-        let (primary_hits, synonym_hits) = expansion.count_matches(&content);
-        if primary_hits == 0 && synonym_hits == 0 {
+        let counts = expansion.count_matches(&content);
+        if counts.primary == 0 && counts.synonyms == 0 && counts.phrases == 0 {
             return;
         }
 
         let mut boost = 0.0;
-        if primary_hits > 0 {
-            boost += 0.4 + 0.05 * (primary_hits.saturating_sub(1) as f32);
+        if counts.phrases > 0 {
+            boost += 0.55 + 0.08 * (counts.phrases.saturating_sub(1) as f32);
         }
-        if synonym_hits > 0 {
-            boost += 0.15 + 0.03 * (synonym_hits.saturating_sub(1) as f32);
+        if counts.primary > 0 {
+            boost += 0.4 + 0.05 * (counts.primary.saturating_sub(1) as f32);
+        }
+        if counts.synonyms > 0 {
+            boost += 0.18 + 0.03 * (counts.synonyms.saturating_sub(1) as f32);
         }
 
         hit.score += boost;
+    }
+
+    fn concept_summary(&self) -> Option<ConceptExpansionSummary> {
+        if !self.config.concept_expand {
+            return None;
+        }
+        self.concept_expansion
+            .as_ref()
+            .map(|expansion| ConceptExpansionSummary {
+                primary: expansion.primary().to_vec(),
+                synonyms: expansion.synonyms().to_vec(),
+                phrases: expansion.phrases().to_vec(),
+            })
     }
 
     fn should_attach_body(&self, path: &Path) -> bool {
@@ -751,7 +774,7 @@ impl SearchEngine {
             cause
                 .downcast_ref::<std::io::Error>()
                 .map(|io| io.kind() == ErrorKind::NotFound)
-            .unwrap_or(false)
+                .unwrap_or(false)
         })
     }
 
@@ -941,6 +964,13 @@ impl SearchEngine {
     fn matches_path_globs(&self, path: &Path) -> bool {
         if !passes_extension_filter(path, self.config.extension_filter.as_deref()) {
             return false;
+        }
+
+        if let Some(scope) = &self.git_scope {
+            let key = normalize_for_scope(&self.config.root, path);
+            if !scope.contains(&key) {
+                return false;
+            }
         }
 
         if let Some(globs) = &self.config.exclude_globs {
@@ -1482,9 +1512,7 @@ impl SearchEngine {
             .map(|hit| format!("{}:{}", hit.path.to_string_lossy(), hit.line))
             .collect();
         let doc_total = doc_mentions.len();
-        let has_code_hit = dedup_hits
-            .iter()
-            .any(|hit| !is_doc_path(&hit.path));
+        let has_code_hit = dedup_hits.iter().any(|hit| !is_doc_path(&hit.path));
         if has_code_hit && doc_total > 0 {
             dedup_hits.retain(|hit| !is_doc_path(&hit.path));
             doc_mentions.sort();
@@ -1602,6 +1630,87 @@ struct VerificationOutcome {
     metrics: SearchMetrics,
     language_counts: BTreeMap<String, usize>,
     notes: Vec<String>,
+}
+
+fn build_git_scope(config: &SearchConfig) -> Result<Option<HashSet<String>>> {
+    let Some(filter) = &config.git_filter else {
+        return Ok(None);
+    };
+
+    let mut scoped: HashSet<String> = HashSet::new();
+
+    if filter.modified {
+        let output = Command::new("git")
+            .args(["status", "--porcelain"])
+            .current_dir(&config.root)
+            .output()
+            .with_context(|| "failed to run git status --porcelain")?;
+        if !output.status.success() {
+            anyhow::bail!("git status --porcelain failed with {}", output.status);
+        }
+        for line in String::from_utf8_lossy(&output.stdout).lines() {
+            if line.len() < 4 {
+                continue;
+            }
+            let path = line[3..].trim();
+            if let Some(key) = normalize_git_path(&config.root, path) {
+                scoped.insert(key);
+            }
+        }
+    }
+
+    if let Some(since) = &filter.since {
+        let output = Command::new("git")
+            .args(["diff", "--name-only", since, "--"])
+            .current_dir(&config.root)
+            .output()
+            .with_context(|| format!("failed to run git diff --name-only {since}"))?;
+        if !output.status.success() {
+            anyhow::bail!("git diff --name-only {since} failed with {}", output.status);
+        }
+        for line in String::from_utf8_lossy(&output.stdout).lines() {
+            let path = line.trim();
+            if let Some(key) = normalize_git_path(&config.root, path) {
+                scoped.insert(key);
+            }
+        }
+    }
+
+    Ok(Some(scoped))
+}
+
+fn normalize_git_path(root: &Path, raw: &str) -> Option<String> {
+    if raw.is_empty() {
+        return None;
+    }
+    let mut path = PathBuf::from(raw);
+    if path.is_relative() {
+        path = root.join(path);
+    }
+    if !path.exists() {
+        return None;
+    }
+    let canonical = path.canonicalize().unwrap_or(path);
+    let rel = canonical
+        .strip_prefix(root)
+        .unwrap_or(&canonical)
+        .to_string_lossy()
+        .replace('\\', "/");
+    Some(rel)
+}
+
+fn normalize_for_scope(root: &Path, path: &Path) -> String {
+    let absolute = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        root.join(path)
+    };
+    let canonical = absolute.canonicalize().unwrap_or(absolute);
+    canonical
+        .strip_prefix(root)
+        .unwrap_or(&canonical)
+        .to_string_lossy()
+        .replace('\\', "/")
 }
 
 fn collect_candidate_symbols(paths: &[PathBuf]) -> Vec<String> {

@@ -143,12 +143,22 @@ impl QueryRewriter {
 
     fn build_concept_queries(&self, expansion: &ConceptExpansion) -> Vec<String> {
         let primary = expansion.primary();
+        let phrases = expansion.phrases();
         let all_terms = expansion.all_terms();
 
         if primary.is_empty() && all_terms.is_empty() {
             return Vec::new();
         }
         let mut queries: Vec<String> = Vec::new();
+
+        for phrase in phrases {
+            if phrase.contains(' ') {
+                let spaced = phrase.replace(' ', ".*");
+                queries.push(format!("(?i){}", Self::escape_literal(&spaced)));
+            } else {
+                queries.push(format!("(?i){}", Self::escape_literal(phrase)));
+            }
+        }
 
         let phrase_terms = if primary.is_empty() {
             all_terms.clone()

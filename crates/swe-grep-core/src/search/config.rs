@@ -7,7 +7,8 @@ use globset::{Glob, GlobSet, GlobSetBuilder};
 use super::query::PatternMode;
 use crate::cli::{SearchArgs, SymbolKind};
 pub(crate) use crate::language::{
-    code_extensions_for_languages, expand_language_hint, extensions_for_languages, languages_include,
+    code_extensions_for_languages, expand_language_hint, extensions_for_languages,
+    languages_include,
 };
 
 pub(crate) const DEFAULT_MAX_COLUMNS: usize = 200;
@@ -15,11 +16,31 @@ pub(crate) const DEFAULT_MAX_BODY_BYTES: usize = 512 * 1024;
 pub(crate) const DEFAULT_INLINE_CONTEXT: usize = 2;
 pub(crate) const TRUNCATED_INLINE_CONTEXT: usize = 4;
 pub(crate) const MAX_SYMBOL_LENGTH: usize = 256;
+const TEST_EXCLUDE_GLOBS: &[&str] = &[
+    "*_test.rs",
+    "*_test.go",
+    "*.test.ts",
+    "*.test.tsx",
+    "*.spec.ts",
+    "*Tests.swift",
+    "*Spec.swift",
+    "tests/**",
+    "__tests__/**",
+    "test/**",
+    "spec/**",
+];
+
+#[derive(Clone)]
+pub(crate) struct GitFilter {
+    pub(crate) modified: bool,
+    pub(crate) since: Option<String>,
+}
 
 pub(crate) struct SearchConfig {
     pub(crate) root: PathBuf,
     pub(crate) symbol: String,
     pub(crate) concept: Option<String>,
+    pub(crate) concept_expand: bool,
     pub(crate) kind: Option<SymbolKind>,
     #[allow(dead_code)]
     pub(crate) language: Option<String>,
@@ -48,6 +69,7 @@ pub(crate) struct SearchConfig {
     pub(crate) definitions_only: bool,
     pub(crate) usages_only: bool,
     pub(crate) git_info: bool,
+    pub(crate) git_filter: Option<GitFilter>,
     pub(crate) path_globs: Option<GlobSet>,
     pub(crate) exclude_globs: Option<GlobSet>,
     pub(crate) extension_filter: Option<Vec<String>>,
@@ -143,7 +165,11 @@ impl SearchConfig {
             .any(|lang| lang.eq_ignore_ascii_case("css") || lang.eq_ignore_ascii_case("scss"));
         let use_ast = args.tools.use_ast_grep && !uses_css_like && !args.string;
         let path_globs = build_globset(&root, &path_glob_patterns)?;
-        let exclude_globs = build_globset(&root, &args.exclude_patterns)?;
+        let mut exclude_patterns = args.exclude_patterns.clone();
+        if args.exclude_tests {
+            exclude_patterns.extend(TEST_EXCLUDE_GLOBS.iter().map(|s| s.to_string()));
+        }
+        let exclude_globs = build_globset(&root, &exclude_patterns)?;
         let include_strings = args.include_strings && !args.code_only;
         let extension_filter = if args.code_only {
             Some(code_extensions_for_languages(&language_tokens))
@@ -192,9 +218,18 @@ impl SearchConfig {
             definitions_only: args.definitions_only,
             usages_only: args.usages_only,
             git_info: args.git_info,
+            git_filter: if args.git_modified || args.git_since.is_some() {
+                Some(GitFilter {
+                    modified: args.git_modified,
+                    since: args.git_since.clone(),
+                })
+            } else {
+                None
+            },
             path_globs,
             exclude_globs,
             extension_filter,
+            concept_expand: args.concept_expand,
         })
     }
 }

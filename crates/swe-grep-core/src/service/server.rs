@@ -140,12 +140,16 @@ impl SearchExecutor {
             usages_only,
             path_glob,
             exclude_patterns,
+            exclude_tests,
             index_dir,
             cache_dir,
             log_dir,
             context_before,
             context_after,
             body,
+            concept_expand,
+            git_modified,
+            git_since,
             git_info,
             tool_flags,
         } = request;
@@ -187,7 +191,18 @@ impl SearchExecutor {
         let string = string.unwrap_or(false);
         let path_glob = path_glob.unwrap_or_default();
         let exclude_patterns = exclude_patterns.unwrap_or_default();
+        let exclude_tests = exclude_tests.unwrap_or(false);
+        let concept_expand = concept_expand.unwrap_or(false);
         let git_info = git_info.unwrap_or(false);
+        let git_modified = git_modified.unwrap_or(false);
+        let git_since = git_since.and_then(|value| {
+            let trimmed = value.trim();
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed.to_string())
+            }
+        });
         let ignore_case = ignore_case.unwrap_or(false);
         let definitions_only = definitions_only.unwrap_or(false);
         let usages_only = usages_only.unwrap_or(false);
@@ -207,6 +222,7 @@ impl SearchExecutor {
         let mut args = SearchArgs {
             symbol,
             concept,
+            concept_expand,
             path: Some(root_path),
             language,
             kind,
@@ -222,6 +238,8 @@ impl SearchExecutor {
             context_before,
             context_after,
             body,
+            git_modified,
+            git_since,
             git_info,
             regex: regex.unwrap_or(false),
             wildcard: wildcard.unwrap_or(false),
@@ -233,6 +251,7 @@ impl SearchExecutor {
             usages_only,
             path_glob,
             exclude_patterns,
+            exclude_tests,
             index_dir,
             cache_dir,
             log_dir,
@@ -249,6 +268,7 @@ impl SearchExecutor {
 pub struct SearchInput {
     pub symbol: String,
     pub concept: Option<String>,
+    pub concept_expand: Option<bool>,
     pub language: Option<String>,
     pub kind: Option<String>,
     pub root: Option<PathBuf>,
@@ -267,12 +287,15 @@ pub struct SearchInput {
     pub usages_only: Option<bool>,
     pub path_glob: Option<Vec<String>>,
     pub exclude_patterns: Option<Vec<String>>,
+    pub exclude_tests: Option<bool>,
     pub index_dir: Option<PathBuf>,
     pub cache_dir: Option<PathBuf>,
     pub log_dir: Option<PathBuf>,
     pub context_before: Option<usize>,
     pub context_after: Option<usize>,
     pub body: Option<bool>,
+    pub git_modified: Option<bool>,
+    pub git_since: Option<String>,
     pub git_info: Option<bool>,
     pub tool_flags: ToolFlagOverrides,
 }

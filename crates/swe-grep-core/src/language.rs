@@ -306,9 +306,9 @@ pub fn code_extensions_for_languages(languages: &[String]) -> Vec<String> {
 
     if languages.is_empty() {
         for ext in [
-            "rs", "swift", "ts", "tsx", "js", "jsx", "kt", "kts", "py", "java", "go", "rb",
-            "php", "cs", "cpp", "cxx", "cc", "c", "h", "hpp", "hh", "m", "mm", "scala", "dart",
-            "css", "scss", "sass", "sql",
+            "rs", "swift", "ts", "tsx", "js", "jsx", "kt", "kts", "py", "java", "go", "rb", "php",
+            "cs", "cpp", "cxx", "cc", "c", "h", "hpp", "hh", "m", "mm", "scala", "dart", "css",
+            "scss", "sass", "sql",
         ] {
             push_unique(ext);
         }

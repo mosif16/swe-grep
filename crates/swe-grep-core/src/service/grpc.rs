@@ -7,7 +7,7 @@ use tonic::async_trait;
 use tonic::transport::Server;
 use tonic::{Request, Response, Status};
 
-use crate::search::{SearchSummary, StageStats, StartupStats};
+use crate::search::{ConceptExpansionSummary, GitInfo, SearchSummary, StageStats, StartupStats};
 
 use super::proto::{
     self,
@@ -73,6 +73,7 @@ fn map_request(proto: proto::SearchRequest) -> SearchInput {
     SearchInput {
         symbol: proto.symbol,
         concept: option_from_string(proto.concept),
+        concept_expand: Some(proto.concept_expand),
         language: option_from_string(proto.language),
         kind: option_from_string(proto.kind),
         root: path_from_string(proto.root),
@@ -105,7 +106,10 @@ fn map_request(proto: proto::SearchRequest) -> SearchInput {
         context_before: zeroable_usize(proto.context_before),
         context_after: zeroable_usize(proto.context_after),
         body: Some(proto.body),
-        git_info: None,
+        git_modified: Some(proto.git_modified),
+        git_since: option_from_string(proto.git_since),
+        git_info: Some(proto.git_info),
+        exclude_tests: Some(proto.exclude_tests),
         tool_flags: ToolFlagOverrides::from_map(proto.tool_flags),
     }
 }
@@ -170,6 +174,7 @@ impl From<SearchSummary> for proto::SearchSummary {
                         body: hit.body.unwrap_or_default(),
                         body_retrieved: hit.body_retrieved,
                         auto_expanded_context: hit.auto_expanded_context,
+                        git_info: hit.git_info.map(proto::GitInfo::from),
                         hints: hit
                             .hints
                             .into_iter()
@@ -203,11 +208,15 @@ impl From<SearchSummary> for proto::SearchSummary {
             warnings: summary.warnings,
             root: summary.root.to_string_lossy().to_string(),
             concept: summary.concept.unwrap_or_default(),
+            concept_expansion: summary
+                .concept_expansion
+                .map(proto::ConceptExpansionSummary::from),
             max_matches,
             related_symbols: summary.related_symbols,
             suggested_symbols: summary.suggested_symbols,
             related_paths: summary.related_paths,
             notes: summary.notes,
+            open_commands: summary.open_commands,
             truncated: summary.truncated,
             ast_fallback: summary.ast_fallback,
         }
@@ -248,5 +257,24 @@ fn convert_startup_stats(stats: StartupStats) -> proto::StartupStats {
         cache_ms: stats.cache_ms,
         state_ms: stats.state_ms,
         index_ms: stats.index_ms,
+    }
+}
+
+impl From<GitInfo> for proto::GitInfo {
+    fn from(info: GitInfo) -> Self {
+        proto::GitInfo {
+            last_commit: info.last_commit,
+            last_modified: info.last_modified,
+        }
+    }
+}
+
+impl From<ConceptExpansionSummary> for proto::ConceptExpansionSummary {
+    fn from(summary: ConceptExpansionSummary) -> Self {
+        proto::ConceptExpansionSummary {
+            primary: summary.primary,
+            synonyms: summary.synonyms,
+            phrases: summary.phrases,
+        }
     }
 }

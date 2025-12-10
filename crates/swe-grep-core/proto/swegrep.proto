@@ -30,6 +30,11 @@ message SearchRequest {
   bool usages_only = 25;
   bool code_only = 26;
   repeated string exclude = 27;
+  bool exclude_tests = 28;
+  bool concept_expand = 29;
+  bool git_modified = 30;
+  string git_since = 31;
+  bool git_info = 32;
 }
 
 message SearchResponse {
@@ -53,12 +58,18 @@ message TopHit {
   bool body_retrieved = 14;
   repeated ContextHint hints = 15;
   bool auto_expanded_context = 16;
+  GitInfo git_info = 17;
 }
 
 message ContextHint {
   string kind = 1;
   string label = 2;
   uint32 line = 3;
+}
+
+message GitInfo {
+  string last_commit = 1;
+  string last_modified = 2;
 }
 
 message AstHit {
@@ -99,6 +110,12 @@ message StartupStats {
   uint64 index_ms = 8;
 }
 
+message ConceptExpansionSummary {
+  repeated string primary = 1;
+  repeated string synonyms = 2;
+  repeated string phrases = 3;
+}
+
 message SearchSummary {
   uint32 cycle = 1;
   string symbol = 2;
@@ -121,6 +138,8 @@ message SearchSummary {
   repeated string notes = 19;
   bool truncated = 20;
   bool ast_fallback = 21;
+  ConceptExpansionSummary concept_expansion = 22;
+  repeated string open_commands = 23;
 }
 
 message HealthCheckRequest {}
