@@ -15,13 +15,15 @@ use crate::language;
 pub struct AstGrepTool {
     timeout: Duration,
     max_matches: usize,
+    verbose: bool,
 }
 
 impl AstGrepTool {
-    pub fn new(timeout: Duration, max_matches: usize) -> Self {
+    pub fn new(timeout: Duration, max_matches: usize, verbose: bool) -> Self {
         Self {
             timeout,
             max_matches,
+            verbose,
         }
     }
 
@@ -163,7 +165,11 @@ impl AstGrepTool {
                         matches.push(msg.into());
                     }
                     Err(err) => {
-                        tracing::warn!(error = %err, "failed to parse ast-grep json line");
+                        if self.verbose {
+                            tracing::warn!(error = %err, "failed to parse ast-grep json line");
+                        } else {
+                            tracing::debug!(error = %err, "failed to parse ast-grep json line");
+                        }
                     }
                 }
             }

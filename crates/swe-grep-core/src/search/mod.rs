@@ -18,6 +18,10 @@ use anyhow::Result;
 
 use crate::cli::SearchArgs;
 
+pub fn default_cache_dir_for_root(root: &std::path::Path) -> std::path::PathBuf {
+    config::default_cache_dir_for_root(root)
+}
+
 /// Execute a single SWE-grep cycle using the phase-3 workflow.
 pub async fn execute(args: SearchArgs) -> Result<SearchSummary> {
     let config = config::SearchConfig::try_from_args(args)?;

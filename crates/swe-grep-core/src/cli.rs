@@ -140,6 +140,17 @@ pub enum SymbolKind {
     Actor,
 }
 
+/// High-level search strategy override.
+#[derive(Copy, Clone, Debug, ValueEnum)]
+pub enum SearchMode {
+    /// Treat the symbol as a literal identifier (default).
+    Literal,
+    /// Treat the symbol as a raw regular expression.
+    Regex,
+    /// Use AST-Grep only (no ripgrep/index/rga fallbacks).
+    Ast,
+}
+
 /// Shared tool toggles for search execution.
 #[derive(clap::Args, Debug, Clone)]
 pub struct ToolArgs {
@@ -183,9 +194,17 @@ pub struct SearchArgs {
     #[arg(long, default_value_t = false, action = ArgAction::SetTrue)]
     pub wildcard: bool,
 
+    /// Search for decorator/attribute usages like @Model or @Component.
+    #[arg(long, alias = "decorator", default_value_t = false, action = ArgAction::SetTrue)]
+    pub attribute: bool,
+
     /// Search literal/string content (adds quoted variants; disables AST disambiguation).
     #[arg(long, default_value_t = false, action = ArgAction::SetTrue)]
     pub string: bool,
+
+    /// Emit AST-Grep diagnostics and parse warnings instead of silently falling back to regex.
+    #[arg(long = "verbose-ast", default_value_t = false, action = ArgAction::SetTrue)]
+    pub verbose_ast: bool,
 
     /// Include localization/string resources (xcstrings/strings/arb/json) in the search surface.
     #[arg(long, default_value_t = false, action = ArgAction::SetTrue)]
@@ -227,6 +246,10 @@ pub struct SearchArgs {
     #[arg(long, value_name = "LANGUAGE")]
     pub language: Option<String>,
 
+    /// Explicitly control search strategy (literal|regex|ast).
+    #[arg(long, value_enum)]
+    pub mode: Option<SearchMode>,
+
     /// Filter results by declaration type.
     #[arg(long, value_enum)]
     pub kind: Option<SymbolKind>,
@@ -245,6 +268,10 @@ pub struct SearchArgs {
 
     #[command(flatten)]
     pub tools: ToolArgs,
+
+    /// Shorthand to set both --context-before and --context-after.
+    #[arg(long, value_name = "N", conflicts_with_all = ["context_before", "context_after"])]
+    pub context: Option<usize>,
 
     /// Number of neighbouring lines to include before each match when expanding snippets.
     #[arg(long = "context-before", default_value_t = 0)]

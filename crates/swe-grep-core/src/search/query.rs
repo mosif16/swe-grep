@@ -23,6 +23,7 @@ pub(crate) struct QueryRewriter {
     languages: Vec<String>,
     mode: QueryMode,
     ignore_case: bool,
+    attribute: bool,
 }
 
 impl QueryRewriter {
@@ -31,12 +32,14 @@ impl QueryRewriter {
         languages: &[String],
         pattern_mode: PatternMode,
         ignore_case: bool,
+        attribute: bool,
     ) -> Self {
         Self {
             symbol: symbol.to_string(),
             languages: languages.iter().cloned().collect(),
             mode: QueryMode::Symbol { pattern_mode },
             ignore_case,
+            attribute,
         }
     }
 
@@ -51,6 +54,7 @@ impl QueryRewriter {
             languages: languages.iter().cloned().collect(),
             mode: QueryMode::Concept { expansion },
             ignore_case,
+            attribute: false,
         }
     }
 
@@ -118,6 +122,18 @@ impl QueryRewriter {
                         PatternMode::LiteralString => Self::escape_literal(&pattern),
                     };
                     queries.push(rendered);
+                }
+
+                if self.attribute {
+                    for pattern in language::attribute_patterns_for(lang, s) {
+                        let rendered = match pattern_mode {
+                            PatternMode::Literal => Self::escape_literal(&pattern),
+                            PatternMode::Regex => pattern,
+                            PatternMode::Wildcard => wildcard_to_regex(&pattern),
+                            PatternMode::LiteralString => Self::escape_literal(&pattern),
+                        };
+                        queries.push(rendered);
+                    }
                 }
             }
         }

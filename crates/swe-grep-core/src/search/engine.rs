@@ -35,7 +35,7 @@ use super::stats::{
     ConceptExpansionSummary, GitInfo, SearchMetrics, SearchSummary, StageStats, StartupStats,
     TopHit, aggregate_language_counts, compute_metrics, elapsed_ms, elapsed_std_ms, round_two,
 };
-use crate::cli::SymbolKind;
+use crate::cli::{SearchMode, SymbolKind};
 use crate::language::detect_language_from_path;
 
 const FILE_TYPE_SCORES: &[(&str, i32)] = &[
@@ -167,6 +167,85 @@ impl SearchEngine {
         tracing::info!(symbol = %self.config.symbol, "search_cycle_start");
 
         let rewrites = self.build_queries();
+        if matches!(self.config.search_mode, SearchMode::Ast) {
+            let disambiguate_start = Instant::now();
+            let ast_matches = self.disambiguate(&[]).await;
+            stage_stats.disambiguate_ms = elapsed_ms(disambiguate_start);
+            stage_stats.ast_matches = ast_matches.len();
+            stage_stats.record_disambiguate_languages(&ast_matches, stage_stats.disambiguate_ms);
+
+            let verify_start = Instant::now();
+            let verification = self
+                .verify(Vec::new(), ast_matches, HashSet::new(), Vec::new())
+                .await?;
+            stage_stats.verify_ms = elapsed_ms(verify_start);
+            stage_stats.record_verify_languages(&verification.language_counts, stage_stats.verify_ms);
+
+            stage_stats.precision = round_two(verification.metrics.precision);
+            stage_stats.density = round_two(verification.metrics.density);
+            stage_stats.clustering = round_two(verification.metrics.cluster_score);
+            stage_stats.reward = round_two(verification.metrics.reward);
+            stage_stats.cycle_latency_ms =
+                stage_stats.disambiguate_ms + stage_stats.verify_ms;
+
+            self.reward_total += verification.metrics.reward;
+            if let Err(err) = self.state.save() {
+                tracing::warn!(error = %err, "failed to persist cache state");
+            }
+
+            crate::telemetry::record_stage_latency("ast", stage_stats.disambiguate_ms);
+            crate::telemetry::record_stage_latency("verify", stage_stats.verify_ms);
+
+            let empty_candidates: Vec<PathBuf> = Vec::new();
+            let (related_symbols, related_paths, suggested_symbols, mut alt_notes) = self
+                .suggest_alternatives(&empty_candidates, &verification, &rewrites)
+                .await;
+            let mut notes = verification.notes;
+            notes.append(&mut alt_notes);
+
+            let summary = SearchSummary {
+                cycle: 1,
+                root: self.config.root.clone(),
+                symbol: self.config.symbol.clone(),
+                concept: self.config.concept.clone(),
+                concept_expansion: self.concept_summary(),
+                queries: rewrites,
+                top_hits: verification.top_hits,
+                deduped: verification.dedup_count,
+                max_matches: self.config.max_matches,
+                next_actions: verification.next_actions,
+                related_symbols,
+                suggested_symbols,
+                related_paths,
+                notes,
+                fd_candidates: verification.fd_candidates,
+                ast_hits: verification.ast_hits,
+                startup_stats: Some(self.startup_stats.clone()),
+                stage_stats,
+                reward: round_two(self.reward_total),
+                open_commands: Vec::new(),
+                warnings: self.warnings.clone(),
+                ast_fallback: false,
+                truncated: verification.dedup_count >= self.config.max_matches,
+            };
+
+            crate::telemetry::record_reward(verification.metrics.reward);
+            crate::telemetry::record_cycle_latency(summary.stage_stats.cycle_latency_ms);
+            crate::telemetry::record_stage_latency("cycle", summary.stage_stats.cycle_latency_ms);
+
+            let top_hit_path = summary.top_hits.first().map(|hit| hit.path.clone());
+            tracing::info!(
+                symbol = %summary.symbol,
+                latency_ms = summary.stage_stats.cycle_latency_ms,
+                reward = summary.reward,
+                deduped = summary.deduped,
+                top_hit = ?top_hit_path,
+                "search_cycle_complete"
+            );
+
+            self.log_summary(&summary).await?;
+            return Ok(summary);
+        }
         if let Some(summary) = self.try_fast_path(&rewrites).await? {
             return Ok(summary);
         }
@@ -367,6 +446,7 @@ impl SearchEngine {
             &self.config.language_tokens,
             self.config.pattern_mode,
             self.config.ignore_case,
+            self.config.attribute,
         )
         .build()
     }
@@ -737,7 +817,11 @@ impl SearchEngine {
         }
         if self.ast_tool.is_none() {
             let start = StdInstant::now();
-            let tool = AstGrepTool::new(self.config.timeout, self.config.max_matches);
+            let tool = AstGrepTool::new(
+                self.config.timeout,
+                self.config.max_matches,
+                self.config.verbose_ast,
+            );
             let elapsed = elapsed_std_ms(start);
             if self.startup_stats.ast_ms == 0 {
                 self.startup_stats.ast_ms = elapsed;
@@ -930,6 +1014,9 @@ impl SearchEngine {
     }
 
     fn is_literal_symbol(&self) -> bool {
+        if !matches!(self.config.search_mode, SearchMode::Literal) {
+            return false;
+        }
         if self.config.concept.is_some() {
             return false;
         }
@@ -941,10 +1028,13 @@ impl SearchEngine {
     }
 
     fn should_run_ast(&self) -> bool {
-        if !self.config.use_ast {
+        if self.ast_unavailable {
             return false;
         }
-        if self.ast_unavailable {
+        if matches!(self.config.search_mode, SearchMode::Ast) {
+            return self.config.use_ast;
+        }
+        if !self.config.use_ast {
             return false;
         }
         if self.config.concept.is_some() {
@@ -1328,20 +1418,35 @@ impl SearchEngine {
                         pattern = %pattern_err.pattern(),
                         "ast-grep pattern invalid; falling back to literal search"
                     );
-                    self.push_warning(format!(
-                        "ast-grep pattern invalid for `{symbol}`: {}",
-                        pattern_err.message()
-                    ));
+                    if self.config.verbose_ast {
+                        self.push_warning(format!(
+                            "ast-grep pattern invalid for `{symbol}`: {}",
+                            pattern_err.message()
+                        ));
+                    }
                 } else {
                     tracing::warn!(error = %err, "ast-grep invocation failed");
-                    self.push_warning(format!("ast-grep invocation failed: {err}"));
+                    if self.config.verbose_ast {
+                        self.push_warning(format!("ast-grep invocation failed: {err}"));
+                    }
+                }
+
+                if matches!(self.config.search_mode, SearchMode::Ast) {
+                    if self.config.verbose_ast {
+                        self.push_warning(format!(
+                            "ast-grep failed for `{symbol}` in ast mode; no fallback applied"
+                        ));
+                    }
+                    return Vec::new();
                 }
 
                 if Self::is_simple_identifier(&symbol) {
                     self.ast_fallback = true;
-                    self.push_warning(format!(
-                        "ast-grep failed for `{symbol}`; using regex fallback"
-                    ));
+                    if self.config.verbose_ast {
+                        self.push_warning(format!(
+                            "ast-grep failed for `{symbol}`; using regex fallback"
+                        ));
+                    }
                     return self.regex_disambiguate(scope).await;
                 }
 
@@ -1376,9 +1481,11 @@ impl SearchEngine {
                 })
                 .collect(),
             Err(err) => {
-                self.push_warning(format!(
-                    "regex fallback after ast-grep failure failed: {err}"
-                ));
+                if self.config.verbose_ast {
+                    self.push_warning(format!(
+                        "regex fallback after ast-grep failure failed: {err}"
+                    ));
+                }
                 Vec::new()
             }
         }

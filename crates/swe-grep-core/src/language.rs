@@ -125,6 +125,18 @@ const RUST_QUERIES: &[QueryTemplate] = &[
     QueryTemplate::base("macro_rules! {symbol}"),
 ];
 
+const TYPESCRIPT_ATTRIBUTE_QUERIES: &[&str] = &[
+    "@{symbol}",
+    "@{symbol}(",
+    "@{symbol} ",
+];
+
+const SWIFT_ATTRIBUTE_QUERIES: &[&str] = &[
+    "@{symbol}",
+    "@{symbol}(",
+    "@{symbol} ",
+];
+
 const TYPESCRIPT_AST_PATTERNS: &[&str] = &[
     "(identifier) @id (#eq? @id \"{needle}\")",
     "(call_expression function: (identifier) @id (#eq? @id \"{needle}\"))",
@@ -185,6 +197,29 @@ pub fn query_patterns_for(language: &str, symbol: &str) -> Vec<String> {
     };
 
     render_query_templates(templates, symbol, shape)
+}
+
+pub fn attribute_patterns_for(language: &str, symbol: &str) -> Vec<String> {
+    let trimmed = symbol.trim();
+    if trimmed.is_empty() {
+        return Vec::new();
+    }
+    let needle = trimmed.trim_start_matches('@').trim();
+    if needle.is_empty() {
+        return Vec::new();
+    }
+
+    let normalized = language.to_ascii_lowercase();
+    let templates: &[&str] = match normalized.as_str() {
+        "typescript" | "ts" | "tsx" | "javascript" | "js" | "jsx" => TYPESCRIPT_ATTRIBUTE_QUERIES,
+        "swift" => SWIFT_ATTRIBUTE_QUERIES,
+        _ => &[],
+    };
+
+    templates
+        .iter()
+        .map(|template| template.replace("{symbol}", needle))
+        .collect()
 }
 
 fn render_query_templates(

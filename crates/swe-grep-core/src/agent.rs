@@ -71,6 +71,8 @@ pub struct AgentOutput {
     pub related_paths: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub notes: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub fd_candidates: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub concept: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -100,6 +102,8 @@ pub struct AgentStreamEntry {
     pub related_paths: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub notes: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub fd_candidates: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub concept: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -122,6 +126,7 @@ pub struct AgentResult {
     pub suggested_symbols: Vec<String>,
     pub related_paths: Vec<String>,
     pub notes: Vec<String>,
+    pub fd_candidates: Vec<String>,
     pub concept: Option<String>,
     pub concept_expansion: Option<ConceptExpansionSummary>,
     pub ast_fallback: bool,
@@ -150,6 +155,12 @@ impl AgentResult {
                 .map(|p| p.to_string())
                 .collect(),
             notes: summary.notes.clone(),
+            fd_candidates: summary
+                .fd_candidates
+                .iter()
+                .filter_map(|p| p.to_str().map(|s| s.to_string()))
+                .take(20)
+                .collect(),
             concept: summary.concept.clone(),
             concept_expansion: summary.concept_expansion.clone(),
             ast_fallback: summary.ast_fallback,
@@ -166,6 +177,7 @@ pub fn aggregate_output(root: &Path, symbols: &[String], results: &[AgentResult]
     let mut related_symbols: HashSet<String> = HashSet::new();
     let mut suggested_symbols: HashSet<String> = HashSet::new();
     let mut related_paths: HashSet<String> = HashSet::new();
+    let mut fd_candidates: HashSet<String> = HashSet::new();
     let mut notes: HashSet<String> = HashSet::new();
     let mut concept: Option<String> = None;
     let mut concept_expansion: Option<ConceptExpansionSummary> = None;
@@ -190,6 +202,7 @@ pub fn aggregate_output(root: &Path, symbols: &[String], results: &[AgentResult]
         related_symbols.extend(result.related_symbols.clone());
         suggested_symbols.extend(result.suggested_symbols.clone());
         related_paths.extend(result.related_paths.clone());
+        fd_candidates.extend(result.fd_candidates.clone());
         notes.extend(result.notes.clone());
         ast_fallback |= result.ast_fallback;
         if concept.is_none() {
@@ -203,11 +216,16 @@ pub fn aggregate_output(root: &Path, symbols: &[String], results: &[AgentResult]
     let mut related_symbols: Vec<String> = related_symbols.into_iter().collect();
     let mut suggested_symbols: Vec<String> = suggested_symbols.into_iter().collect();
     let mut related_paths: Vec<String> = related_paths.into_iter().collect();
+    let mut fd_candidates: Vec<String> = fd_candidates.into_iter().collect();
     let mut notes: Vec<String> = notes.into_iter().collect();
     related_symbols.sort();
     suggested_symbols.sort();
     related_paths.sort();
+    fd_candidates.sort();
     notes.sort();
+    if fd_candidates.len() > 20 {
+        fd_candidates.truncate(20);
+    }
 
     AgentOutput {
         version: 1,
@@ -227,6 +245,7 @@ pub fn aggregate_output(root: &Path, symbols: &[String], results: &[AgentResult]
         suggested_symbols,
         related_paths,
         notes,
+        fd_candidates,
         concept,
         concept_expansion,
         ast_fallback,
@@ -251,6 +270,7 @@ pub fn stream_entry(result: &AgentResult, done: bool) -> AgentStreamEntry {
         suggested_symbols: result.suggested_symbols.clone(),
         related_paths: result.related_paths.clone(),
         notes: result.notes.clone(),
+        fd_candidates: result.fd_candidates.clone(),
         concept: result.concept.clone(),
         concept_expansion: result.concept_expansion.clone(),
         ast_fallback: result.ast_fallback,

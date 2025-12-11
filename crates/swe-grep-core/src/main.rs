@@ -10,7 +10,7 @@ use serde::Serialize;
 
 use swe_grep::agent::{
     AgentResult, AgentSettings, aggregate_output, render_compact, render_edit, render_minimal,
-    render_table, render_tree_grouped, stream_entry, summarize_hits,
+    render_table, render_tree_grouped, stream_entry,
 };
 use swe_grep::bench;
 use swe_grep::cli::{
@@ -422,6 +422,18 @@ async fn run_agent_search(
                 serde_json::to_string(&summary_view)?
             };
             println!("{rendered}");
+        }
+    }
+
+    if !matches!(format, OutputFormat::Json) && output.summary.count == 0 {
+        if !output.suggested_symbols.is_empty() {
+            println!("Did you mean: {}", output.suggested_symbols.join(", "));
+        }
+        if !output.fd_candidates.is_empty() {
+            println!("Candidate files:");
+            for candidate in &output.fd_candidates {
+                println!("  - {candidate}");
+            }
         }
     }
 
@@ -1155,10 +1167,11 @@ fn clear_cache_for_command(cli: &Cli) -> Result<(), AppError> {
 }
 
 fn clear_cache_dirs(root: &Path) -> Result<(), AppError> {
-    let cache_dir = root.join(".swe-grep-cache");
+    let cache_dir = crate::search::default_cache_dir_for_root(root);
+    let legacy_cache_dir = root.join(".swe-grep-cache");
     let index_dir = root.join(".swe-grep-index");
 
-    for dir in [cache_dir, index_dir] {
+    for dir in [cache_dir, legacy_cache_dir, index_dir] {
         if dir.exists() {
             fs::remove_dir_all(&dir)
                 .with_context(|| format!("failed to clear cache directory {}", dir.display()))?;
@@ -1206,25 +1219,29 @@ mod tests {
     use super::*;
     use swe_grep::cli::ToolArgs;
 
-    fn search_args(symbol: &str) -> SearchArgs {
-        SearchArgs {
-            symbol: symbol.to_string(),
-            concept: None,
-            concept_expand: false,
-            regex: false,
-            wildcard: false,
-            string: false,
-            include_strings: false,
-            code_only: false,
-            ignore_case: false,
-            definitions_only: false,
-            usages_only: false,
-            kind: None,
-            path: None,
-            path_glob: Vec::new(),
-            exclude_patterns: Vec::new(),
-            exclude_tests: false,
-            language: None,
+	    fn search_args(symbol: &str) -> SearchArgs {
+	        SearchArgs {
+	            symbol: symbol.to_string(),
+	            concept: None,
+	            concept_expand: false,
+	            regex: false,
+	            wildcard: false,
+	            attribute: false,
+	            string: false,
+	            verbose_ast: false,
+	            include_strings: false,
+	            code_only: false,
+	            ignore_case: false,
+	            definitions_only: false,
+	            usages_only: false,
+	            mode: None,
+	            kind: None,
+	            path: None,
+	            path_glob: Vec::new(),
+	            exclude_patterns: Vec::new(),
+	            exclude_tests: false,
+	            language: None,
+	            context: None,
             timeout_secs: 3,
             max_matches: 20,
             concurrency: 8,
@@ -1232,13 +1249,13 @@ mod tests {
                 enable_index: false,
                 enable_rga: false,
                 use_fd: true,
-                use_ast_grep: true,
-            },
-            context_before: 0,
-            context_after: 0,
-            body: false,
-            git_modified: false,
-            git_since: None,
+	                use_ast_grep: true,
+	            },
+	            context_before: 0,
+	            context_after: 0,
+	            body: false,
+	            git_modified: false,
+	            git_since: None,
             git_info: false,
             index_dir: None,
             cache_dir: None,
