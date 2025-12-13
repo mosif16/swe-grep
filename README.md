@@ -40,6 +40,7 @@ cargo run -p swe-grep -- search --symbol foo --timeout-secs 2
 - Removal planning: `swe-grep remove --symbol Foo --dry-run` lists files to modify/delete; add `--apply` to delete obvious symbol-owned files cautiously.
 - Cache hygiene: `--clear-cache` wipes `.swe-grep-cache` and `.swe-grep-index` before executing the chosen subcommand.
 - Tool feedback: `swe-grep feedback shell --command "<cmd>" --prompt-only` prints a JSON-shaped prompt for collecting improvements to the `shell_command` tool; pipe the response back to persist under `<cwd>/Feedback` (when `--cwd` is provided).
+- Feedback autofix: drop records into `Feedback/inbox/` and run `./scripts/feedback/process_inbox.sh` (or enable `.github/workflows/feedback-autofix.yml`) to have Codex implement + verify changes on a branch/PR.
 - Batch everywhere: multiple symbols now work without `--agent` (default mode emits a JSON array); agent mode still supports streaming and table output.
 - No-hit guidance: empty searches now return related symbols/paths plus notes when the search was constrained (regex/wildcard/strings), making reruns faster.
 - Telemetry defaults: set `SWE_GREP_TELEMETRY=off` or add `disable_telemetry = true` to `~/.swe-grep.toml` to avoid passing `--disable-telemetry` every run.

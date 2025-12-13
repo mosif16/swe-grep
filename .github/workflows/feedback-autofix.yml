@@ -1,0 +1,39 @@
+name: feedback-autofix
+
+on:
+  workflow_dispatch: {}
+  push:
+    branches:
+      - master
+    paths:
+      - "Feedback/inbox/*.json"
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  autofix:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install Codex CLI
+        run: npm install -g @openai/codex@0.72.0
+
+      - name: Run feedback processor (creates branches/PRs)
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          GH_TOKEN: ${{ github.token }}
+          OPEN_PR: "1"
+          PR_BASE_BRANCH: ${{ github.ref_name }}
+          CODEX_SANDBOX: "workspace-write"
+          CODEX_APPROVAL_POLICY: "never"
+        run: |
+          chmod +x scripts/feedback/process_inbox.sh scripts/feedback/verify.sh
+          ./scripts/feedback/process_inbox.sh

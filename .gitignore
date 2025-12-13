@@ -3,6 +3,10 @@
 .swe-grep-cache
 .DS_Store
 
+# Feedback workflow ephemeral artifacts
+Feedback/runs/
+Feedback/inbox/shell_feedback.ndjson
+
 # Benchmark data and results
 benchmarks/
 **/benchmark*.json
