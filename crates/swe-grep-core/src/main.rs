@@ -17,6 +17,12 @@ use swe_grep::cli::{
     Cli, Commands, OutputFormat, RefsCommand, RefsFormat, RemoveCommand, SearchArgs, SearchCommand,
     UsageCommand, UsageFormat,
 };
+use swe_grep::cli::{FeedbackCommand, FeedbackSubcommand, ShellFeedbackArgs};
+use swe_grep::feedback::{
+    DEFAULT_FEEDBACK_DIR, SHELL_TOOL_NAME, ShellFeedback, ShellInvocation,
+    build_shell_feedback_prompt, new_shell_feedback_record, read_feedback_text_from_stdin,
+    write_shell_feedback,
+};
 use swe_grep::search;
 use swe_grep::service;
 use swe_grep::telemetry;
@@ -93,6 +99,7 @@ async fn run(cli: Cli) -> Result<(), AppError> {
         Commands::Usages(cmd) => handle_usages(cmd, disable_telemetry).await,
         Commands::Refs(cmd) => handle_refs(cmd, disable_telemetry).await,
         Commands::Remove(cmd) => handle_remove(cmd, disable_telemetry).await,
+        Commands::Feedback(cmd) => handle_feedback(cmd).await,
         Commands::Bench(args) => {
             if !disable_telemetry {
                 telemetry::init()?;
@@ -108,6 +115,94 @@ async fn run(cli: Cli) -> Result<(), AppError> {
             Ok(())
         }
     }
+}
+
+async fn handle_feedback(cmd: FeedbackCommand) -> Result<(), AppError> {
+    match cmd.command {
+        FeedbackSubcommand::Shell(args) => handle_shell_feedback(args),
+    }
+}
+
+fn handle_shell_feedback(args: ShellFeedbackArgs) -> Result<(), AppError> {
+    let invocation = ShellInvocation {
+        tool: SHELL_TOOL_NAME.to_string(),
+        command: args.command,
+        cwd: args.cwd,
+        exit_code: args.exit_code,
+        success: args.success,
+        duration_ms: args.duration_ms,
+    };
+
+    let prompt = build_shell_feedback_prompt(&invocation);
+    if args.prompt_only {
+        if args.json {
+            let payload = serde_json::json!({
+                "tool": SHELL_TOOL_NAME,
+                "prompt": prompt,
+                "response_shape": {"improvements":"...","rating":1,"tags":["..."]},
+            });
+            println!("{}", serde_json::to_string_pretty(&payload)?);
+        } else {
+            print!("{prompt}");
+        }
+        return Ok(());
+    }
+
+    let mut rating = args.rating;
+    let mut tags: Vec<String> = args
+        .tags
+        .unwrap_or_default()
+        .split(',')
+        .map(|t| t.trim())
+        .filter(|t| !t.is_empty())
+        .map(|t| t.to_string())
+        .collect();
+
+    let input = match args.improvements {
+        Some(improvements) => improvements,
+        None => {
+            if let Some(piped) = read_feedback_text_from_stdin()? {
+                piped
+            } else {
+                eprintln!("{prompt}");
+                eprintln!("Paste feedback JSON or text, then press Ctrl-D:");
+                let mut buf = String::new();
+                io::stdin().read_to_string(&mut buf)?;
+                buf.trim().to_string()
+            }
+        }
+    };
+
+    let improvements = if let Ok(parsed) = serde_json::from_str::<ShellFeedback>(&input) {
+        if rating.is_none() {
+            rating = parsed.rating;
+        }
+        if tags.is_empty() {
+            tags = parsed.tags;
+        }
+        parsed.improvements
+    } else {
+        input
+    };
+
+    if improvements.trim().is_empty() {
+        return Err(AppError::Usage(
+            "feedback text is required (use --improvements or pipe via stdin)".to_string(),
+        ));
+    }
+
+    let out_dir = args.out_dir.unwrap_or_else(|| {
+        invocation
+            .cwd
+            .as_deref()
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from("."))
+            .join(DEFAULT_FEEDBACK_DIR)
+    });
+    let record = new_shell_feedback_record(invocation, improvements, rating, tags)?;
+    let record_path = write_shell_feedback(out_dir, &record)?;
+    println!("{}", record_path.display());
+    Ok(())
 }
 
 async fn handle_search(cmd: SearchCommand, disable_telemetry: bool) -> Result<(), AppError> {
@@ -1142,16 +1237,19 @@ fn render_removal_plan(plan: &RemovalPlan, applied: bool) -> String {
 }
 
 fn clear_cache_for_command(cli: &Cli) -> Result<(), AppError> {
-    let root = match &cli.command {
-        Commands::Search(cmd) => resolve_root(&cmd.search)?,
-        Commands::Usages(cmd) => resolve_root(&cmd.search)?,
-        Commands::Refs(cmd) => resolve_root(&cmd.search)?,
-        Commands::Remove(cmd) => resolve_root(&cmd.search)?,
-        Commands::Serve(args) => {
-            if let Some(path) = &args.path {
-                path.clone()
-            } else {
-                std::env::current_dir().context("failed to resolve current directory")?
+	    let root = match &cli.command {
+	        Commands::Search(cmd) => resolve_root(&cmd.search)?,
+	        Commands::Usages(cmd) => resolve_root(&cmd.search)?,
+	        Commands::Refs(cmd) => resolve_root(&cmd.search)?,
+	        Commands::Remove(cmd) => resolve_root(&cmd.search)?,
+	        Commands::Feedback(_) => {
+	            std::env::current_dir().context("failed to resolve current directory")?
+	        }
+	        Commands::Serve(args) => {
+	            if let Some(path) = &args.path {
+	                path.clone()
+	            } else {
+	                std::env::current_dir().context("failed to resolve current directory")?
             }
         }
         Commands::Bench(args) => {

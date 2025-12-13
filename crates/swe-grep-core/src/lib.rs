@@ -1,6 +1,7 @@
 pub mod agent;
 pub mod bench;
 pub mod cli;
+pub mod feedback;
 pub mod file_cache;
 pub mod language;
 pub mod search;

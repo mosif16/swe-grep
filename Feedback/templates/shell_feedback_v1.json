@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "id": "1734050000000-12345",
+  "created_at_unix_ms": 1734050000000,
+  "invocation": {
+    "tool": "shell_command",
+    "command": "ls -la",
+    "cwd": "/path/to/repo",
+    "exit_code": 0,
+    "success": true,
+    "duration_ms": 12
+  },
+  "feedback": {
+    "improvements": "Add stdout/stderr streaming, better timeout diagnostics, and structured error categories (not just raw stderr).",
+    "rating": 4,
+    "tags": ["streaming", "timeouts", "errors"]
+  }
+}
+

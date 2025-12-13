@@ -1,0 +1,1 @@
+{"schema_version":1,"id":"1765602031745-36479","created_at_unix_ms":1765602031745,"invocation":{"tool":"shell_command","command":"echo hi","cwd":"/Users/mohammed/Desktop/swe-grep","exit_code":0,"duration_ms":2},"feedback":{"improvements":"Add per-command timeout hints, and return stdout/stderr separately.","rating":5,"tags":["timeouts","structured-output"]}}

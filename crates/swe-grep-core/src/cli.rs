@@ -34,6 +34,8 @@ pub enum Commands {
     Bench(BenchArgs),
     /// Serve the SWE-Grep API over HTTP and gRPC.
     Serve(ServeArgs),
+    /// Collect structured feedback about agent tools (saved under ./Feedback by default).
+    Feedback(FeedbackCommand),
 }
 
 /// Extended CLI surface for search, including agent-focused flags.
@@ -441,4 +443,64 @@ pub struct ServeArgs {
     /// Directory to append structured search logs (JSON Lines).
     #[arg(long)]
     pub log_dir: Option<PathBuf>,
+}
+
+/// Collect structured feedback for agent tools (starting with shell_command).
+#[derive(clap::Args, Debug)]
+pub struct FeedbackCommand {
+    #[command(subcommand)]
+    pub command: FeedbackSubcommand,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum FeedbackSubcommand {
+    /// Ask for improvements to the `shell_command` tool and persist the response.
+    Shell(ShellFeedbackArgs),
+}
+
+#[derive(clap::Args, Debug)]
+pub struct ShellFeedbackArgs {
+    /// The exact command string the shell tool executed.
+    #[arg(long)]
+    pub command: String,
+
+    /// Working directory used for the command.
+    #[arg(long)]
+    pub cwd: Option<String>,
+
+    /// Exit code returned by the command (if known).
+    #[arg(long)]
+    pub exit_code: Option<i32>,
+
+    /// Whether the command succeeded (if known).
+    #[arg(long)]
+    pub success: Option<bool>,
+
+    /// Duration of the command (milliseconds, if known).
+    #[arg(long)]
+    pub duration_ms: Option<u64>,
+
+    /// Improvements text. If omitted, `swe-grep` reads from stdin (pipe) or prompts (TTY).
+    #[arg(long)]
+    pub improvements: Option<String>,
+
+    /// Optional rating (1-5).
+    #[arg(long)]
+    pub rating: Option<u8>,
+
+    /// Optional comma-separated tags (e.g. "timeouts,streaming,redaction").
+    #[arg(long)]
+    pub tags: Option<String>,
+
+    /// Output directory for feedback artifacts (defaults to ./Feedback).
+    #[arg(long)]
+    pub out_dir: Option<PathBuf>,
+
+    /// Only emit the prompt (do not read feedback or write files).
+    #[arg(long, default_value_t = false, action = ArgAction::SetTrue)]
+    pub prompt_only: bool,
+
+    /// Emit prompt output as JSON instead of plain text.
+    #[arg(long, default_value_t = false, action = ArgAction::SetTrue)]
+    pub json: bool,
 }

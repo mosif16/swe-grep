@@ -43,6 +43,21 @@ RUST_LOG=error cargo run -- search \
   --path fixtures/multi_lang
 ```
 
+### Collecting tool feedback (shell_command)
+
+`swe-grep` can generate a “ask the agent” prompt for the `shell_command` tool, then persist the response as structured JSON under `<cwd>/Feedback` (when `--cwd` is provided).
+
+```bash
+cargo run -p swe-grep -- feedback shell --command "ls -la" --prompt-only
+```
+
+To save feedback, pipe either JSON (preferred) or plain text:
+
+```bash
+echo '{"improvements":"Add structured stderr + stable truncation.","rating":4,"tags":["errors","ux"]}' \
+  | cargo run -p swe-grep -- feedback shell --command "ls -la" --cwd "$(pwd)" --exit-code 0 --duration-ms 12
+```
+
 Example summary (truncated):
 
 ```json
