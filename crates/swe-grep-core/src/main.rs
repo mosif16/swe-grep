@@ -23,6 +23,7 @@ use swe_grep::feedback::{
     build_shell_feedback_prompt, new_shell_feedback_record, read_feedback_text_from_stdin,
     write_shell_feedback,
 };
+use swe_grep::analysis::{CallGraph, ExtractFactsOptions, extract_repo_facts};
 use swe_grep::search;
 use swe_grep::service;
 use swe_grep::telemetry;
@@ -205,8 +206,16 @@ fn handle_shell_feedback(args: ShellFeedbackArgs) -> Result<(), AppError> {
     Ok(())
 }
 
-async fn handle_search(cmd: SearchCommand, disable_telemetry: bool) -> Result<(), AppError> {
+async fn handle_search(mut cmd: SearchCommand, disable_telemetry: bool) -> Result<(), AppError> {
     let symbols = collect_symbols(&cmd)?;
+
+    if cmd.json_only {
+        cmd.agent = true;
+        cmd.format = OutputFormat::Json;
+        cmd.quiet = true;
+        cmd.progress = false;
+        cmd.stream = false;
+    }
 
     if cmd.progress && !cmd.agent {
         return Err(AppError::Usage(
@@ -617,38 +626,70 @@ async fn handle_refs(cmd: RefsCommand, disable_telemetry: bool) -> Result<(), Ap
         args.body = true;
     }
 
-    let summary = search::execute(args).await?;
+    let summary = search::execute(args.clone()).await?;
 
     let mut caller_hits: Vec<CallerRef> = Vec::new();
     let mut definition_hits: Vec<&search::TopHit> = Vec::new();
+    let mut notes = summary.notes.clone();
 
+    // Try to get callers from the call graph (static analysis)
+    let root = args.path.clone().unwrap_or_else(|| std::path::PathBuf::from("."));
+    let root = if root.is_file() { root.parent().unwrap_or(&root).to_path_buf() } else { root };
+    let cache_dir = search::default_cache_dir_for_root(&root);
+
+    if callers_requested {
+        let options = ExtractFactsOptions::for_search(None, None);
+        if let Ok((stats, file_facts)) = extract_repo_facts(&root, &cache_dir, &options) {
+            let graph = CallGraph::from_facts(&file_facts);
+            let caller_edges = graph.caller_edges_for(&summary.symbol);
+
+            for edge in caller_edges {
+                // Read snippet from file
+                let abs_path = root.join(&edge.file);
+                let snippet = std::fs::read_to_string(&abs_path)
+                    .ok()
+                    .and_then(|content| content.lines().nth(edge.line.saturating_sub(1)).map(|s| s.trim().to_string()));
+
+                caller_hits.push(CallerRef {
+                    file: edge.file.clone(),
+                    line: edge.line,
+                    snippet,
+                    origin: Some("callgraph".to_string()),
+                    git_info: None,
+                });
+            }
+            notes.push(format!(
+                "call graph: {} callers found (cache hit rate: {:.2})",
+                caller_hits.len(),
+                stats.hit_rate()
+            ));
+        }
+    }
+
+    // Also add text-search based hits (fallback/supplement)
     for hit in &summary.top_hits {
         let is_definition = is_definition_hit(hit);
         if is_definition {
             definition_hits.push(hit);
         }
+        // Only add text search hits if not already found by call graph
         if callers_requested && (!is_definition || summary.top_hits.len() == 1) {
-            caller_hits.push(CallerRef {
-                file: hit.path.clone(),
-                line: hit.line,
-                snippet: pick_snippet(hit),
-                origin: Some(hit.origin_label.clone()),
-                git_info: hit.git_info.clone(),
-            });
+            let already_found = caller_hits.iter().any(|c| c.file == hit.path && c.line == hit.line);
+            if !already_found {
+                caller_hits.push(CallerRef {
+                    file: hit.path.clone(),
+                    line: hit.line,
+                    snippet: pick_snippet(hit),
+                    origin: Some(hit.origin_label.clone()),
+                    git_info: hit.git_info.clone(),
+                });
+            }
         }
     }
 
-    if callers_requested && caller_hits.is_empty() {
-        if let Some(first) = summary.top_hits.first() {
-            caller_hits.push(CallerRef {
-                file: first.path.clone(),
-                line: first.line,
-                snippet: pick_snippet(first),
-                origin: Some(first.origin_label.clone()),
-                git_info: first.git_info.clone(),
-            });
-        }
-    }
+    // Dedup and sort
+    caller_hits.sort_by(|a, b| (&a.file, a.line).cmp(&(&b.file, b.line)));
+    caller_hits.dedup_by(|a, b| a.file == b.file && a.line == b.line);
 
     let callees = if callees_requested {
         extract_callees(&definition_hits, &summary.symbol)
@@ -661,7 +702,7 @@ async fn handle_refs(cmd: RefsCommand, disable_telemetry: bool) -> Result<(), Ap
         callers: caller_hits,
         callees,
         warnings: summary.warnings.clone(),
-        notes: summary.notes.clone(),
+        notes,
     };
 
     match cmd.format {
@@ -768,6 +809,8 @@ fn apply_agent_defaults(
     }
     if full_body {
         *trim_body = None;
+        args.no_truncate = true;
+        args.body_limit = None;
         return;
     }
     if body_head.is_some() || body_tail.is_some() {
@@ -1320,9 +1363,11 @@ mod tests {
 	    fn search_args(symbol: &str) -> SearchArgs {
 	        SearchArgs {
 	            symbol: symbol.to_string(),
+                text: false,
 	            concept: None,
 	            concept_expand: false,
 	            regex: false,
+                literal_regex: false,
 	            wildcard: false,
 	            attribute: false,
 	            string: false,
@@ -1335,6 +1380,7 @@ mod tests {
 	            mode: None,
 	            kind: None,
 	            path: None,
+                scope_file: None,
 	            path_glob: Vec::new(),
 	            exclude_patterns: Vec::new(),
 	            exclude_tests: false,
@@ -1342,6 +1388,8 @@ mod tests {
 	            context: None,
             timeout_secs: 3,
             max_matches: 20,
+            top_hits: 20,
+            max_columns: 200,
             concurrency: 8,
             tools: ToolArgs {
                 enable_index: false,
@@ -1352,6 +1400,8 @@ mod tests {
 	            context_before: 0,
 	            context_after: 0,
 	            body: false,
+                body_limit: None,
+                no_truncate: false,
 	            git_modified: false,
 	            git_since: None,
             git_info: false,
@@ -1365,6 +1415,7 @@ mod tests {
     fn dedupes_batch_symbols() {
         let cmd = SearchCommand {
             search: search_args("Alpha"),
+            json_only: false,
             agent: true,
             format: OutputFormat::Json,
             concise: false,

@@ -13,7 +13,6 @@ pub(crate) use crate::language::{
     languages_include,
 };
 
-pub(crate) const DEFAULT_MAX_COLUMNS: usize = 200;
 pub(crate) const DEFAULT_MAX_BODY_BYTES: usize = 512 * 1024;
 pub(crate) const DEFAULT_INLINE_CONTEXT: usize = 2;
 pub(crate) const TRUNCATED_INLINE_CONTEXT: usize = 4;
@@ -66,8 +65,10 @@ pub(crate) struct SearchConfig {
     pub(crate) context_before: usize,
     pub(crate) context_after: usize,
     pub(crate) max_columns: usize,
+    pub(crate) top_hits: usize,
     pub(crate) body: bool,
     pub(crate) max_body_bytes: usize,
+    pub(crate) scope_file: Option<PathBuf>,
     pub(crate) include_strings: bool,
     #[allow(dead_code)]
     pub(crate) code_only: bool,
@@ -85,6 +86,9 @@ impl SearchConfig {
         if args.regex && args.wildcard {
             anyhow::bail!("--regex and --wildcard cannot be combined");
         }
+        if args.text && (args.regex || args.wildcard || args.string || args.attribute) {
+            anyhow::bail!("--text cannot be combined with --regex/--wildcard/--string/--attribute");
+        }
 
         if let Some(mode) = args.mode {
             match mode {
@@ -94,18 +98,28 @@ impl SearchConfig {
                     }
                 }
                 SearchMode::Regex => {
-                    if args.wildcard || args.string {
-                        anyhow::bail!("--mode regex cannot be combined with --wildcard/--string");
+                    if args.wildcard || args.string || args.text {
+                        anyhow::bail!(
+                            "--mode regex cannot be combined with --wildcard/--string/--text"
+                        );
                     }
                 }
                 SearchMode::Ast => {
-                    if args.regex || args.wildcard || args.string {
+                    if args.regex || args.wildcard || args.string || args.text {
                         anyhow::bail!(
-                            "--mode ast cannot be combined with --regex/--wildcard/--string"
+                            "--mode ast cannot be combined with --regex/--wildcard/--string/--text"
                         );
                     }
                 }
             }
+        }
+
+        let regex_mode = matches!(args.mode, Some(SearchMode::Regex)) || args.regex;
+        if args.literal_regex && !regex_mode {
+            anyhow::bail!("--literal-regex requires --regex or --mode regex");
+        }
+        if args.literal_regex && args.ignore_case {
+            anyhow::bail!("--literal-regex cannot be combined with --ignore-case (encode case in the regex)");
         }
 
         let concept = args
@@ -145,6 +159,7 @@ impl SearchConfig {
 
         let mut path_glob_patterns = args.path_glob.clone();
         let mut path = args.path.clone();
+        let mut scope_file = args.scope_file.clone();
         if let Some(raw_path) = path.clone() {
             let raw_str = raw_path.to_string_lossy();
             if has_glob_chars(&raw_str) {
@@ -153,8 +168,21 @@ impl SearchConfig {
             }
         }
 
-        let root =
+        let base =
             path.unwrap_or(std::env::current_dir().context("failed to resolve current directory")?);
+        let (root, inferred_scope) = if base.is_file() {
+            let parent = base
+                .parent()
+                .map(|p| p.to_path_buf())
+                .unwrap_or_else(|| PathBuf::from("."));
+            (parent, Some(base))
+        } else {
+            (base, None)
+        };
+        if scope_file.is_none() {
+            scope_file = inferred_scope;
+        }
+
         let root = root.canonicalize().with_context(|| {
             format!(
                 "failed to canonicalize repository root path: {}",
@@ -202,7 +230,11 @@ impl SearchConfig {
             }
         });
 
-        let pattern_mode = if matches!(search_mode, SearchMode::Ast) {
+        let pattern_mode = if args.text {
+            PatternMode::LiteralText
+        } else if args.literal_regex {
+            PatternMode::RawRegex
+        } else if matches!(search_mode, SearchMode::Ast) {
             PatternMode::Literal
         } else if args.wildcard {
             PatternMode::Wildcard
@@ -216,7 +248,9 @@ impl SearchConfig {
 
         let use_ast = match search_mode {
             SearchMode::Ast => !uses_css_like,
-            SearchMode::Literal => args.tools.use_ast_grep && !uses_css_like && !args.string,
+            SearchMode::Literal => {
+                args.tools.use_ast_grep && !uses_css_like && !args.string && !args.text
+            }
             SearchMode::Regex => false,
         };
         let path_globs = build_globset(&root, &path_glob_patterns)?;
@@ -241,6 +275,25 @@ impl SearchConfig {
             None => (args.context_before, args.context_after),
         };
 
+        let max_columns = if args.no_truncate { 0 } else { args.max_columns };
+        let max_body_bytes = if args.no_truncate {
+            usize::MAX
+        } else if let Some(limit) = args.body_limit {
+            limit
+        } else {
+            DEFAULT_MAX_BODY_BYTES
+        };
+        let top_hits = usize::max(1, args.top_hits);
+
+        let scope_file = scope_file.map(|file| {
+            let absolute = if file.is_absolute() {
+                file
+            } else {
+                root.join(file)
+            };
+            normalize_path(&root, &absolute).unwrap_or(absolute)
+        });
+
         Ok(Self {
             root,
             symbol: symbol.to_string(),
@@ -263,9 +316,11 @@ impl SearchConfig {
             log_dir,
             context_before,
             context_after,
-            max_columns: DEFAULT_MAX_COLUMNS,
+            max_columns,
+            top_hits,
             body: args.body,
-            max_body_bytes: DEFAULT_MAX_BODY_BYTES,
+            max_body_bytes,
+            scope_file,
             concept,
             pattern_mode,
             include_strings,

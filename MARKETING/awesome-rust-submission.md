@@ -68,7 +68,7 @@ swe-grep search --symbol MyStruct --language rust --path .
 swe-grep search --agent --symbol spawn --path ./tokio
 
 # Batch search
-swe-grep search --agent --symbols "Foo,Bar,Baz" --symbol _ --path .
+swe-grep search --agent --symbols "Foo,Bar,Baz" --path .
 ```
 
 ---

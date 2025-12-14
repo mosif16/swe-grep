@@ -44,6 +44,10 @@ pub struct SearchCommand {
     #[command(flatten)]
     pub search: SearchArgs,
 
+    /// Shorthand for clean, pipe-friendly JSON output (equivalent to --agent --format json --quiet).
+    #[arg(long = "json-only", default_value_t = false, action = ArgAction::SetTrue)]
+    pub json_only: bool,
+
     /// Enable agent mode (schema v1) with concise, structured output and sensible defaults.
     #[arg(long, default_value_t = false, action = ArgAction::SetTrue)]
     pub agent: bool,
@@ -180,6 +184,10 @@ pub struct SearchArgs {
     #[arg(long, default_value_t = String::new())]
     pub symbol: String,
 
+    /// Search for literal/raw text (no query expansion; disables AST disambiguation).
+    #[arg(long, default_value_t = false, action = ArgAction::SetTrue)]
+    pub text: bool,
+
     /// Conceptual/semantic search phrase (e.g. "text to speech"); substitutes for --symbol when provided.
     #[arg(long)]
     pub concept: Option<String>,
@@ -191,6 +199,10 @@ pub struct SearchArgs {
     /// Treat --symbol as a raw regular expression (disables automatic escaping).
     #[arg(long, default_value_t = false, action = ArgAction::SetTrue)]
     pub regex: bool,
+
+    /// Keep the provided regex exactly as-is (no query expansion / case variants).
+    #[arg(long = "literal-regex", default_value_t = false, action = ArgAction::SetTrue)]
+    pub literal_regex: bool,
 
     /// Allow shell-style wildcards (*, ?) inside --symbol (converted to regex).
     #[arg(long, default_value_t = false, action = ArgAction::SetTrue)]
@@ -232,6 +244,10 @@ pub struct SearchArgs {
     #[arg(long)]
     pub path: Option<PathBuf>,
 
+    /// Restrict search to a single file (relative to --path when not absolute).
+    #[arg(long = "scope-file")]
+    pub scope_file: Option<PathBuf>,
+
     /// Glob patterns to limit the search scope (e.g. \"src/**/*.tsx\"); can be comma-separated.
     #[arg(long = "path-glob", value_delimiter = ',')]
     pub path_glob: Vec<String>,
@@ -264,6 +280,14 @@ pub struct SearchArgs {
     #[arg(long, default_value_t = 20)]
     pub max_matches: usize,
 
+    /// Maximum number of hits to include in the output.
+    #[arg(long = "top-hits", default_value_t = 20)]
+    pub top_hits: usize,
+
+    /// Maximum number of columns to capture per match line (0 = unlimited).
+    #[arg(long = "max-columns", default_value_t = 200)]
+    pub max_columns: usize,
+
     /// Maximum number of concurrent tool invocations (defaults to 8 workers).
     #[arg(long, default_value_t = 8)]
     pub concurrency: usize,
@@ -286,6 +310,14 @@ pub struct SearchArgs {
     /// Retrieve full file bodies for each surfaced hit.
     #[arg(long = "body", action = ArgAction::SetTrue, default_value_t = false)]
     pub body: bool,
+
+    /// Limit attached bodies to at most N bytes (0 = omit body text).
+    #[arg(long = "body-limit")]
+    pub body_limit: Option<usize>,
+
+    /// Disable all truncation limits (max columns = unlimited; body limit = unlimited).
+    #[arg(long = "no-truncate", default_value_t = false, action = ArgAction::SetTrue)]
+    pub no_truncate: bool,
 
     /// Restrict search to files changed in the working tree.
     #[arg(long = "git-modified", default_value_t = false, action = ArgAction::SetTrue)]

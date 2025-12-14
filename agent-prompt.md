@@ -1,72 +1,22 @@
-# SWE-Grep - MANDATORY Code Search Tool
+# SWE-Grep - Code Search Tool
 
-**You MUST use `swe-grep` for ALL code search. NO EXCEPTIONS.**
-
-## FORBIDDEN
-- ❌ NEVER use `grep`, `rg`, `find` for code search
-- ❌ NEVER read files randomly hoping to find symbols
-- ❌ NEVER ask user where code is - SEARCH FOR IT
-- ❌ NEVER say "I don't know where X is" - USE SWE-GREP
-
-## REQUIRED
-- ✅ ALWAYS `swe-grep search` BEFORE reading any code
-- ✅ ALWAYS search BEFORE making code changes
-- ✅ ALWAYS use `--language` when you know it
+**Always use `swe-grep` for code search. Never use `grep`, `rg`, or `find`.**
 
 ## Commands
 
 ```bash
-# Basic search
 swe-grep search --symbol "MySymbol" --path .
-
-# With language (FASTER)
 swe-grep search --symbol "func" --language rust --path .
-swe-grep search --symbol "class" --language swift --path .
-swe-grep search --symbol "Component" --language tsx --path .
-
-# Full file content
-swe-grep search --symbol "MySymbol" --body --path .
-
-# More results
-swe-grep search --symbol "error" --max-matches 100 --path .
-
-# Discovery / Refactor helpers
-swe-grep search --concept "text to speech" --path .
+swe-grep search --symbol "MySymbol" --body --path .      # full file
+swe-grep search --concept "text to speech" --path .      # semantic
 swe-grep search --symbol "*Foo*" --wildcard --path .
-swe-grep search --symbol "foo|bar" --regex --path .
-swe-grep search --include-strings --symbol "Practice aloud" --path .
 swe-grep usages --symbol FooFeature --path .
-swe-grep remove --symbol FooFeature --dry-run --path .
-swe-grep search --agent --symbols Alpha,Beta --format compact
-swe-grep search --agent --symbols Alpha,Beta --format tree
-swe-grep search --agent --symbols Alpha,Beta --format edit
-swe-grep search --string --symbol "var(--ink)" --path .
-swe-grep search --path-glob "src/**/*.tsx" --symbol Foo --path .
-swe-grep search --language css --symbol "var(--ink)" --path .
-swe-grep --clear-cache search --symbol Foo --path .
 ```
+
+**Key flags:** `--language`, `--body`, `--wildcard`, `--regex`, `--max-matches`, `--path-glob`
 
 ## Workflow
 
-```
-User mentions symbol → swe-grep search IMMEDIATELY
-Before code change  → search symbol + all usages FIRST
-Don't know location → SEARCH, don't guess
-```
-
-## Output
-
-```json
-{
-  "top_hits": [
-    {"path": "src/file.rs", "line": 42, "snippet": "pub fn myFunc()"}
-  ]
-}
-```
-
-## Languages
-
-`--language rust` | `--language swift` | `--language tsx`
-
----
-**Using grep/find instead of swe-grep = WORKFLOW VIOLATION**
+1. User mentions symbol → search immediately
+2. Before code change → search symbol + usages first
+3. Don't know location → search, don't guess

@@ -9,13 +9,16 @@ Use `swe-grep` for all code searches. Supports Rust, Swift, TypeScript, TSX, and
 swe-grep search --agent --symbol MyFunction --path .
 
 # Batch search (multiple symbols)
-swe-grep search --agent --symbols "Foo,Bar,Baz" --symbol _ --path .
+swe-grep search --agent --symbols "Foo,Bar,Baz" --path .
 
 # Minimal output (fastest for LLMs)
 swe-grep search --agent --concise --symbol MyClass --path .
 
 # Stream results as NDJSON
-swe-grep search --agent --stream --symbols "A,B,C" --symbol _ --path .
+swe-grep search --agent --stream --symbols "A,B,C" --path .
+
+# Restrict to a single file (useful for local/private symbols)
+swe-grep search --agent --symbol deckHeaderSection --scope-file path/to/View.swift --path .
 ```
 
 ## Agent Mode Defaults

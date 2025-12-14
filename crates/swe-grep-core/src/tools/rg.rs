@@ -246,13 +246,18 @@ impl RipgrepTool {
         paths: &[PathBuf],
     ) -> Result<Vec<RipgrepMatch>> {
         let mut cmd = Command::new("rg");
+        let max_columns = if self.max_columns == 0 {
+            1_000_000usize
+        } else {
+            self.max_columns
+        };
         cmd.arg("--json")
             .arg("--line-number")
             .arg("--column")
             .arg("--threads")
             .arg(self.threads.to_string())
             .arg("--max-columns")
-            .arg(self.max_columns.to_string())
+            .arg(max_columns.to_string())
             .arg("--max-count")
             .arg(self.max_matches.to_string());
 

@@ -1,0 +1,11 @@
+[package]
+name = "swe-grep-desktop"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+anyhow = "1.0"
+eframe = "0.29"
+tokio = { version = "1.38", features = ["rt-multi-thread"] }
+swe-grep = { path = "../swe-grep-core" }
+

@@ -39,7 +39,7 @@ swe-grep search --concept "authentication" --path .
 swe-grep search --symbol test --code-only --path .
 
 # Batch search multiple symbols
-swe-grep search --agent --symbols "Foo,Bar,Baz" --symbol _ --path .
+swe-grep search --agent --symbols "Foo,Bar,Baz" --path .
 ```
 
 ### Why I built this

@@ -79,7 +79,7 @@ for ((i=1; i<=ITERATIONS; i++)); do
     run_test "code_only" --agent --concise --symbol concept --code-only --path "$PROJECT_ROOT"
     run_test "exclude_pattern" --agent --concise --symbol ignore_case --exclude '*.md' --path "$PROJECT_ROOT"
     run_test "concept_search" --agent --concise --concept 'cache warming' --path "$PROJECT_ROOT"
-    run_test "batch_search" --agent --concise --symbols 'SearchConfig,PatternMode,SearchEngine' --symbol _ --language rust --path "$PROJECT_ROOT"
+    run_test "batch_search" --agent --concise --symbols 'SearchConfig,PatternMode,SearchEngine' --language rust --path "$PROJECT_ROOT"
     run_test "multi_language" --agent --concise --symbol main --path "$PROJECT_ROOT"
 done
 

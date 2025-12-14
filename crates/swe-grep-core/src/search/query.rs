@@ -6,8 +6,10 @@ use crate::language;
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum PatternMode {
     Literal,
+    LiteralText,
     LiteralString,
     Regex,
+    RawRegex,
     Wildcard,
 }
 
@@ -83,6 +85,7 @@ impl QueryRewriter {
                 Self::escape_literal(&format!("{s} error")),
                 Self::escape_literal(&format!("{type_hint}.{s}")),
             ],
+            PatternMode::LiteralText => vec![Self::escape_literal(s)],
             PatternMode::LiteralString => {
                 let escaped = Self::escape_literal(s);
                 let mut patterns = vec![escaped.clone(), format!("(?i){escaped}")];
@@ -100,6 +103,7 @@ impl QueryRewriter {
                 }
                 patterns
             }
+            PatternMode::RawRegex => vec![s.to_string()],
             PatternMode::Wildcard => {
                 let regexified = wildcard_to_regex(s);
                 let mut patterns = vec![regexified.clone()];
@@ -112,14 +116,20 @@ impl QueryRewriter {
 
         let mut queries = self.enforce_case_insensitive(queries);
 
-        if !matches!(pattern_mode, PatternMode::LiteralString) {
+        if !matches!(
+            pattern_mode,
+            PatternMode::LiteralString | PatternMode::LiteralText | PatternMode::RawRegex
+        ) {
             for lang in &self.languages {
                 for pattern in language::query_patterns_for(lang, s) {
                     let rendered = match pattern_mode {
                         PatternMode::Literal => Self::escape_literal(&pattern),
                         PatternMode::Regex => pattern,
                         PatternMode::Wildcard => wildcard_to_regex(&pattern),
-                        PatternMode::LiteralString => Self::escape_literal(&pattern),
+                        PatternMode::LiteralString | PatternMode::LiteralText => {
+                            Self::escape_literal(&pattern)
+                        }
+                        PatternMode::RawRegex => pattern,
                     };
                     queries.push(rendered);
                 }
@@ -130,7 +140,10 @@ impl QueryRewriter {
                             PatternMode::Literal => Self::escape_literal(&pattern),
                             PatternMode::Regex => pattern,
                             PatternMode::Wildcard => wildcard_to_regex(&pattern),
-                            PatternMode::LiteralString => Self::escape_literal(&pattern),
+                            PatternMode::LiteralString | PatternMode::LiteralText => {
+                                Self::escape_literal(&pattern)
+                            }
+                            PatternMode::RawRegex => pattern,
                         };
                         queries.push(rendered);
                     }

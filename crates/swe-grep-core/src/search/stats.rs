@@ -338,6 +338,8 @@ pub struct TopHit {
     pub body: Option<String>,
     #[serde(default, skip_serializing_if = "is_false")]
     pub body_retrieved: bool,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub body_truncated: bool,
     #[serde(default, skip_serializing_if = "hints_is_empty")]
     pub hints: Vec<ContextHint>,
     #[serde(skip_serializing_if = "Option::is_none")]

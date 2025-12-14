@@ -5,8 +5,8 @@ Agent mode shapes CLI output for programmatic consumption and bundles sensible d
 - Defaults: telemetry off, bodies fetched (first 50 lines by default), compact context, deterministic sorting.
 - Exit codes: `0` success (hits or none), `1` usage/argument error, `2` runtime error.
 - Noise control: data on stdout only; logs on stderr; `--quiet` silences logs entirely (tracing subscriber disabled in agent/quiet mode). Optional tools (`fd`, `ast-grep`) auto-disable after a single “command not found” and stop emitting user-facing warnings; real runtime errors still appear in `warnings`.
-- Convenience: `--concise` drops context/origin/score/body, `--json-pretty` formats JSON, `--trim-body N` overrides the 50-line default, `--progress` emits `[idx/total] Searching <symbol>...` on stderr.
-- Strings/paths: `--string` generates quoted variants for literal string lookups; `--path-glob "src/**/*.tsx"` narrows scope without forcing a language hint.
+- Convenience: `--json-only` implies `--agent --format json --quiet` for pipeline-safe output; `--concise` drops context/origin/score/body; `--json-pretty` formats JSON; `--trim-body N` overrides the 50-line default; `--full-body` disables body trimming; `--body-limit BYTES` / `--no-truncate` control max body bytes; `--progress` emits `[idx/total] Searching <symbol>...` on stderr.
+- Strings/paths: `--text` treats `--symbol` as raw literal text (no rewrites/AST); `--string` generates quoted variants for literal string lookups; `--path-glob "src/**/*.tsx"` narrows scope without forcing a language hint.
 
 ## Schema (version 1)
 
@@ -62,7 +62,7 @@ swe-grep search --agent --symbols Foo,Bar --stream --progress --path .
 
 ## Output formatting and body control
 
-- `--format json|table` (table is compact, json is jq-ready; streaming is always JSON).
+- `--format json|json-lines|table|compact|tree|edit|minimal|summary|markdown|csv` (streaming is always JSON).
 - `--json-pretty` switches agent JSON to pretty-printing (non-streaming).
 - `--concise` omits body/context/origin/score to keep payloads minimal.
 - `--trim-body N` trims fetched bodies to the first N lines (defaults to 50 in agent/streaming mode).

@@ -2,5 +2,6 @@
 members = [
     "crates/swe-grep-core",
     "crates/swe-grep-indexer",
+    "crates/swe-grep-desktop",
 ]
 resolver = "2"

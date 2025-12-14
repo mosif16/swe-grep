@@ -177,9 +177,11 @@ fn build_search_args(repo_root: &Path, scenario: &Scenario, bench: &BenchArgs) -
 
     SearchArgs {
         symbol: scenario.symbol.clone(),
+        text: false,
         concept: None,
         concept_expand: false,
         regex: false,
+        literal_regex: false,
         wildcard: false,
         attribute: false,
         string,
@@ -191,6 +193,7 @@ fn build_search_args(repo_root: &Path, scenario: &Scenario, bench: &BenchArgs) -
         usages_only: false,
         kind: None,
         path: Some(repo_root.to_path_buf()),
+        scope_file: None,
         path_glob,
         exclude_patterns: Vec::new(),
         exclude_tests: false,
@@ -198,6 +201,8 @@ fn build_search_args(repo_root: &Path, scenario: &Scenario, bench: &BenchArgs) -
         mode: None,
         timeout_secs: scenario.timeout_secs.unwrap_or(3),
         max_matches: scenario.max_matches.unwrap_or(20),
+        top_hits: 20,
+        max_columns: 200,
         concurrency: scenario.concurrency.unwrap_or(8),
         tools: ToolArgs {
             enable_index,
@@ -209,6 +214,8 @@ fn build_search_args(repo_root: &Path, scenario: &Scenario, bench: &BenchArgs) -
         context_before: 0,
         context_after: 0,
         body: false,
+        body_limit: None,
+        no_truncate: false,
         git_modified: false,
         git_since: None,
         git_info: false,

@@ -21,6 +21,7 @@ pub(crate) struct SearchHit {
 pub(crate) struct BodyPayload {
     pub(crate) body: Option<String>,
     pub(crate) retrieved: bool,
+    pub(crate) truncated: bool,
 }
 
 impl SearchHit {
@@ -38,7 +39,7 @@ impl SearchHit {
         let normalized = normalize_path(root, &absolute).unwrap_or(absolute);
         let line = rg_match.line_number;
         let snippet_length = rg_match.lines.chars().count();
-        let raw_snippet_truncated = snippet_length >= max_columns;
+        let raw_snippet_truncated = max_columns != 0 && snippet_length >= max_columns;
         Self {
             path: normalized,
             line,

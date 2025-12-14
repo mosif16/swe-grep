@@ -1,6 +1,8 @@
+use std::borrow::Cow;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
 use std::io::ErrorKind;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{Instant as StdInstant, SystemTime, UNIX_EPOCH};
@@ -159,6 +161,13 @@ impl SearchEngine {
         })
     }
 
+    fn effective_scope<'a>(&self, scope: &'a [PathBuf]) -> Cow<'a, [PathBuf]> {
+        match &self.config.scope_file {
+            Some(file) => Cow::Owned(vec![file.clone()]),
+            None => Cow::Borrowed(scope),
+        }
+    }
+
     pub(crate) async fn run_cycle(&mut self) -> Result<SearchSummary> {
         let mut stage_stats = StageStats::default();
         self.warnings.clear();
@@ -251,7 +260,11 @@ impl SearchEngine {
         }
 
         let discover_start = Instant::now();
-        let discover_candidates = self.discover().await;
+        let discover_candidates = if let Some(scope_file) = &self.config.scope_file {
+            vec![scope_file.clone()]
+        } else {
+            self.discover().await
+        };
         stage_stats.discover_ms = elapsed_ms(discover_start);
         stage_stats.discover_candidates = discover_candidates.len();
         stage_stats.record_discover_languages(&discover_candidates, stage_stats.discover_ms);
@@ -458,12 +471,13 @@ impl SearchEngine {
 
         crate::telemetry::record_tool_invocation("rg");
         let probe_start = Instant::now();
+        let scope = self.effective_scope(&[]);
         let matches = match self
             .rg_tool
             .search_union(
                 &self.config.root,
                 rewrites,
-                &[],
+                scope.as_ref(),
                 self.config.exclude_globs.as_ref(),
                 self.config.extension_filter.as_deref(),
             )
@@ -588,31 +602,52 @@ impl SearchEngine {
 
         let payload = match fs::metadata(&absolute) {
             Ok(metadata) => {
-                if metadata.len() as usize > self.config.max_body_bytes {
+                let limit = self.config.max_body_bytes;
+                let is_limited = limit != usize::MAX;
+                let truncated = is_limited && (metadata.len() as usize).saturating_sub(limit) > 0;
+
+                if let Ok(mut file) = fs::File::open(&absolute) {
+                    let mut bytes = Vec::new();
+                    if is_limited {
+                        let mut reader = file.take(limit as u64);
+                        if reader.read_to_end(&mut bytes).is_err() {
+                            BodyPayload {
+                                body: None,
+                                retrieved: false,
+                                truncated: false,
+                            }
+                        } else {
+                            BodyPayload {
+                                body: Some(String::from_utf8_lossy(&bytes).to_string()),
+                                retrieved: true,
+                                truncated: truncated && !bytes.is_empty(),
+                            }
+                        }
+                    } else if file.read_to_end(&mut bytes).is_err() {
+                        BodyPayload {
+                            body: None,
+                            retrieved: false,
+                            truncated: false,
+                        }
+                    } else {
+                        BodyPayload {
+                            body: Some(String::from_utf8_lossy(&bytes).to_string()),
+                            retrieved: true,
+                            truncated: false,
+                        }
+                    }
+                } else {
                     BodyPayload {
                         body: None,
                         retrieved: false,
-                    }
-                } else {
-                    match self
-                        .file_cache
-                        .read_file(&absolute)
-                        .map(|f| f.contents().to_string())
-                    {
-                        Some(contents) => BodyPayload {
-                            body: Some(contents),
-                            retrieved: true,
-                        },
-                        None => BodyPayload {
-                            body: None,
-                            retrieved: false,
-                        },
+                        truncated: false,
                     }
                 }
             }
             Err(_) => BodyPayload {
                 body: None,
                 retrieved: false,
+                truncated: false,
             },
         };
 
@@ -955,12 +990,13 @@ impl SearchEngine {
 
     async fn fuzzy_candidates(&self, prefix: &str) -> Vec<String> {
         let queries = vec![prefix.to_string()];
+        let scope = self.effective_scope(&[]);
         match self
             .rg_tool
             .search_union(
                 &self.config.root,
                 &queries,
-                &[],
+                scope.as_ref(),
                 self.config.exclude_globs.as_ref(),
                 self.config.extension_filter.as_deref(),
             )
@@ -1343,13 +1379,14 @@ impl SearchEngine {
             return (Vec::new(), 0);
         }
 
+        let scope = self.effective_scope(scope);
         crate::telemetry::record_tool_invocation("rg");
         match self
             .rg_tool
             .search_union(
                 &self.config.root,
                 rewrites,
-                scope,
+                scope.as_ref(),
                 self.config.exclude_globs.as_ref(),
                 self.config.extension_filter.as_deref(),
             )
@@ -1385,6 +1422,7 @@ impl SearchEngine {
             return Vec::new();
         }
 
+        let scope = self.effective_scope(scope);
         let root = self.config.root.clone();
         let symbol = self.config.symbol.clone();
         let language_tokens = self.config.language_tokens.clone();
@@ -1395,7 +1433,7 @@ impl SearchEngine {
         crate::telemetry::record_tool_invocation("ast-grep");
 
         match ast_tool
-            .search_identifier(&root, symbol.as_str(), &language_tokens, scope)
+            .search_identifier(&root, symbol.as_str(), &language_tokens, scope.as_ref())
             .await
         {
             Ok(matches) => {
@@ -1447,7 +1485,7 @@ impl SearchEngine {
                             "ast-grep failed for `{symbol}`; using regex fallback"
                         ));
                     }
-                    return self.regex_disambiguate(scope).await;
+                    return self.regex_disambiguate(scope.as_ref()).await;
                 }
 
                 Vec::new()
@@ -1456,13 +1494,14 @@ impl SearchEngine {
     }
 
     async fn regex_disambiguate(&mut self, scope: &[PathBuf]) -> Vec<AstGrepMatch> {
+        let scope = self.effective_scope(scope);
         let queries = self.build_queries();
         match self
             .rg_tool
             .search_union(
                 &self.config.root,
                 &queries,
-                scope,
+                scope.as_ref(),
                 self.config.exclude_globs.as_ref(),
                 self.config.extension_filter.as_deref(),
             )
@@ -1635,7 +1674,7 @@ impl SearchEngine {
 
         let top_hits: Vec<TopHit> = dedup_hits
             .iter()
-            .take(5)
+            .take(self.config.top_hits)
             .map(|hit| {
                 let formatted_snippet = format_snippet(
                     &self.config.root,
@@ -1663,11 +1702,11 @@ impl SearchEngine {
                     };
 
                 let include_body = self.should_attach_body(&hit.path);
-                let (body, body_retrieved) = if include_body {
+                let (body, body_retrieved, body_truncated) = if include_body {
                     let payload = self.fetch_body(&hit.path);
-                    (payload.body, payload.retrieved)
+                    (payload.body, payload.retrieved, payload.truncated)
                 } else {
-                    (None, false)
+                    (None, false, false)
                 };
 
                 let hints = hint_cache
@@ -1692,6 +1731,7 @@ impl SearchEngine {
                     auto_expanded_context: auto_context_flag,
                     body,
                     body_retrieved,
+                    body_truncated,
                     hints,
                     git_info,
                 }

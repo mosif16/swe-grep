@@ -340,7 +340,7 @@ fn map_hit(symbol: &str, hit: &TopHit, settings: &AgentSettings) -> AgentHit {
             settings.body_head,
             settings.body_tail,
         );
-        (body, truncated, hit.body_retrieved)
+        (body, truncated || hit.body_truncated, hit.body_retrieved)
     };
 
     AgentHit {
