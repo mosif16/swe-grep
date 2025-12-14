@@ -46,25 +46,37 @@ patterns = ["*.md", "PLAN*", "node_modules"]
 
 Add semantic understanding and code relationship features.
 
-### 2.1 Call Graph Analysis
-- [ ] `swe-grep callers --symbol X` - find all call sites
-- [ ] `swe-grep callees --symbol X` - find all functions X calls
-- [ ] `swe-grep refs --symbol X` - bidirectional references
-- [ ] Cache call graph in `.swe-grep-cache/callgraph.bin`
+### 2.1 Call Graph Analysis ✅ COMPLETED
+- [x] `swe-grep refs --callers --symbol X` - find all call sites
+- [x] `swe-grep refs --callees --symbol X` - find all functions X calls
+- [x] `swe-grep refs --symbol X` - bidirectional references
+- [x] Cache call graph in `.swe-grep-cache/` (per-file fact caching)
+- [x] **Qualified name preservation** - `Foo::new` matches only `Foo::new`, not all `new()` calls
+- [x] **Dual indexing** - supports both qualified (`Type::method`) and simple (`method`) lookups
 
-**Implementation:**
+**Implementation (DONE):**
 ```
-1. Tree-sitter parse all files
-2. Extract function definitions + call expressions
-3. Build adjacency list (caller -> callee)
-4. Persist graph, invalidate on file change
+1. Tree-sitter parse all files (rust.rs, swift.rs, typescript.rs)
+2. Extract function definitions + call expressions with full qualification
+3. Build adjacency list with dual indexing (qualified + simple names)
+4. Per-file caching with modification-time invalidation
 ```
 
-### 2.2 Type Hierarchy Search
-- [ ] `swe-grep conformances --protocol P` - find all types conforming to P
-- [ ] `swe-grep subclasses --class C` - find inheritance chain
-- [ ] `swe-grep extensions --type T` - find all extensions of T
-- [ ] Support Swift, TypeScript, Rust traits
+**Key files:**
+- `analysis/callgraph.rs` - CallGraph and CallGraphView structures
+- `analysis/rust.rs` - Rust-specific callee extraction with `extract_qualified_callee()`
+- `analysis/extract.rs` - Repository-wide fact extraction
+
+### 2.2 Type Hierarchy Search ✅ COMPLETED
+- [x] TypeGraph for tracking type relationships (conformance, inheritance, implementation)
+- [x] Support for Swift protocol conformance
+- [x] Support for TypeScript extends/implements
+- [x] Support for Rust traits (via relations extraction)
+
+**Key files:**
+- `analysis/types.rs` - TypeGraph and TypeGraphView structures
+- `analysis/typescript.rs` - TypeScript relation extraction (extends, implements)
+- `analysis/swift.rs` - Swift conformance extraction
 
 ### 2.3 Semantic/Embeddings Search
 - [ ] Integrate local embedding model (all-MiniLM-L6-v2 or similar)

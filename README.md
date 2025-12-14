@@ -60,7 +60,9 @@ concise = true
 - Output formats: `--format json|json-lines|table|compact|tree|edit|minimal|summary|markdown|csv` (agent mode).
 - Shell completions: `swe-grep completions zsh` (or `bash`/`fish`) prints a completion script to stdout.
 - Usage graph: `swe-grep usages --symbol Foo --path .` emits a tree of references/types/imports; `--format json|compact` are available for automation.
-- Cross-reference: `swe-grep refs --symbol Foo --callers|--callees --path .` surfaces callers and best-effort callees.
+- Cross-reference: `swe-grep refs --symbol Foo --callers|--callees --path .` surfaces callers and callees using the call graph.
+  - **Qualified name support**: `--symbol Foo::new` finds only `Foo::new()` callers, not all `new()` calls.
+  - **Output formats**: `--format json|tree|compact` for different use cases.
 - Git metadata: add `--git-info` to search/usages/refs to append the last commit hash/date per hit.
 - Removal planning: `swe-grep remove --symbol Foo --dry-run` lists files to modify/delete; add `--apply` to delete obvious symbol-owned files cautiously.
 - Cache hygiene: `--clear-cache` wipes `.swe-grep-cache` and `.swe-grep-index` before executing the chosen subcommand.

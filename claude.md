@@ -19,6 +19,10 @@ swe-grep search --agent --stream --symbols "A,B,C" --path .
 
 # Restrict to a single file (useful for local/private symbols)
 swe-grep search --agent --symbol deckHeaderSection --scope-file path/to/View.swift --path .
+
+# Call graph: find callers/callees
+swe-grep refs --callers --symbol Foo::new --path .    # who calls Foo::new()?
+swe-grep refs --callees --symbol run_cycle --path .   # what does run_cycle call?
 ```
 
 ## Agent Mode Defaults
@@ -40,6 +44,8 @@ swe-grep search --agent --symbol deckHeaderSection --scope-file path/to/View.swi
 | `--json-pretty` | Pretty-print JSON |
 | `--trim-body N` | Limit body to N lines (default: 50) |
 | `--language rust` | Language hint (rust/swift/ts/tsx) |
+| `--callers` | Find all call sites (refs command) |
+| `--callees` | Find functions called by symbol (refs command) |
 
 ## Output Schema (v1)
 
