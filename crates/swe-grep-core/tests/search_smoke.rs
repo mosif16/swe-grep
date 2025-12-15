@@ -120,29 +120,29 @@ async fn scope_file_restricts_results_to_single_file() {
 
     let a = root.join("A.swift");
     let b = root.join("B.swift");
-    tokio::fs::write(
-        &a,
-        "private func deckHeaderSection() -> Int { 1 }\n",
-    )
-    .await
-    .expect("failed to write A.swift");
-    tokio::fs::write(
-        &b,
-        "private func deckHeaderSection() -> Int { 2 }\n",
-    )
-    .await
-    .expect("failed to write B.swift");
+    tokio::fs::write(&a, "private func deckHeaderSection() -> Int { 1 }\n")
+        .await
+        .expect("failed to write A.swift");
+    tokio::fs::write(&b, "private func deckHeaderSection() -> Int { 2 }\n")
+        .await
+        .expect("failed to write B.swift");
 
     let mut args = base_args("deckHeaderSection", root.clone(), Some("swift"));
     let summary = search::execute(args.clone())
         .await
         .expect("search should succeed");
     assert!(
-        summary.top_hits.iter().any(|hit| hit.path.ends_with("A.swift")),
+        summary
+            .top_hits
+            .iter()
+            .any(|hit| hit.path.ends_with("A.swift")),
         "expected unscoped search to match A.swift"
     );
     assert!(
-        summary.top_hits.iter().any(|hit| hit.path.ends_with("B.swift")),
+        summary
+            .top_hits
+            .iter()
+            .any(|hit| hit.path.ends_with("B.swift")),
         "expected unscoped search to match B.swift"
     );
 
@@ -153,7 +153,10 @@ async fn scope_file_restricts_results_to_single_file() {
         "expected scoped search to return at least one hit"
     );
     assert!(
-        scoped.top_hits.iter().all(|hit| hit.path.ends_with("B.swift")),
+        scoped
+            .top_hits
+            .iter()
+            .all(|hit| hit.path.ends_with("B.swift")),
         "expected scoped search to only return hits from B.swift"
     );
 }
@@ -209,7 +212,10 @@ async fn literal_regex_disables_query_expansion() {
         "expected literal-regex mode to keep a single raw query"
     );
     assert!(
-        summary.top_hits.iter().any(|hit| hit.path.ends_with("sample.txt")),
+        summary
+            .top_hits
+            .iter()
+            .any(|hit| hit.path.ends_with("sample.txt")),
         "expected the temp file to be searched"
     );
 }
@@ -232,10 +238,7 @@ async fn body_limit_truncates_large_files_in_output() {
     args.body_limit = Some(128);
 
     let summary = search::execute(args).await.expect("search should succeed");
-    let hit = summary
-        .top_hits
-        .first()
-        .expect("expected at least one hit");
+    let hit = summary.top_hits.first().expect("expected at least one hit");
     assert!(hit.body_retrieved, "expected body to be retrieved");
     assert!(hit.body_truncated, "expected body to be truncated");
     assert!(

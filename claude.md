@@ -23,6 +23,15 @@ swe-grep search --agent --symbol deckHeaderSection --scope-file path/to/View.swi
 # Call graph: find callers/callees
 swe-grep refs --callers --symbol Foo::new --path .    # who calls Foo::new()?
 swe-grep refs --callees --symbol run_cycle --path .   # what does run_cycle call?
+
+# Import graph: importers/imports (best-effort)
+swe-grep refs --imports --symbol src/main.rs --path .       # what does this file import?
+swe-grep refs --importers --symbol AuthService --path .     # who imports the file exporting this symbol?
+swe-grep refs --imports --import-depth 3 --symbol src/api.rs --path .
+
+# Context bundle: definition + callers/callees + types/imports + tests (best-effort)
+swe-grep context --symbol AuthService --depth 2 --path .
+swe-grep context --symbol Foo --max-lines 300 --include-tests --path .
 ```
 
 ## Agent Mode Defaults
@@ -46,6 +55,9 @@ swe-grep refs --callees --symbol run_cycle --path .   # what does run_cycle call
 | `--language rust` | Language hint (rust/swift/ts/tsx) |
 | `--callers` | Find all call sites (refs command) |
 | `--callees` | Find functions called by symbol (refs command) |
+| `--imports` | Show direct/transitive imports (refs command) |
+| `--importers` | Show direct/transitive importers (refs command) |
+| `--import-depth N` | Set traversal depth (refs command) |
 
 ## Output Schema (v1)
 

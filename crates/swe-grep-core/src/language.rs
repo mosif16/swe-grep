@@ -125,17 +125,9 @@ const RUST_QUERIES: &[QueryTemplate] = &[
     QueryTemplate::base("macro_rules! {symbol}"),
 ];
 
-const TYPESCRIPT_ATTRIBUTE_QUERIES: &[&str] = &[
-    "@{symbol}",
-    "@{symbol}(",
-    "@{symbol} ",
-];
+const TYPESCRIPT_ATTRIBUTE_QUERIES: &[&str] = &["@{symbol}", "@{symbol}(", "@{symbol} "];
 
-const SWIFT_ATTRIBUTE_QUERIES: &[&str] = &[
-    "@{symbol}",
-    "@{symbol}(",
-    "@{symbol} ",
-];
+const SWIFT_ATTRIBUTE_QUERIES: &[&str] = &["@{symbol}", "@{symbol}(", "@{symbol} "];
 
 const TYPESCRIPT_AST_PATTERNS: &[&str] = &[
     "(identifier) @id (#eq? @id \"{needle}\")",
@@ -474,6 +466,7 @@ pub fn detect_language_from_path(path: &Path) -> Option<&'static str> {
         "js" => Some("javascript"),
         "jsx" => Some("jsx"),
         "py" => Some("python"),
+        "go" => Some("go"),
         "kt" | "kts" => Some("kotlin"),
         "css" => Some("css"),
         "scss" => Some("scss"),

@@ -26,6 +26,29 @@ swe-grep search --symbol <identifier> --path <repo-root>
 - `--body` – stream the full UTF-8 file for the surfaced hits (512 KiB guardrail). Rust and Swift hits now return the full body even without this flag.
 - `--cache-dir` – persist symbol and directory hints to this directory. The folder is created lazily when state is flushed; if creation fails (e.g., unwritable path) persistence is disabled quietly for the run.
 
+### Context bundles (`swe-grep context`)
+
+Use `context` when the agent needs a single “understanding” payload (definition + callers/callees + types + tests) instead of raw hit lists:
+
+```bash
+swe-grep context --symbol <identifier> --path <repo-root>
+```
+
+Key knobs:
+
+- `--preset refactor|debug|understand` – common bundles for refactoring/debugging/understanding.
+- `--concise` – minimal JSON object (`symbol/def/callers/callees/tests`) optimized for tokens.
+- `--stream` – NDJSON section streaming (`definition`, `callers`, `callees`, `types`, `imports`, `tests`, `summary`).
+- `--tests` / `--body` – include related tests and/or the definition body (best-effort).
+
+### Analysis coverage
+
+`context`/`refs`/`usages` are best-effort and degrade gracefully when analysis is unavailable, but the built-in fact extractors currently support:
+
+- Rust, Swift, TypeScript/TSX
+- Go (functions/methods, structs/interfaces, imports, calls; implicit interface `implements`)
+- Python (def/async def, classes+bases, imports, decorators, calls; Protocol-style `implements_protocol`)
+
 ## 2. Output contract
 
 The CLI, HTTP, gRPC, and log outputs share the same JSON structure. A typical

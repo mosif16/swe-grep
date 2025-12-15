@@ -119,7 +119,9 @@ impl SearchConfig {
             anyhow::bail!("--literal-regex requires --regex or --mode regex");
         }
         if args.literal_regex && args.ignore_case {
-            anyhow::bail!("--literal-regex cannot be combined with --ignore-case (encode case in the regex)");
+            anyhow::bail!(
+                "--literal-regex cannot be combined with --ignore-case (encode case in the regex)"
+            );
         }
 
         let concept = args
@@ -275,7 +277,11 @@ impl SearchConfig {
             None => (args.context_before, args.context_after),
         };
 
-        let max_columns = if args.no_truncate { 0 } else { args.max_columns };
+        let max_columns = if args.no_truncate {
+            0
+        } else {
+            args.max_columns
+        };
         let max_body_bytes = if args.no_truncate {
             usize::MAX
         } else if let Some(limit) = args.body_limit {

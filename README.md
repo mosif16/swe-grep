@@ -16,7 +16,7 @@ cargo run -p swe-grep -- search --symbol foo --timeout-secs 2
 - Disable telemetry if you are running in minimal environments: `cargo run -p swe-grep -- --disable-telemetry search --symbol foo`.
 - Config defaults: create `~/.swe-grep.toml` (or set `SWE_GREP_CONFIG=/path/to/file.toml`) to set defaults for common flags; CLI flags always win.
 - The default build does **not** pull in Tantivy, so compilation stays fast and dependency-light.
-- Persistent hints are stored under `.swe-grep-cache/` (already ignored by git).
+- Persistent hints + analysis caches are stored under `$XDG_CACHE_HOME/swe-grep/<root-hash>/` (or `$HOME/.cache/swe-grep/<root-hash>/`); fallback is `<root>/.swe-grep-cache/<root-hash>/`.
 - Language-aware rewrites can now be pre-seeded from the CLI: pass `--language swift`, `--language tsx`, or multi-language presets such as `--language auto-swift-ts` to hydrate Swift/TypeScript heuristics simultaneously (snippets, AST-grep, cache hints).
 
 Example `~/.swe-grep.toml`:
@@ -60,12 +60,17 @@ concise = true
 - Output formats: `--format json|json-lines|table|compact|tree|edit|minimal|summary|markdown|csv` (agent mode).
 - Shell completions: `swe-grep completions zsh` (or `bash`/`fish`) prints a completion script to stdout.
 - Usage graph: `swe-grep usages --symbol Foo --path .` emits a tree of references/types/imports; `--format json|compact` are available for automation.
-- Cross-reference: `swe-grep refs --symbol Foo --callers|--callees --path .` surfaces callers and callees using the call graph.
+- Cross-reference: `swe-grep refs --symbol Foo --callers|--callees --path .` surfaces callers (best-effort static call graph; cached + incremental) and callees (extracted from the symbol definition body).
   - **Qualified name support**: `--symbol Foo::new` finds only `Foo::new()` callers, not all `new()` calls.
+  - **Import graph**: `--imports` / `--importers` plus `--import-depth N` for transitive traversal.
   - **Output formats**: `--format json|tree|compact` for different use cases.
+- Context bundles: `swe-grep context --symbol Foo --path .` assembles a single JSON response with the definition, callers/callees, type relationships, and related tests (best-effort).
+  - **Presets**: `--preset refactor|debug|understand` selects common bundles; flags like `--tests` and `--body` can add more detail.
+  - **Concise mode**: `--concise` returns a minimal object (`symbol/def/callers/callees/tests`) for token-sensitive prompts.
+  - **Streaming**: `--stream` outputs NDJSON sections (`definition`, `callers`, `callees`, `types`, `imports`, `tests`, `summary`) for incremental UIs/pipelines.
 - Git metadata: add `--git-info` to search/usages/refs to append the last commit hash/date per hit.
 - Removal planning: `swe-grep remove --symbol Foo --dry-run` lists files to modify/delete; add `--apply` to delete obvious symbol-owned files cautiously.
-- Cache hygiene: `--clear-cache` wipes `.swe-grep-cache` and `.swe-grep-index` before executing the chosen subcommand.
+- Cache hygiene: `--clear-cache` wipes the computed cache dir (including `facts/` + `graphs/`) plus legacy `.swe-grep-cache/` + `.swe-grep-index/` before executing the chosen subcommand.
 - Tool feedback: `swe-grep feedback shell --command "<cmd>" --prompt-only` prints a JSON-shaped prompt for collecting improvements to the `shell_command` tool; pipe the response back to persist under `<cwd>/Feedback` (when `--cwd` is provided).
 - Feedback autofix: drop records into `Feedback/inbox/` and run `./scripts/feedback/process_inbox.sh` (or enable `.github/workflows/feedback-autofix.yml`) to have Codex implement + verify changes on a branch/PR.
 - Batch everywhere: multiple symbols now work without `--agent` (default mode emits a JSON array); agent mode still supports streaming and table output.
@@ -130,7 +135,7 @@ cargo run -p swe-grep -- serve --http-addr 127.0.0.1:8080 --grpc-addr 127.0.0.1:
 - fd/ast-grep are treated as optional: a single “command not found” disables the tool for the run with only debug logs; real runtime failures still surface in `warnings`.
 - The AST pattern emitted by `ast-grep` still prints a warning when no matches are found; it’s benign but worth revisiting while hardening the pattern.
 - Keep `.swe-grep-cache/` out of version control; it is safe to delete if you want a clean slate for heuristics.
-- Per-language telemetry (discover/probe/ast/verify counters + latency) is emitted with every cycle in `SearchSummary`; consume the `stage_stats.language_metrics` map to track Swift/TypeScript/Rust coverage in benchmarks and regression dashboards.
+- Per-language telemetry (discover/probe/ast/verify counters + latency) is emitted with every cycle in `SearchSummary`; consume the `stage_stats.language_metrics` map to track Rust/Swift/TypeScript/Go/Python coverage in benchmarks and regression dashboards.
 
 ## Changelog
 

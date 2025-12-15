@@ -188,14 +188,14 @@ impl SearchEngine {
                 .verify(Vec::new(), ast_matches, HashSet::new(), Vec::new())
                 .await?;
             stage_stats.verify_ms = elapsed_ms(verify_start);
-            stage_stats.record_verify_languages(&verification.language_counts, stage_stats.verify_ms);
+            stage_stats
+                .record_verify_languages(&verification.language_counts, stage_stats.verify_ms);
 
             stage_stats.precision = round_two(verification.metrics.precision);
             stage_stats.density = round_two(verification.metrics.density);
             stage_stats.clustering = round_two(verification.metrics.cluster_score);
             stage_stats.reward = round_two(verification.metrics.reward);
-            stage_stats.cycle_latency_ms =
-                stage_stats.disambiguate_ms + stage_stats.verify_ms;
+            stage_stats.cycle_latency_ms = stage_stats.disambiguate_ms + stage_stats.verify_ms;
 
             self.reward_total += verification.metrics.reward;
             if let Err(err) = self.state.save() {

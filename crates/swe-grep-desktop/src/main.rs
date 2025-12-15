@@ -421,7 +421,8 @@ impl eframe::App for DesktopApp {
                 ui.label(egui::RichText::new("Repo").color(ui.visuals().weak_text_color()));
                 ui.add(egui::TextEdit::singleline(&mut self.repo_path).desired_width(260.0));
                 ui.label(egui::RichText::new("Symbols").color(ui.visuals().weak_text_color()));
-                let symbols_resp = ui.add(egui::TextEdit::singleline(&mut self.symbols).desired_width(260.0));
+                let symbols_resp =
+                    ui.add(egui::TextEdit::singleline(&mut self.symbols).desired_width(260.0));
                 if symbols_resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
                     self.kick_search();
                 }
@@ -435,7 +436,9 @@ impl eframe::App for DesktopApp {
                     self.view = View::Welcome;
                 }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    ui.label(egui::RichText::new(&self.status).color(ui.visuals().weak_text_color()));
+                    ui.label(
+                        egui::RichText::new(&self.status).color(ui.visuals().weak_text_color()),
+                    );
                 });
             });
 
@@ -453,7 +456,10 @@ impl eframe::App for DesktopApp {
                     egui::DragValue::new(&mut self.auto_run_debounce_ms).range(0..=2_000),
                 );
                 ui.label("ms");
-                if ui.add_enabled(!self.in_flight, egui::Button::new("Use Fixtures")).clicked() {
+                if ui
+                    .add_enabled(!self.in_flight, egui::Button::new("Use Fixtures"))
+                    .clicked()
+                {
                     self.load_fixture_defaults();
                 }
             });
@@ -493,11 +499,7 @@ impl eframe::App for DesktopApp {
                     self.page = self.page.saturating_sub(1);
                     self.selected = None;
                 }
-                ui.label(format!(
-                    "Page {} / {}",
-                    self.page + 1,
-                    total_pages.max(1)
-                ));
+                ui.label(format!("Page {} / {}", self.page + 1, total_pages.max(1)));
                 if ui
                     .add_enabled(self.page + 1 < total_pages, egui::Button::new("Next"))
                     .clicked()
@@ -527,7 +529,8 @@ impl eframe::App for DesktopApp {
                                     let absolute = start + idx;
                                     let selected = self.selected == Some(absolute);
 
-                                    let title = format!("{}:{}  {}", row.file, row.line, row.symbol);
+                                    let title =
+                                        format!("{}:{}  {}", row.file, row.line, row.symbol);
                                     let subtitle = format!("{:.2}  {}", row.score, row.origin);
                                     let snippet = row.snippet.lines().next().unwrap_or("").trim();
 
@@ -539,7 +542,9 @@ impl eframe::App for DesktopApp {
                                         self.selected = Some(absolute);
                                     }
                                     ui.label(
-                                        egui::RichText::new(subtitle).size(12.0).color(ui.visuals().weak_text_color()),
+                                        egui::RichText::new(subtitle)
+                                            .size(12.0)
+                                            .color(ui.visuals().weak_text_color()),
                                     );
                                     if !snippet.is_empty() {
                                         ui.label(
@@ -560,16 +565,16 @@ impl eframe::App for DesktopApp {
                         .rounding(egui::Rounding::same(10.0))
                         .inner_margin(egui::Margin::same(10.0))
                         .show(ui, |ui| {
-                    if let Some(index) = self.selected {
-                        if let Some(hit) = self.rows.get(index) {
-                            ui.label(egui::RichText::new("Preview").strong());
-                            ui.add_space(6.0);
-                            ui.label(
-                                egui::RichText::new(format!("{}:{}", hit.file, hit.line))
-                                    .monospace()
-                                    .strong(),
-                            );
-                            ui.label(
+                            if let Some(index) = self.selected {
+                                if let Some(hit) = self.rows.get(index) {
+                                    ui.label(egui::RichText::new("Preview").strong());
+                                    ui.add_space(6.0);
+                                    ui.label(
+                                        egui::RichText::new(format!("{}:{}", hit.file, hit.line))
+                                            .monospace()
+                                            .strong(),
+                                    );
+                                    ui.label(
                                 egui::RichText::new(format!(
                                     "score {:.2} | {} | body_retrieved={} | body_bytes={}{}",
                                     hit.score,
@@ -585,45 +590,48 @@ impl eframe::App for DesktopApp {
                                 .size(12.0)
                                 .color(ui.visuals().weak_text_color()),
                             );
-                            if !hit.warnings.is_empty() {
-                                ui.separator();
-                                ui.label("warnings:");
-                                for w in &hit.warnings {
-                                    ui.label(format!("- {w}"));
+                                    if !hit.warnings.is_empty() {
+                                        ui.separator();
+                                        ui.label("warnings:");
+                                        for w in &hit.warnings {
+                                            ui.label(format!("- {w}"));
+                                        }
+                                    }
+                                    ui.separator();
+                                    ui.collapsing("snippet", |ui| {
+                                        let mut text = hit.snippet.clone();
+                                        ui.add(
+                                            egui::TextEdit::multiline(&mut text)
+                                                .desired_rows(6)
+                                                .code_editor()
+                                                .interactive(false),
+                                        );
+                                    });
+                                    ui.collapsing("context", |ui| {
+                                        let mut text = hit.context.clone();
+                                        ui.add(
+                                            egui::TextEdit::multiline(&mut text)
+                                                .desired_rows(10)
+                                                .code_editor()
+                                                .interactive(false),
+                                        );
+                                    });
+                                    ui.collapsing("body", |ui| {
+                                        let mut text = hit.body.clone();
+                                        ui.add(
+                                            egui::TextEdit::multiline(&mut text)
+                                                .desired_rows(20)
+                                                .code_editor()
+                                                .interactive(false),
+                                        );
+                                    });
                                 }
+                            } else {
+                                ui.label(
+                                    egui::RichText::new("Select a hit to preview.")
+                                        .color(ui.visuals().weak_text_color()),
+                                );
                             }
-                            ui.separator();
-                            ui.collapsing("snippet", |ui| {
-                                let mut text = hit.snippet.clone();
-                                ui.add(
-                                    egui::TextEdit::multiline(&mut text)
-                                        .desired_rows(6)
-                                        .code_editor()
-                                        .interactive(false),
-                                );
-                            });
-                            ui.collapsing("context", |ui| {
-                                let mut text = hit.context.clone();
-                                ui.add(
-                                    egui::TextEdit::multiline(&mut text)
-                                        .desired_rows(10)
-                                        .code_editor()
-                                        .interactive(false),
-                                );
-                            });
-                            ui.collapsing("body", |ui| {
-                                let mut text = hit.body.clone();
-                                ui.add(
-                                    egui::TextEdit::multiline(&mut text)
-                                        .desired_rows(20)
-                                        .code_editor()
-                                        .interactive(false),
-                                );
-                            });
-                        }
-                    } else {
-                        ui.label(egui::RichText::new("Select a hit to preview.").color(ui.visuals().weak_text_color()));
-                    }
                         });
                 });
             });

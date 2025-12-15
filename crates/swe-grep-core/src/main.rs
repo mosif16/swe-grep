@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashSet, VecDeque};
 use std::fs;
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
@@ -12,18 +12,25 @@ use swe_grep::agent::{
     AgentResult, AgentSettings, aggregate_output, render_compact, render_edit, render_minimal,
     render_table, render_tree_grouped, stream_entry,
 };
+use swe_grep::analysis::{
+    CallGraph, CallTreeNode, ExtractFactsOptions, FileFacts, GraphCache, ImportGraph,
+    extract_repo_facts, normalize_symbol,
+};
 use swe_grep::bench;
 use swe_grep::cli::{
-    Cli, Commands, OutputFormat, RefsCommand, RefsFormat, RemoveCommand, SearchArgs, SearchCommand,
-    UsageCommand, UsageFormat,
+    Cli, Commands, ContextCommand, ContextPreset, OutputFormat, RefsCommand, RefsFormat,
+    RemoveCommand, SearchArgs, SearchCommand, UsageCommand, UsageFormat,
 };
 use swe_grep::cli::{FeedbackCommand, FeedbackSubcommand, ShellFeedbackArgs};
+use swe_grep::context::{
+    Callee, Caller, ContextResponse, ContextSummary, Definition, ImportContext, TestFile,
+    TypeContext,
+};
 use swe_grep::feedback::{
     DEFAULT_FEEDBACK_DIR, SHELL_TOOL_NAME, ShellFeedback, ShellInvocation,
     build_shell_feedback_prompt, new_shell_feedback_record, read_feedback_text_from_stdin,
     write_shell_feedback,
 };
-use swe_grep::analysis::{CallGraph, ExtractFactsOptions, extract_repo_facts};
 use swe_grep::search;
 use swe_grep::service;
 use swe_grep::telemetry;
@@ -99,6 +106,7 @@ async fn run(cli: Cli) -> Result<(), AppError> {
         Commands::Search(cmd) => handle_search(cmd, disable_telemetry).await,
         Commands::Usages(cmd) => handle_usages(cmd, disable_telemetry).await,
         Commands::Refs(cmd) => handle_refs(cmd, disable_telemetry).await,
+        Commands::Context(cmd) => handle_context(cmd, disable_telemetry).await,
         Commands::Remove(cmd) => handle_remove(cmd, disable_telemetry).await,
         Commands::Feedback(cmd) => handle_feedback(cmd).await,
         Commands::Bench(args) => {
@@ -575,6 +583,620 @@ async fn handle_usages(cmd: UsageCommand, disable_telemetry: bool) -> Result<(),
     Ok(())
 }
 
+async fn handle_context(cmd: ContextCommand, disable_telemetry: bool) -> Result<(), AppError> {
+    if !disable_telemetry {
+        telemetry::init()?;
+    }
+
+    let selection = ContextSelection::from_command(&cmd);
+    let root = resolve_context_root(cmd.path.as_ref())?;
+    let cache_dir = search::default_cache_dir_for_root(&root);
+
+    let options = ExtractFactsOptions::for_search(None, None);
+    let extracted = extract_repo_facts(&root, &cache_dir, &options).ok();
+
+    if cmd.stream {
+        stream_context(
+            &root,
+            &cmd.symbol,
+            &selection,
+            extracted.as_ref().map(|v| &v.1),
+        )?;
+        return Ok(());
+    }
+
+    let response = if let Some((_stats, file_facts)) = extracted {
+        assemble_context_from_facts(&root, &cmd.symbol, &selection, &file_facts)?
+    } else {
+        ContextResponse::empty(cmd.symbol.clone())
+    };
+
+    if cmd.concise {
+        let concise = ConciseContextOutput::from_response(&response);
+        println!("{}", serde_json::to_string(&concise)?);
+        return Ok(());
+    }
+
+    let json = serde_json::to_string_pretty(&response)?;
+    println!("{json}");
+    Ok(())
+}
+
+#[derive(Clone, Copy, Debug)]
+struct ContextSelection {
+    depth: usize,
+    max_lines: usize,
+    include_callers: bool,
+    include_callees: bool,
+    include_types: bool,
+    include_imports: bool,
+    include_tests: bool,
+    include_body: bool,
+}
+
+impl ContextSelection {
+    fn from_command(cmd: &ContextCommand) -> Self {
+        let mut selection = if let Some(preset) = cmd.preset {
+            match preset {
+                ContextPreset::Refactor => Self {
+                    depth: 2,
+                    max_lines: 300,
+                    include_callers: true,
+                    include_callees: true,
+                    include_types: true,
+                    include_imports: false,
+                    include_tests: false,
+                    include_body: false,
+                },
+                ContextPreset::Debug => Self {
+                    depth: 2,
+                    max_lines: 200,
+                    include_callers: true,
+                    include_callees: false,
+                    include_types: false,
+                    include_imports: false,
+                    include_tests: true,
+                    include_body: true,
+                },
+                ContextPreset::Understand => Self {
+                    depth: 2,
+                    max_lines: 300,
+                    include_callers: true,
+                    include_callees: true,
+                    include_types: true,
+                    include_imports: true,
+                    include_tests: true,
+                    include_body: false,
+                },
+            }
+        } else {
+            Self {
+                depth: 2,
+                max_lines: 300,
+                include_callers: true,
+                include_callees: true,
+                include_types: true,
+                include_imports: true,
+                include_tests: false,
+                include_body: false,
+            }
+        };
+
+        if let Some(depth) = cmd.depth {
+            selection.depth = usize::max(1, depth);
+        }
+        if let Some(max_lines) = cmd.max_lines {
+            selection.max_lines = usize::max(1, max_lines);
+        }
+        if let Some(value) = cmd.callers {
+            selection.include_callers = value;
+        }
+        if let Some(value) = cmd.callees {
+            selection.include_callees = value;
+        }
+        if let Some(value) = cmd.types {
+            selection.include_types = value;
+        }
+        if let Some(value) = cmd.imports {
+            selection.include_imports = value;
+        }
+        if let Some(value) = cmd.tests {
+            selection.include_tests = value;
+        }
+        if let Some(value) = cmd.include_body {
+            selection.include_body = value;
+        }
+
+        selection
+    }
+}
+
+#[derive(Serialize)]
+struct ConciseContextOutput {
+    symbol: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    def: Option<String>,
+    callers: Vec<String>,
+    callees: Vec<String>,
+    tests: Vec<String>,
+}
+
+impl ConciseContextOutput {
+    fn from_response(response: &ContextResponse) -> Self {
+        let def = response
+            .definition
+            .as_ref()
+            .and_then(|d| d.signature.clone())
+            .or_else(|| {
+                response
+                    .definition
+                    .as_ref()
+                    .and_then(|d| match (d.file.as_deref(), d.line) {
+                        (Some(file), Some(line)) => Some(format!("{file}:{line}")),
+                        _ => None,
+                    })
+            });
+        let callers = response
+            .callers
+            .iter()
+            .filter_map(|c| match (c.file.as_deref(), c.line) {
+                (Some(file), Some(line)) => Some(format!("{file}:{line}")),
+                _ => None,
+            })
+            .collect();
+        let mut callees: Vec<String> = response.callees.iter().map(|c| c.symbol.clone()).collect();
+        callees.sort();
+        callees.dedup();
+        let mut tests: Vec<String> = response.tests.iter().map(|t| t.path.clone()).collect();
+        tests.sort();
+        tests.dedup();
+
+        Self {
+            symbol: response.symbol.clone(),
+            def: def.as_deref().map(normalize_line_snippet),
+            callers,
+            callees,
+            tests,
+        }
+    }
+}
+
+fn resolve_context_root(path: Option<&PathBuf>) -> Result<PathBuf, AppError> {
+    let base = path
+        .cloned()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .canonicalize()
+        .unwrap_or_else(|_| path.cloned().unwrap_or_else(|| PathBuf::from(".")));
+    let root = if base.is_file() {
+        base.parent().unwrap_or(&base).to_path_buf()
+    } else {
+        base
+    };
+    Ok(root)
+}
+
+fn stream_context(
+    root: &Path,
+    symbol: &str,
+    selection: &ContextSelection,
+    file_facts: Option<&Vec<FileFacts>>,
+) -> Result<(), AppError> {
+    let mut response = ContextResponse::empty(symbol.to_string());
+
+    if let Some(files) = file_facts {
+        response.definition = assemble_definition_from_facts(root, symbol, selection, files);
+        enforce_context_budget(&mut response, selection.max_lines);
+        if let Some(definition) = response.definition.clone() {
+            emit_json_line(&serde_json::json!({"type":"definition","data":definition}))?;
+        } else {
+            emit_json_line(
+                &serde_json::json!({"type":"definition","data":serde_json::Value::Null}),
+            )?;
+        }
+
+        if selection.include_callers {
+            response.callers = assemble_callers_from_facts(symbol, selection, files);
+        }
+        enforce_context_budget(&mut response, selection.max_lines);
+        emit_json_line(&serde_json::json!({"type":"callers","data":&response.callers}))?;
+
+        if selection.include_callees {
+            response.callees = assemble_callees_from_facts(symbol, selection, files);
+        }
+        enforce_context_budget(&mut response, selection.max_lines);
+        emit_json_line(&serde_json::json!({"type":"callees","data":&response.callees}))?;
+
+        if selection.include_types {
+            response.types = assemble_types_from_facts(symbol, files);
+        }
+        enforce_context_budget(&mut response, selection.max_lines);
+        emit_json_line(&serde_json::json!({"type":"types","data":&response.types}))?;
+
+        if selection.include_imports {
+            response.imports = ImportContext::default();
+        }
+        enforce_context_budget(&mut response, selection.max_lines);
+        emit_json_line(&serde_json::json!({"type":"imports","data":&response.imports}))?;
+
+        if selection.include_tests {
+            response.tests = assemble_tests_from_facts(root, symbol, files);
+        }
+        enforce_context_budget(&mut response, selection.max_lines);
+        emit_json_line(&serde_json::json!({"type":"tests","data":&response.tests}))?;
+    } else {
+        emit_json_line(&serde_json::json!({"type":"definition","data":serde_json::Value::Null}))?;
+        emit_json_line(&serde_json::json!({"type":"callers","data":[]}))?;
+        emit_json_line(&serde_json::json!({"type":"callees","data":[]}))?;
+        emit_json_line(&serde_json::json!({"type":"types","data":TypeContext::default()}))?;
+        emit_json_line(&serde_json::json!({"type":"imports","data":ImportContext::default()}))?;
+        emit_json_line(&serde_json::json!({"type":"tests","data":[]}))?;
+    }
+
+    enforce_context_budget(&mut response, selection.max_lines);
+    response.summary = ContextSummary {
+        callers: response.callers.len(),
+        callees: response.callees.len(),
+        tests: response.tests.len(),
+    };
+    emit_json_line(
+        &serde_json::json!({"type":"summary","data":{"summary":response.summary,"truncated":response.truncated}}),
+    )?;
+
+    Ok(())
+}
+
+fn assemble_context_from_facts(
+    root: &Path,
+    symbol: &str,
+    selection: &ContextSelection,
+    files: &[FileFacts],
+) -> Result<ContextResponse, AppError> {
+    let mut response = ContextResponse::empty(symbol.to_string());
+    response.definition = assemble_definition_from_facts(root, symbol, selection, files);
+    if selection.include_callers {
+        response.callers = assemble_callers_from_facts(symbol, selection, files);
+    }
+    if selection.include_callees {
+        response.callees = assemble_callees_from_facts(symbol, selection, files);
+    }
+    if selection.include_types {
+        response.types = assemble_types_from_facts(symbol, files);
+    }
+    if selection.include_imports {
+        response.imports = ImportContext::default();
+    }
+    if selection.include_tests {
+        response.tests = assemble_tests_from_facts(root, symbol, files);
+    }
+
+    enforce_context_budget(&mut response, selection.max_lines);
+    response.summary = ContextSummary {
+        callers: response.callers.len(),
+        callees: response.callees.len(),
+        tests: response.tests.len(),
+    };
+    Ok(response)
+}
+
+fn assemble_definition_from_facts(
+    root: &Path,
+    symbol: &str,
+    selection: &ContextSelection,
+    files: &[FileFacts],
+) -> Option<Definition> {
+    let target = normalize_symbol(symbol);
+    let mut best: Option<(i32, &FileFacts, &swe_grep::analysis::DefinitionFact)> = None;
+
+    for file in files {
+        for def in &file.facts.definitions {
+            let score = if def.symbol == symbol {
+                3
+            } else if def.symbol.ends_with(&format!("::{symbol}")) {
+                2
+            } else if normalize_symbol(&def.symbol) == target {
+                1
+            } else {
+                0
+            };
+            if score == 0 {
+                continue;
+            }
+            match best {
+                None => best = Some((score, file, def)),
+                Some((best_score, _, _)) if score > best_score => best = Some((score, file, def)),
+                _ => {}
+            }
+        }
+    }
+
+    let (_score, file, def) = best?;
+    let abs_path = root.join(&file.file);
+    let contents = std::fs::read_to_string(&abs_path).ok()?;
+    let lines: Vec<&str> = contents.lines().collect();
+    let idx = def.line.saturating_sub(1);
+    let signature = lines.get(idx).map(|s| normalize_line_snippet(s));
+    let docstring = extract_leading_docstring(&lines, idx);
+    let body = if selection.include_body {
+        extract_definition_body(&lines, def.line, def.span, selection.max_lines)
+    } else {
+        None
+    };
+
+    Some(Definition {
+        file: Some(file.file.clone()),
+        line: Some(def.line),
+        signature,
+        docstring,
+        body,
+    })
+}
+
+fn extract_leading_docstring(lines: &[&str], def_line_idx: usize) -> Option<String> {
+    if def_line_idx == 0 || lines.is_empty() {
+        return None;
+    }
+
+    let mut collected: Vec<String> = Vec::new();
+    let mut idx = def_line_idx.saturating_sub(1);
+    let mut budget = 10usize;
+    while budget > 0 {
+        let trimmed = lines.get(idx).copied().unwrap_or_default().trim();
+        if trimmed.is_empty() {
+            break;
+        }
+        let is_comment = trimmed.starts_with("///")
+            || trimmed.starts_with("//!")
+            || trimmed.starts_with("//")
+            || trimmed.starts_with("/*")
+            || trimmed.starts_with('*');
+        if !is_comment {
+            break;
+        }
+        collected.push(trimmed.to_string());
+        budget -= 1;
+        if idx == 0 {
+            break;
+        }
+        idx -= 1;
+    }
+    if collected.is_empty() {
+        return None;
+    }
+    collected.reverse();
+    Some(collected.join("\n"))
+}
+
+fn extract_definition_body(
+    lines: &[&str],
+    start_line: usize,
+    span: Option<(usize, usize)>,
+    max_lines: usize,
+) -> Option<String> {
+    let max_lines = usize::max(1, max_lines);
+    let (start, end) = span.unwrap_or((start_line, start_line.saturating_add(40)));
+    if start == 0 || lines.is_empty() {
+        return None;
+    }
+    let start_idx = start.saturating_sub(1);
+    let end_idx = usize::min(lines.len().saturating_sub(1), end.saturating_sub(1));
+    if start_idx > end_idx {
+        return None;
+    }
+    let slice = &lines[start_idx..=end_idx];
+    let mut body_lines: Vec<&str> = slice.iter().copied().collect();
+    if body_lines.len() > max_lines {
+        body_lines.truncate(max_lines);
+    }
+    Some(body_lines.join("\n"))
+}
+
+fn assemble_callers_from_facts(
+    symbol: &str,
+    selection: &ContextSelection,
+    files: &[FileFacts],
+) -> Vec<Caller> {
+    let graph = CallGraph::from_facts(files);
+    let view = graph.callers_view(
+        symbol,
+        selection.depth,
+        selection.max_lines.saturating_mul(2),
+    );
+    flatten_call_tree(&view.nodes)
+        .into_iter()
+        .map(|node| Caller {
+            symbol: node.symbol,
+            signature: None,
+            file: node.file,
+            line: node.line,
+        })
+        .collect()
+}
+
+fn assemble_callees_from_facts(
+    symbol: &str,
+    selection: &ContextSelection,
+    files: &[FileFacts],
+) -> Vec<Callee> {
+    let graph = CallGraph::from_facts(files);
+    let view = graph.callees_view(
+        symbol,
+        selection.depth,
+        selection.max_lines.saturating_mul(2),
+    );
+    flatten_call_tree(&view.nodes)
+        .into_iter()
+        .map(|node| Callee {
+            symbol: node.symbol,
+            signature: None,
+            file: node.file,
+            line: node.line,
+        })
+        .collect()
+}
+
+fn flatten_call_tree(nodes: &[CallTreeNode]) -> Vec<CallTreeNode> {
+    let mut out: Vec<CallTreeNode> = Vec::new();
+    let mut seen: HashSet<(String, Option<String>, Option<usize>)> = HashSet::new();
+
+    fn visit(
+        node: &CallTreeNode,
+        out: &mut Vec<CallTreeNode>,
+        seen: &mut HashSet<(String, Option<String>, Option<usize>)>,
+    ) {
+        let key = (node.symbol.clone(), node.file.clone(), node.line);
+        if seen.insert(key) {
+            out.push(node.clone());
+        }
+        for child in &node.children {
+            visit(child, out, seen);
+        }
+    }
+
+    for node in nodes {
+        visit(node, &mut out, &mut seen);
+    }
+
+    out.sort_by(|a, b| (&a.file, a.line, &a.symbol).cmp(&(&b.file, b.line, &b.symbol)));
+    out
+}
+
+fn assemble_types_from_facts(symbol: &str, files: &[FileFacts]) -> TypeContext {
+    let target = normalize_symbol(symbol);
+    let mut implements = HashSet::<String>::new();
+    let mut extended_by = HashSet::<String>::new();
+    let mut contains = HashSet::<String>::new();
+
+    for file in files {
+        for rel in &file.facts.relations {
+            let from = normalize_symbol(&rel.from);
+            let to = normalize_symbol(&rel.to);
+            let kind = rel.kind.as_str();
+
+            if from == target && kind == "implements" {
+                implements.insert(rel.to.clone());
+            }
+            if to == target && (kind == "extends" || kind == "implements") {
+                extended_by.insert(rel.from.clone());
+            }
+            if from == target && kind == "contains" {
+                contains.insert(rel.to.clone());
+            }
+        }
+    }
+
+    let mut implements = implements.into_iter().collect::<Vec<_>>();
+    let mut extended_by = extended_by.into_iter().collect::<Vec<_>>();
+    let mut contains = contains.into_iter().collect::<Vec<_>>();
+    implements.sort();
+    extended_by.sort();
+    contains.sort();
+    TypeContext {
+        implements,
+        extended_by,
+        contains,
+    }
+}
+
+fn assemble_tests_from_facts(root: &Path, symbol: &str, files: &[FileFacts]) -> Vec<TestFile> {
+    let target = normalize_symbol(symbol);
+    let mut seen: HashSet<String> = HashSet::new();
+    let mut results: Vec<TestFile> = Vec::new();
+
+    for file in files {
+        if !file_has_reference(file, &target) {
+            continue;
+        }
+        let looks_like_test = looks_like_test_path(&file.file)
+            || file_contains_test_markers(root, &file.file).unwrap_or(false);
+        if !looks_like_test {
+            continue;
+        }
+        if seen.insert(file.file.clone()) {
+            results.push(TestFile {
+                path: file.file.clone(),
+                test_names: Vec::new(),
+            });
+        }
+        if results.len() >= 50 {
+            break;
+        }
+    }
+
+    results.sort_by(|a, b| a.path.cmp(&b.path));
+    results
+}
+
+fn file_has_reference(file: &FileFacts, target: &str) -> bool {
+    file.facts
+        .references
+        .iter()
+        .any(|r| normalize_symbol(&r.symbol) == target)
+}
+
+fn looks_like_test_path(path: &str) -> bool {
+    let lowered = path.to_ascii_lowercase();
+    lowered.contains("/tests/")
+        || lowered.contains("\\tests\\")
+        || lowered.ends_with("_test.rs")
+        || lowered.ends_with("_test.ts")
+        || lowered.ends_with("_test.tsx")
+        || lowered.ends_with("_test.js")
+        || lowered.ends_with("_test.jsx")
+        || lowered.ends_with(".spec.ts")
+        || lowered.ends_with(".spec.tsx")
+        || lowered.ends_with(".spec.js")
+        || lowered.ends_with(".spec.jsx")
+        || lowered.contains("test")
+}
+
+fn file_contains_test_markers(root: &Path, rel_path: &str) -> Option<bool> {
+    let abs_path = root.join(rel_path);
+    let contents = std::fs::read_to_string(&abs_path).ok()?;
+    let lowered = contents.to_ascii_lowercase();
+    Some(
+        lowered.contains("#[test]")
+            || lowered.contains("cfg(test)")
+            || lowered.contains("mod tests")
+            || lowered.contains("xctestcase")
+            || lowered.contains("describe(")
+            || lowered.contains("it(")
+            || lowered.contains("test("),
+    )
+}
+
+fn enforce_context_budget(response: &mut ContextResponse, max_lines: usize) {
+    let max_lines = usize::max(1, max_lines);
+    let mut truncated = false;
+
+    if let Some(def) = response.definition.as_mut() {
+        if let Some(body) = def.body.as_mut() {
+            let mut lines: Vec<&str> = body.lines().collect();
+            let cap = usize::max(1, max_lines / 2);
+            if lines.len() > cap {
+                lines.truncate(cap);
+                *body = lines.join("\n");
+                truncated = true;
+            }
+        }
+    }
+
+    let cap_list = usize::max(1, max_lines / 3);
+    if response.callers.len() > cap_list {
+        response.callers.truncate(cap_list);
+        truncated = true;
+    }
+    if response.callees.len() > cap_list {
+        response.callees.truncate(cap_list);
+        truncated = true;
+    }
+    if response.tests.len() > cap_list {
+        response.tests.truncate(cap_list);
+        truncated = true;
+    }
+
+    response.truncated |= truncated;
+}
+
 #[derive(Serialize)]
 struct CallerRef {
     file: String,
@@ -598,11 +1220,23 @@ struct CalleeRef {
     git_info: Option<search::GitInfo>,
 }
 
+#[derive(Serialize, Clone)]
+struct ImportRef {
+    file: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    symbols: Vec<String>,
+    line: usize,
+}
+
 #[derive(Serialize)]
 struct RefsOutput {
     symbol: String,
     callers: Vec<CallerRef>,
     callees: Vec<CalleeRef>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    imports: Vec<ImportRef>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    importers: Vec<ImportRef>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     warnings: Vec<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
@@ -616,6 +1250,8 @@ async fn handle_refs(cmd: RefsCommand, disable_telemetry: bool) -> Result<(), Ap
 
     let callers_requested = cmd.callers || (!cmd.callers && !cmd.callees);
     let callees_requested = cmd.callees;
+    let imports_requested = cmd.imports;
+    let importers_requested = cmd.importers;
 
     let mut args = cmd.search.clone();
     if args.context_before == 0 && args.context_after == 0 {
@@ -629,40 +1265,95 @@ async fn handle_refs(cmd: RefsCommand, disable_telemetry: bool) -> Result<(), Ap
     let summary = search::execute(args.clone()).await?;
 
     let mut caller_hits: Vec<CallerRef> = Vec::new();
+    let mut import_hits: Vec<ImportRef> = Vec::new();
+    let mut importer_hits: Vec<ImportRef> = Vec::new();
     let mut definition_hits: Vec<&search::TopHit> = Vec::new();
     let mut notes = summary.notes.clone();
+    let mut warnings = summary.warnings.clone();
 
     // Try to get callers from the call graph (static analysis)
-    let root = args.path.clone().unwrap_or_else(|| std::path::PathBuf::from("."));
-    let root = if root.is_file() { root.parent().unwrap_or(&root).to_path_buf() } else { root };
+    let root = args
+        .path
+        .clone()
+        .unwrap_or_else(|| std::path::PathBuf::from("."));
+    let root = if root.is_file() {
+        root.parent().unwrap_or(&root).to_path_buf()
+    } else {
+        root
+    };
     let cache_dir = search::default_cache_dir_for_root(&root);
 
     if callers_requested {
         let options = ExtractFactsOptions::for_search(None, None);
-        if let Ok((stats, file_facts)) = extract_repo_facts(&root, &cache_dir, &options) {
-            let graph = CallGraph::from_facts(&file_facts);
-            let caller_edges = graph.caller_edges_for(&summary.symbol);
+        let graph_cache = GraphCache::new(&root, &cache_dir);
+        match graph_cache.load_or_update(&options) {
+            Ok((stats, graphs, graph_warnings)) => {
+                warnings.extend(graph_warnings);
 
-            for edge in caller_edges {
-                // Read snippet from file
-                let abs_path = root.join(&edge.file);
-                let snippet = std::fs::read_to_string(&abs_path)
-                    .ok()
-                    .and_then(|content| content.lines().nth(edge.line.saturating_sub(1)).map(|s| s.trim().to_string()));
+                let caller_edges = graphs.call_graph.caller_edges_for(&summary.symbol);
+                for edge in caller_edges {
+                    let abs_path = root.join(&edge.file);
+                    let snippet = std::fs::read_to_string(&abs_path).ok().and_then(|content| {
+                        content
+                            .lines()
+                            .nth(edge.line.saturating_sub(1))
+                            .map(|s| s.trim().to_string())
+                    });
 
-                caller_hits.push(CallerRef {
-                    file: edge.file.clone(),
-                    line: edge.line,
-                    snippet,
-                    origin: Some("callgraph".to_string()),
-                    git_info: None,
-                });
+                    caller_hits.push(CallerRef {
+                        file: edge.file.clone(),
+                        line: edge.line,
+                        snippet,
+                        origin: Some("callgraph".to_string()),
+                        git_info: None,
+                    });
+                }
+
+                notes.push(format!(
+                    "call graph: {} callers found (updated {} / scanned {})",
+                    caller_hits.len(),
+                    stats.updated_files,
+                    stats.scanned_files
+                ));
             }
-            notes.push(format!(
-                "call graph: {} callers found (cache hit rate: {:.2})",
-                caller_hits.len(),
-                stats.hit_rate()
-            ));
+            Err(err) => {
+                warnings.push(format!("call graph unavailable: {err}"));
+            }
+        }
+    }
+
+    if imports_requested || importers_requested {
+        let options = ExtractFactsOptions::for_search(None, None);
+        match extract_repo_facts(&root, &cache_dir, &options) {
+            Ok((stats, file_facts)) => {
+                let graph = ImportGraph::from_facts(&file_facts);
+                let query = cmd.search.symbol.trim();
+                let target_files = resolve_import_graph_targets(&graph, query);
+                if target_files.is_empty() {
+                    notes.push("import graph: no matching file/export found for query".to_string());
+                } else if target_files.len() > 1 {
+                    notes.push(format!(
+                        "import graph: query matched {} files; results merged",
+                        target_files.len()
+                    ));
+                }
+
+                if imports_requested {
+                    import_hits = collect_import_edges(&graph, &target_files, cmd.import_depth);
+                }
+                if importers_requested {
+                    importer_hits = collect_importer_edges(&graph, &target_files, cmd.import_depth);
+                }
+
+                notes.push(format!(
+                    "import graph: {} files processed (cache hit rate: {:.2})",
+                    stats.processed_files,
+                    stats.hit_rate()
+                ));
+            }
+            Err(err) => {
+                warnings.push(format!("import graph unavailable: {err}"));
+            }
         }
     }
 
@@ -674,7 +1365,9 @@ async fn handle_refs(cmd: RefsCommand, disable_telemetry: bool) -> Result<(), Ap
         }
         // Only add text search hits if not already found by call graph
         if callers_requested && (!is_definition || summary.top_hits.len() == 1) {
-            let already_found = caller_hits.iter().any(|c| c.file == hit.path && c.line == hit.line);
+            let already_found = caller_hits
+                .iter()
+                .any(|c| c.file == hit.path && c.line == hit.line);
             if !already_found {
                 caller_hits.push(CallerRef {
                     file: hit.path.clone(),
@@ -701,7 +1394,9 @@ async fn handle_refs(cmd: RefsCommand, disable_telemetry: bool) -> Result<(), Ap
         symbol: summary.symbol.clone(),
         callers: caller_hits,
         callees,
-        warnings: summary.warnings.clone(),
+        imports: import_hits,
+        importers: importer_hits,
+        warnings,
         notes,
     };
 
@@ -717,6 +1412,97 @@ async fn handle_refs(cmd: RefsCommand, disable_telemetry: bool) -> Result<(), Ap
     }
 
     Ok(())
+}
+
+fn resolve_import_graph_targets(graph: &ImportGraph, query: &str) -> Vec<String> {
+    let query = query.trim();
+    if query.is_empty() {
+        return Vec::new();
+    }
+
+    if graph.is_known_file(query) {
+        return vec![query.trim_start_matches("./").to_string()];
+    }
+
+    graph
+        .find_export(query)
+        .into_iter()
+        .map(|s| s.to_string())
+        .collect()
+}
+
+fn collect_import_edges(graph: &ImportGraph, targets: &[String], depth: usize) -> Vec<ImportRef> {
+    let depth = depth.max(1);
+    let mut out: Vec<ImportRef> = Vec::new();
+    let mut visited_files: HashSet<String> = HashSet::new();
+    let mut seen_edges: HashSet<(String, String, usize)> = HashSet::new();
+    let mut queue: VecDeque<(String, usize)> = VecDeque::new();
+
+    for file in targets {
+        if visited_files.insert(file.clone()) {
+            queue.push_back((file.clone(), 0));
+        }
+    }
+
+    while let Some((current, d)) = queue.pop_front() {
+        if d >= depth {
+            continue;
+        }
+        for edge in graph.imports_of(&current) {
+            let key = (edge.importer.clone(), edge.imported.clone(), edge.line);
+            if !seen_edges.insert(key) {
+                continue;
+            }
+            out.push(ImportRef {
+                file: edge.imported.clone(),
+                symbols: edge.symbols.clone(),
+                line: edge.line,
+            });
+            if graph.is_known_file(&edge.imported) && visited_files.insert(edge.imported.clone()) {
+                queue.push_back((edge.imported.clone(), d + 1));
+            }
+        }
+    }
+
+    out.sort_by(|a, b| (&a.file, a.line).cmp(&(&b.file, b.line)));
+    out
+}
+
+fn collect_importer_edges(graph: &ImportGraph, targets: &[String], depth: usize) -> Vec<ImportRef> {
+    let depth = depth.max(1);
+    let mut out: Vec<ImportRef> = Vec::new();
+    let mut visited_files: HashSet<String> = HashSet::new();
+    let mut seen_edges: HashSet<(String, String, usize)> = HashSet::new();
+    let mut queue: VecDeque<(String, usize)> = VecDeque::new();
+
+    for file in targets {
+        if visited_files.insert(file.clone()) {
+            queue.push_back((file.clone(), 0));
+        }
+    }
+
+    while let Some((current, d)) = queue.pop_front() {
+        if d >= depth {
+            continue;
+        }
+        for edge in graph.importers_of(&current) {
+            let key = (edge.importer.clone(), edge.imported.clone(), edge.line);
+            if !seen_edges.insert(key) {
+                continue;
+            }
+            out.push(ImportRef {
+                file: edge.importer.clone(),
+                symbols: edge.symbols.clone(),
+                line: edge.line,
+            });
+            if graph.is_known_file(&edge.importer) && visited_files.insert(edge.importer.clone()) {
+                queue.push_back((edge.importer.clone(), d + 1));
+            }
+        }
+    }
+
+    out.sort_by(|a, b| (&a.file, a.line).cmp(&(&b.file, b.line)));
+    out
 }
 
 async fn handle_remove(cmd: RemoveCommand, disable_telemetry: bool) -> Result<(), AppError> {
@@ -1178,6 +1964,32 @@ fn render_refs_tree(output: &RefsOutput) -> String {
         }
     }
 
+    if !output.imports.is_empty() {
+        lines.push(String::new());
+        lines.push("imports:".to_string());
+        for imp in &output.imports {
+            let symbols = if imp.symbols.is_empty() {
+                "*".to_string()
+            } else {
+                imp.symbols.join(", ")
+            };
+            lines.push(format!("- {}:{} [{symbols}]", imp.file, imp.line));
+        }
+    }
+
+    if !output.importers.is_empty() {
+        lines.push(String::new());
+        lines.push("importers:".to_string());
+        for imp in &output.importers {
+            let symbols = if imp.symbols.is_empty() {
+                "*".to_string()
+            } else {
+                imp.symbols.join(", ")
+            };
+            lines.push(format!("- {}:{} [{symbols}]", imp.file, imp.line));
+        }
+    }
+
     if !output.warnings.is_empty() {
         lines.push(String::new());
         lines.push("warnings:".to_string());
@@ -1280,19 +2092,27 @@ fn render_removal_plan(plan: &RemovalPlan, applied: bool) -> String {
 }
 
 fn clear_cache_for_command(cli: &Cli) -> Result<(), AppError> {
-	    let root = match &cli.command {
-	        Commands::Search(cmd) => resolve_root(&cmd.search)?,
-	        Commands::Usages(cmd) => resolve_root(&cmd.search)?,
-	        Commands::Refs(cmd) => resolve_root(&cmd.search)?,
-	        Commands::Remove(cmd) => resolve_root(&cmd.search)?,
-	        Commands::Feedback(_) => {
-	            std::env::current_dir().context("failed to resolve current directory")?
-	        }
-	        Commands::Serve(args) => {
-	            if let Some(path) = &args.path {
-	                path.clone()
-	            } else {
-	                std::env::current_dir().context("failed to resolve current directory")?
+    let root = match &cli.command {
+        Commands::Search(cmd) => resolve_root(&cmd.search)?,
+        Commands::Usages(cmd) => resolve_root(&cmd.search)?,
+        Commands::Refs(cmd) => resolve_root(&cmd.search)?,
+        Commands::Context(cmd) => {
+            let base = if let Some(path) = &cmd.path {
+                path.clone()
+            } else {
+                std::env::current_dir().context("failed to resolve current directory")?
+            };
+            base.canonicalize().unwrap_or(base)
+        }
+        Commands::Remove(cmd) => resolve_root(&cmd.search)?,
+        Commands::Feedback(_) => {
+            std::env::current_dir().context("failed to resolve current directory")?
+        }
+        Commands::Serve(args) => {
+            if let Some(path) = &args.path {
+                path.clone()
+            } else {
+                std::env::current_dir().context("failed to resolve current directory")?
             }
         }
         Commands::Bench(args) => {
@@ -1360,32 +2180,32 @@ mod tests {
     use super::*;
     use swe_grep::cli::ToolArgs;
 
-	    fn search_args(symbol: &str) -> SearchArgs {
-	        SearchArgs {
-	            symbol: symbol.to_string(),
-                text: false,
-	            concept: None,
-	            concept_expand: false,
-	            regex: false,
-                literal_regex: false,
-	            wildcard: false,
-	            attribute: false,
-	            string: false,
-	            verbose_ast: false,
-	            include_strings: false,
-	            code_only: false,
-	            ignore_case: false,
-	            definitions_only: false,
-	            usages_only: false,
-	            mode: None,
-	            kind: None,
-	            path: None,
-                scope_file: None,
-	            path_glob: Vec::new(),
-	            exclude_patterns: Vec::new(),
-	            exclude_tests: false,
-	            language: None,
-	            context: None,
+    fn search_args(symbol: &str) -> SearchArgs {
+        SearchArgs {
+            symbol: symbol.to_string(),
+            text: false,
+            concept: None,
+            concept_expand: false,
+            regex: false,
+            literal_regex: false,
+            wildcard: false,
+            attribute: false,
+            string: false,
+            verbose_ast: false,
+            include_strings: false,
+            code_only: false,
+            ignore_case: false,
+            definitions_only: false,
+            usages_only: false,
+            mode: None,
+            kind: None,
+            path: None,
+            scope_file: None,
+            path_glob: Vec::new(),
+            exclude_patterns: Vec::new(),
+            exclude_tests: false,
+            language: None,
+            context: None,
             timeout_secs: 3,
             max_matches: 20,
             top_hits: 20,
@@ -1395,15 +2215,15 @@ mod tests {
                 enable_index: false,
                 enable_rga: false,
                 use_fd: true,
-	                use_ast_grep: true,
-	            },
-	            context_before: 0,
-	            context_after: 0,
-	            body: false,
-                body_limit: None,
-                no_truncate: false,
-	            git_modified: false,
-	            git_since: None,
+                use_ast_grep: true,
+            },
+            context_before: 0,
+            context_after: 0,
+            body: false,
+            body_limit: None,
+            no_truncate: false,
+            git_modified: false,
+            git_since: None,
             git_info: false,
             index_dir: None,
             cache_dir: None,

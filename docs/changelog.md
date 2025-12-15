@@ -6,9 +6,10 @@ Latest-first snapshot of the recent work so docs stay in sync with code:
   - Added CallGraph with qualified name preservation (`Foo::new` matches only `Foo::new`, not all `new()`)
   - Dual indexing: supports both qualified (`Type::method`) and simple (`method`) lookups
   - TypeGraph for tracking type relationships (conformance, inheritance, implementation)
-  - Integrated call graph into `refs --callers` command
-  - Tree-sitter parsing for Rust, Swift, and TypeScript
-  - Per-file fact caching with modification-time invalidation
+  - Integrated call graph into `refs --callers` command (best-effort; falls back with warnings on analysis failures)
+  - Tree-sitter parsing for Rust, Swift, TypeScript, Go, and Python
+  - Parallel facts extraction (rayon) + per-file fact caching (`facts/*.json`)
+  - Persisted + incremental analysis graph cache (bincode, `graphs/analysis_graphs_v1.bin`, content-hash invalidation)
   - Fixed tree-sitter ABI version (upgraded to 0.25 for version 15 compatibility)
 
 - `f7e1c0f` — Add automated feedback processing workflow and related scripts.

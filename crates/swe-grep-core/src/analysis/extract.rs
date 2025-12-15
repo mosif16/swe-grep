@@ -4,12 +4,13 @@ use std::time::UNIX_EPOCH;
 
 use anyhow::{Context, Result};
 use ignore::WalkBuilder;
+use rayon::prelude::*;
 
 use crate::language::detect_language_from_path;
 use crate::search::passes_extension_filter;
 
 use super::cache::{AnalysisCache, CacheStats};
-use super::facts::{FactBundle, FileFacts, FACTS_SCHEMA_VERSION};
+use super::facts::{FACTS_SCHEMA_VERSION, FactBundle, FileFacts};
 
 #[derive(Debug, Clone)]
 pub struct ExtractFactsOptions {
@@ -43,68 +44,83 @@ pub fn extract_repo_facts(
         collect_files(root)?
     };
 
-    for abs_path in files {
-        if !passes_extension_filter(&abs_path, options.extension_filter.as_deref()) {
-            continue;
-        }
-
-        let Some(language) = detect_language_from_path(&abs_path) else {
-            continue;
-        };
-        if !matches!(language, "rust" | "swift" | "typescript" | "tsx") {
-            continue;
-        }
-
-        let rel_path = rel_path_str(root, &abs_path);
-        let meta = fs::metadata(&abs_path)
-            .with_context(|| format!("failed to stat {}", abs_path.display()))?;
-        let size = meta.len();
-        let mtime = meta
-            .modified()
-            .ok()
-            .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
-            .map(|dur| dur.as_secs())
-            .unwrap_or(0);
-
-        if let Some(cached) = cache.load(&rel_path, mtime, size)? {
-            stats.processed_files += 1;
-            stats.cache_hits += 1;
-            out.push(cached);
-            continue;
-        }
-
-        let source = fs::read_to_string(&abs_path)
-            .with_context(|| format!("failed to read {}", abs_path.display()))?;
-        let facts = match extract_file_facts(language, &source) {
-            Ok(facts) => facts,
-            Err(_) => {
-                // Facts extraction is a best-effort helper; skip files whose parsers/grammars
-                // are unavailable in the current build/runtime environment.
-                continue;
+    let results: Vec<Result<Option<(bool, FileFacts)>>> = files
+        .par_iter()
+        .map(|abs_path| {
+            if !passes_extension_filter(abs_path, options.extension_filter.as_deref()) {
+                return Ok(None);
             }
-        };
 
-        let record = FileFacts {
-            version: FACTS_SCHEMA_VERSION,
-            file: rel_path,
-            mtime,
-            size,
-            language: language.to_string(),
-            facts,
+            let Some(language) = detect_language_from_path(abs_path) else {
+                return Ok(None);
+            };
+            if !matches!(
+                language,
+                "rust" | "swift" | "typescript" | "tsx" | "go" | "python"
+            ) {
+                return Ok(None);
+            }
+
+            let rel_path = rel_path_str(root, abs_path);
+            let meta = fs::metadata(abs_path)
+                .with_context(|| format!("failed to stat {}", abs_path.display()))?;
+            let size = meta.len();
+            let mtime = meta
+                .modified()
+                .ok()
+                .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
+                .map(|dur| dur.as_secs())
+                .unwrap_or(0);
+
+            if let Some(cached) = cache.load(&rel_path, mtime, size)? {
+                return Ok(Some((true, cached)));
+            }
+
+            let source = fs::read_to_string(abs_path)
+                .with_context(|| format!("failed to read {}", abs_path.display()))?;
+            let facts = match extract_file_facts(language, &rel_path, &source) {
+                Ok(facts) => facts,
+                Err(_) => {
+                    // Facts extraction is a best-effort helper; skip files whose parsers/grammars
+                    // are unavailable in the current build/runtime environment.
+                    return Ok(None);
+                }
+            };
+
+            let record = FileFacts {
+                version: FACTS_SCHEMA_VERSION,
+                file: rel_path,
+                mtime,
+                size,
+                language: language.to_string(),
+                facts,
+            };
+            cache.store(&record)?;
+            Ok(Some((false, record)))
+        })
+        .collect();
+
+    for result in results {
+        let Some((hit, record)) = result? else {
+            continue;
         };
         stats.processed_files += 1;
-        cache.store(&record)?;
+        if hit {
+            stats.cache_hits += 1;
+        }
         out.push(record);
     }
 
     Ok((stats, out))
 }
 
-fn extract_file_facts(language: &str, source: &str) -> Result<FactBundle> {
+fn extract_file_facts(language: &str, file: &str, source: &str) -> Result<FactBundle> {
     match language {
-        "rust" => super::rust::extract(source),
-        "swift" => super::swift::extract(source),
-        "typescript" | "tsx" => super::typescript::extract(source, language),
+        "rust" => super::rust::extract(file, source),
+        "swift" => super::swift::extract(file, source),
+        "typescript" | "tsx" => super::typescript::extract(file, source, language),
+        "go" => super::go::extract(file, source),
+        "python" => super::python::extract(file, source),
         other => anyhow::bail!("unsupported language for facts extraction: {other}"),
     }
 }

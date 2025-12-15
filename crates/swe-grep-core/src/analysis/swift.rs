@@ -4,14 +4,15 @@ use anyhow::Result;
 use tree_sitter::{Node, Parser};
 
 use super::facts::{CallFact, DefinitionFact, FactBundle, ReferenceFact, RelationFact};
+use super::imports::{ImportFact, ImportKind};
 
-pub(crate) fn extract(source: &str) -> Result<FactBundle> {
+pub(crate) fn extract(file: &str, source: &str) -> Result<FactBundle> {
     let mut parser = Parser::new();
     if parser
         .set_language(&tree_sitter_swift::LANGUAGE.into())
         .is_err()
     {
-        return Ok(fallback_extract(source));
+        return Ok(fallback_extract(file, source));
     }
 
     let tree = parser
@@ -24,6 +25,7 @@ pub(crate) fn extract(source: &str) -> Result<FactBundle> {
     let mut stack: Vec<String> = Vec::new();
 
     traverse(
+        file,
         source,
         &mut cursor,
         &mut stack,
@@ -31,24 +33,36 @@ pub(crate) fn extract(source: &str) -> Result<FactBundle> {
         &mut facts.references,
         &mut facts.calls,
         &mut facts.relations,
+        &mut facts.imports,
     );
 
     merge_relations(&mut facts.relations, fallback_relations(source));
     Ok(facts)
 }
 
-fn fallback_extract(source: &str) -> FactBundle {
+fn fallback_extract(file: &str, source: &str) -> FactBundle {
     let mut facts = FactBundle::default();
     facts.relations = fallback_relations(source);
     for (idx, line) in source.lines().enumerate() {
         let trimmed = line.trim_start();
         let line_no = idx + 1;
+        if let Some(module) = parse_swift_import_line(trimmed) {
+            facts.imports.push(ImportFact {
+                file: file.to_string(),
+                line: line_no,
+                kind: ImportKind::SideEffect,
+                source: module,
+                symbols: Vec::new(),
+                alias: None,
+            });
+        }
         if let Some(symbol) = trimmed.strip_prefix("func ").and_then(next_ident) {
             facts.definitions.push(DefinitionFact {
                 symbol: symbol.to_string(),
                 kind: "func".to_string(),
                 line: line_no,
                 span: Some((line_no, line_no)),
+                signature: None,
             });
         }
         if let Some(symbol) = trimmed.strip_prefix("struct ").and_then(next_ident) {
@@ -57,6 +71,7 @@ fn fallback_extract(source: &str) -> FactBundle {
                 kind: "struct".to_string(),
                 line: line_no,
                 span: Some((line_no, line_no)),
+                signature: None,
             });
         }
         if let Some(symbol) = trimmed.strip_prefix("class ").and_then(next_ident) {
@@ -65,6 +80,7 @@ fn fallback_extract(source: &str) -> FactBundle {
                 kind: "class".to_string(),
                 line: line_no,
                 span: Some((line_no, line_no)),
+                signature: None,
             });
         }
         if let Some(symbol) = trimmed.strip_prefix("protocol ").and_then(next_ident) {
@@ -73,10 +89,27 @@ fn fallback_extract(source: &str) -> FactBundle {
                 kind: "protocol".to_string(),
                 line: line_no,
                 span: Some((line_no, line_no)),
+                signature: None,
             });
         }
     }
     facts
+}
+
+fn parse_swift_import_line(trimmed: &str) -> Option<String> {
+    let trimmed = trimmed.trim_start_matches("@testable ").trim_start();
+    let rest = trimmed.strip_prefix("import ")?;
+    let first = rest
+        .trim()
+        .split(|ch: char| !(ch.is_ascii_alphanumeric() || ch == '_'))
+        .next()
+        .unwrap_or("")
+        .trim();
+    if first.is_empty() {
+        None
+    } else {
+        Some(first.to_string())
+    }
 }
 
 fn fallback_relations(source: &str) -> Vec<RelationFact> {
@@ -114,14 +147,7 @@ fn merge_relations(existing: &mut Vec<RelationFact>, extra: Vec<RelationFact>) {
 
     let mut seen: HashSet<(String, String, String, usize)> = existing
         .iter()
-        .map(|rel| {
-            (
-                rel.from.clone(),
-                rel.to.clone(),
-                rel.kind.clone(),
-                rel.line,
-            )
-        })
+        .map(|rel| (rel.from.clone(), rel.to.clone(), rel.kind.clone(), rel.line))
         .collect();
 
     for rel in extra {
@@ -159,14 +185,11 @@ fn next_ident(raw: &str) -> Option<&str> {
         .split(|ch: char| !(ch.is_ascii_alphanumeric() || ch == '_'))
         .next()
         .unwrap_or_default();
-    if ident.is_empty() {
-        None
-    } else {
-        Some(ident)
-    }
+    if ident.is_empty() { None } else { Some(ident) }
 }
 
 fn traverse(
+    file: &str,
     source: &str,
     cursor: &mut tree_sitter::TreeCursor<'_>,
     fn_stack: &mut Vec<String>,
@@ -174,10 +197,32 @@ fn traverse(
     refs: &mut Vec<ReferenceFact>,
     calls: &mut Vec<CallFact>,
     rels: &mut Vec<RelationFact>,
+    imports: &mut Vec<ImportFact>,
 ) {
     loop {
         let node = cursor.node();
         match node.kind() {
+            "import_declaration" => {
+                let line = node.start_position().row as usize + 1;
+                if let Some(text) = node_text(source, node) {
+                    let after = text.split("import").nth(1).unwrap_or("").trim_start();
+                    let module = after
+                        .split(|ch: char| !(ch.is_ascii_alphanumeric() || ch == '_'))
+                        .next()
+                        .unwrap_or("")
+                        .trim();
+                    if !module.is_empty() {
+                        imports.push(ImportFact {
+                            file: file.to_string(),
+                            line,
+                            kind: ImportKind::SideEffect,
+                            source: module.to_string(),
+                            symbols: Vec::new(),
+                            alias: None,
+                        });
+                    }
+                }
+            }
             "class_declaration" | "struct_declaration" | "protocol_declaration" => {
                 if let Some(name) = node.child_by_field_name("name") {
                     if let Some(symbol) = node_text(source, name) {
@@ -223,7 +268,9 @@ fn traverse(
         }
 
         if cursor.goto_first_child() {
-            traverse(source, cursor, fn_stack, defs, refs, calls, rels);
+            traverse(
+                file, source, cursor, fn_stack, defs, refs, calls, rels, imports,
+            );
             cursor.goto_parent();
         }
 
@@ -245,6 +292,7 @@ fn push_def(defs: &mut Vec<DefinitionFact>, symbol: String, kind: &str, name_nod
         kind: kind.to_string(),
         line: start,
         span: Some((start, end)),
+        signature: None,
     });
 }
 

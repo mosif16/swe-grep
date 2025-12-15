@@ -1,10 +1,10 @@
 use std::collections::{HashMap, HashSet};
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use super::facts::FileFacts;
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub struct CallEdge {
     pub caller: String,
     pub callee: String,
@@ -17,6 +17,12 @@ pub struct CallGraph {
     edges: Vec<CallEdge>,
     outgoing: HashMap<String, Vec<usize>>,
     incoming: HashMap<String, Vec<usize>>,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct CallGraphIndex {
+    outgoing: HashMap<String, Vec<CallEdge>>,
+    incoming: HashMap<String, Vec<CallEdge>>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -109,7 +115,13 @@ impl CallGraph {
             .collect()
     }
 
-    fn build_view(&self, target: &str, depth: usize, max_nodes: usize, direction: Direction) -> CallGraphView {
+    fn build_view(
+        &self,
+        target: &str,
+        depth: usize,
+        max_nodes: usize,
+        direction: Direction,
+    ) -> CallGraphView {
         let depth = depth.max(1);
         let max_nodes = max_nodes.max(1);
 
@@ -119,7 +131,14 @@ impl CallGraph {
         let root = normalize_symbol(target);
         seen.insert(root.clone());
 
-        let nodes = self.expand(&root, depth, &mut seen, &mut budget, &mut truncated, direction);
+        let nodes = self.expand(
+            &root,
+            depth,
+            &mut seen,
+            &mut budget,
+            &mut truncated,
+            direction,
+        );
 
         CallGraphView {
             root,
@@ -144,16 +163,8 @@ impl CallGraph {
         }
 
         let edge_idxs: Vec<usize> = match direction {
-            Direction::Callers => self
-                .incoming
-                .get(current)
-                .cloned()
-                .unwrap_or_default(),
-            Direction::Callees => self
-                .outgoing
-                .get(current)
-                .cloned()
-                .unwrap_or_default(),
+            Direction::Callers => self.incoming.get(current).cloned().unwrap_or_default(),
+            Direction::Callees => self.outgoing.get(current).cloned().unwrap_or_default(),
         };
 
         let mut children: Vec<CallTreeNode> = Vec::new();
@@ -290,3 +301,82 @@ fn extract_simple_name(raw: &str) -> String {
     }
 }
 
+impl CallGraphIndex {
+    pub fn caller_edges_for(&self, target: &str) -> Vec<CallEdge> {
+        let key = normalize_symbol(target);
+        self.incoming.get(&key).cloned().unwrap_or_default()
+    }
+
+    pub fn callee_edges_for(&self, target: &str) -> Vec<CallEdge> {
+        let key = normalize_symbol(target);
+        self.outgoing.get(&key).cloned().unwrap_or_default()
+    }
+
+    pub fn add_edges(&mut self, edges: impl IntoIterator<Item = CallEdge>) {
+        for edge in edges {
+            self.add_edge(edge);
+        }
+    }
+
+    pub fn remove_edges(&mut self, edges: impl IntoIterator<Item = CallEdge>) {
+        for edge in edges {
+            self.remove_edge(&edge);
+        }
+    }
+
+    fn add_edge(&mut self, edge: CallEdge) {
+        let caller_full = normalize_qualified(&edge.caller);
+        let callee_full = normalize_qualified(&edge.callee);
+
+        self.outgoing
+            .entry(caller_full.clone())
+            .or_default()
+            .push(edge.clone());
+        self.incoming
+            .entry(callee_full.clone())
+            .or_default()
+            .push(edge.clone());
+
+        let caller_simple = extract_simple_name(&edge.caller);
+        let callee_simple = extract_simple_name(&edge.callee);
+
+        if caller_simple != caller_full {
+            self.outgoing
+                .entry(caller_simple)
+                .or_default()
+                .push(edge.clone());
+        }
+        if callee_simple != callee_full {
+            self.incoming.entry(callee_simple).or_default().push(edge);
+        }
+    }
+
+    fn remove_edge(&mut self, edge: &CallEdge) {
+        let caller_full = normalize_qualified(&edge.caller);
+        let callee_full = normalize_qualified(&edge.callee);
+        let caller_simple = extract_simple_name(&edge.caller);
+        let callee_simple = extract_simple_name(&edge.callee);
+
+        remove_index_edge(&mut self.outgoing, &caller_full, edge);
+        remove_index_edge(&mut self.incoming, &callee_full, edge);
+
+        if caller_simple != caller_full {
+            remove_index_edge(&mut self.outgoing, &caller_simple, edge);
+        }
+        if callee_simple != callee_full {
+            remove_index_edge(&mut self.incoming, &callee_simple, edge);
+        }
+    }
+}
+
+fn remove_index_edge(map: &mut HashMap<String, Vec<CallEdge>>, key: &str, edge: &CallEdge) {
+    let remove_empty = if let Some(v) = map.get_mut(key) {
+        v.retain(|candidate| candidate != edge);
+        v.is_empty()
+    } else {
+        false
+    };
+    if remove_empty {
+        map.remove(key);
+    }
+}

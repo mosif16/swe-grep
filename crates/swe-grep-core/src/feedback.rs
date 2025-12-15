@@ -51,10 +51,7 @@ pub fn build_shell_feedback_prompt(invocation: &ShellInvocation) -> String {
         .duration_ms
         .map(|ms| format!("{ms}ms"))
         .unwrap_or_else(|| "unknown".to_string());
-    let cwd = invocation
-        .cwd
-        .as_deref()
-        .unwrap_or("unknown");
+    let cwd = invocation.cwd.as_deref().unwrap_or("unknown");
 
     format!(
         "You just used the `shell_command` tool.\n\n\
@@ -163,7 +160,8 @@ mod tests {
 
     #[test]
     fn writes_json_record() {
-        let base = std::env::temp_dir().join(format!("swe-grep-feedback-test-{}", std::process::id()));
+        let base =
+            std::env::temp_dir().join(format!("swe-grep-feedback-test-{}", std::process::id()));
         let _ = fs::remove_dir_all(&base);
         fs::create_dir_all(&base).expect("create temp dir");
 
@@ -175,9 +173,13 @@ mod tests {
             success: Some(true),
             duration_ms: Some(1),
         };
-        let record =
-            new_shell_feedback_record(invocation, "more structured stderr".to_string(), Some(4), vec![])
-                .expect("record");
+        let record = new_shell_feedback_record(
+            invocation,
+            "more structured stderr".to_string(),
+            Some(4),
+            vec![],
+        )
+        .expect("record");
         let path = write_shell_feedback(&base, &record).expect("write");
         assert!(path.exists());
     }

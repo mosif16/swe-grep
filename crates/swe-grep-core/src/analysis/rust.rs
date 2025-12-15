@@ -5,18 +5,19 @@ use regex::Regex;
 use tree_sitter::{Node, Parser};
 
 use super::facts::{CallFact, DefinitionFact, FactBundle, ReferenceFact, RelationFact};
+use super::imports::{ImportFact, ImportKind};
 
 static CALL_REGEX: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"\b([A-Za-z_][A-Za-z0-9_]*)\s*\(").unwrap_or_else(|_| Regex::new("$^").unwrap())
 });
 
-pub(crate) fn extract(source: &str) -> Result<FactBundle> {
+pub(crate) fn extract(file: &str, source: &str) -> Result<FactBundle> {
     let mut parser = Parser::new();
     if parser
         .set_language(&tree_sitter_rust::LANGUAGE.into())
         .is_err()
     {
-        return Ok(fallback_extract(source));
+        return Ok(fallback_extract(file, source));
     }
 
     let tree = parser
@@ -29,6 +30,7 @@ pub(crate) fn extract(source: &str) -> Result<FactBundle> {
     let mut stack: Vec<String> = Vec::new();
 
     traverse(
+        file,
         source,
         &mut cursor,
         &mut stack,
@@ -36,12 +38,13 @@ pub(crate) fn extract(source: &str) -> Result<FactBundle> {
         &mut facts.references,
         &mut facts.calls,
         &mut facts.relations,
+        &mut facts.imports,
     );
 
     Ok(facts)
 }
 
-fn fallback_extract(source: &str) -> FactBundle {
+fn fallback_extract(file: &str, source: &str) -> FactBundle {
     let mut facts = FactBundle::default();
     let mut depth: i32 = 0;
     let mut current_fn: Option<String> = None;
@@ -50,6 +53,10 @@ fn fallback_extract(source: &str) -> FactBundle {
     for (idx, line) in source.lines().enumerate() {
         let trimmed = line.trim_start();
         let line_no = idx + 1;
+
+        if let Some(import) = parse_rust_import_line(file, trimmed, line_no) {
+            facts.imports.extend(import);
+        }
 
         if let Some((ty, tr)) = parse_impl_trait(trimmed) {
             facts.relations.push(RelationFact {
@@ -68,6 +75,7 @@ fn fallback_extract(source: &str) -> FactBundle {
                 kind: "fn".to_string(),
                 line: line_no,
                 span: Some((line_no, line_no)),
+                signature: None,
             });
             true
         } else if let Some(symbol) = trimmed.strip_prefix("pub fn ").and_then(next_ident) {
@@ -78,12 +86,10 @@ fn fallback_extract(source: &str) -> FactBundle {
                 kind: "fn".to_string(),
                 line: line_no,
                 span: Some((line_no, line_no)),
+                signature: None,
             });
             true
-        } else if let Some(symbol) = trimmed
-            .strip_prefix("pub(crate) fn ")
-            .and_then(next_ident)
-        {
+        } else if let Some(symbol) = trimmed.strip_prefix("pub(crate) fn ").and_then(next_ident) {
             current_fn = Some(symbol.to_string());
             current_fn_depth = depth;
             facts.definitions.push(DefinitionFact {
@@ -91,6 +97,7 @@ fn fallback_extract(source: &str) -> FactBundle {
                 kind: "fn".to_string(),
                 line: line_no,
                 span: Some((line_no, line_no)),
+                signature: None,
             });
             true
         } else {
@@ -125,6 +132,7 @@ fn fallback_extract(source: &str) -> FactBundle {
                 kind: "struct".to_string(),
                 line: line_no,
                 span: Some((line_no, line_no)),
+                signature: None,
             });
         }
         if let Some(symbol) = trimmed.strip_prefix("enum ").and_then(next_ident) {
@@ -133,6 +141,7 @@ fn fallback_extract(source: &str) -> FactBundle {
                 kind: "enum".to_string(),
                 line: line_no,
                 span: Some((line_no, line_no)),
+                signature: None,
             });
         }
         if let Some(symbol) = trimmed.strip_prefix("trait ").and_then(next_ident) {
@@ -141,6 +150,7 @@ fn fallback_extract(source: &str) -> FactBundle {
                 kind: "trait".to_string(),
                 line: line_no,
                 span: Some((line_no, line_no)),
+                signature: None,
             });
         }
 
@@ -150,6 +160,171 @@ fn fallback_extract(source: &str) -> FactBundle {
         }
     }
     facts
+}
+
+fn parse_rust_import_line(file: &str, trimmed: &str, line_no: usize) -> Option<Vec<ImportFact>> {
+    let normalized = trimmed.strip_prefix("pub ").unwrap_or(trimmed).trim_start();
+    if let Some(rest) = normalized.strip_prefix("use ") {
+        let stmt = rest.trim_end().trim_end_matches(';').trim();
+        if stmt.is_empty() {
+            return None;
+        }
+        return Some(parse_rust_use_stmt(file, line_no, stmt));
+    }
+
+    if let Some(rest) = normalized.strip_prefix("extern crate ") {
+        let name = rest
+            .trim_end()
+            .trim_end_matches(';')
+            .trim()
+            .split_whitespace()
+            .next()
+            .unwrap_or("");
+        if name.is_empty() {
+            return None;
+        }
+        return Some(vec![ImportFact {
+            file: file.to_string(),
+            line: line_no,
+            kind: ImportKind::SideEffect,
+            source: name.to_string(),
+            symbols: Vec::new(),
+            alias: None,
+        }]);
+    }
+
+    if let Some(rest) = normalized.strip_prefix("mod ") {
+        let name = rest
+            .trim_end()
+            .trim_end_matches(';')
+            .trim()
+            .split(|ch: char| !(ch.is_ascii_alphanumeric() || ch == '_'))
+            .next()
+            .unwrap_or("");
+        if name.is_empty() || !normalized.trim_end().ends_with(';') {
+            return None;
+        }
+        return Some(vec![ImportFact {
+            file: file.to_string(),
+            line: line_no,
+            kind: ImportKind::SideEffect,
+            source: name.to_string(),
+            symbols: Vec::new(),
+            alias: None,
+        }]);
+    }
+
+    None
+}
+
+fn parse_rust_use_stmt(file: &str, line_no: usize, stmt: &str) -> Vec<ImportFact> {
+    let stmt = stmt.trim();
+    if stmt.is_empty() {
+        return Vec::new();
+    }
+
+    let (prefix, items) = if let Some((before, after)) = stmt.split_once('{') {
+        let prefix = before.trim().trim_end_matches("::").trim();
+        let inside = after
+            .rsplit_once('}')
+            .map(|(inner, _)| inner)
+            .unwrap_or(after);
+        (prefix.to_string(), Some(inside))
+    } else {
+        (String::new(), None)
+    };
+
+    if let Some(list) = items {
+        let mut facts = Vec::new();
+        for part in list.split(',') {
+            let item = part.trim();
+            if item.is_empty() {
+                continue;
+            }
+            if item == "self" {
+                facts.push(ImportFact {
+                    file: file.to_string(),
+                    line: line_no,
+                    kind: ImportKind::Named,
+                    source: prefix.clone(),
+                    symbols: Vec::new(),
+                    alias: None,
+                });
+                continue;
+            }
+            if item == "*" {
+                facts.push(ImportFact {
+                    file: file.to_string(),
+                    line: line_no,
+                    kind: ImportKind::Namespace,
+                    source: prefix.clone(),
+                    symbols: Vec::new(),
+                    alias: None,
+                });
+                continue;
+            }
+
+            if let Some((name, alias)) = item.split_once(" as ") {
+                let name = name.trim();
+                let alias = alias.trim();
+                if !name.is_empty() && !alias.is_empty() {
+                    facts.push(ImportFact {
+                        file: file.to_string(),
+                        line: line_no,
+                        kind: ImportKind::Named,
+                        source: prefix.clone(),
+                        symbols: vec![name.to_string()],
+                        alias: Some(alias.to_string()),
+                    });
+                }
+                continue;
+            }
+
+            facts.push(ImportFact {
+                file: file.to_string(),
+                line: line_no,
+                kind: ImportKind::Named,
+                source: prefix.clone(),
+                symbols: vec![item.to_string()],
+                alias: None,
+            });
+        }
+        return facts;
+    }
+
+    if stmt.ends_with("::*") {
+        let src = stmt.trim_end_matches("::*").trim().to_string();
+        return vec![ImportFact {
+            file: file.to_string(),
+            line: line_no,
+            kind: ImportKind::Namespace,
+            source: src,
+            symbols: Vec::new(),
+            alias: None,
+        }];
+    }
+
+    let parts: Vec<&str> = stmt.split("::").filter(|p| !p.is_empty()).collect();
+    if parts.len() <= 1 {
+        return vec![ImportFact {
+            file: file.to_string(),
+            line: line_no,
+            kind: ImportKind::Named,
+            source: stmt.to_string(),
+            symbols: Vec::new(),
+            alias: None,
+        }];
+    }
+    let symbol = parts[parts.len() - 1];
+    let source = parts[..parts.len() - 1].join("::");
+    vec![ImportFact {
+        file: file.to_string(),
+        line: line_no,
+        kind: ImportKind::Named,
+        source,
+        symbols: vec![symbol.to_string()],
+        alias: None,
+    }]
 }
 
 fn parse_impl_trait(trimmed: &str) -> Option<(&str, &str)> {
@@ -183,14 +358,11 @@ fn next_ident(raw: &str) -> Option<&str> {
         .split(|ch: char| !(ch.is_ascii_alphanumeric() || ch == '_'))
         .next()
         .unwrap_or_default();
-    if ident.is_empty() {
-        None
-    } else {
-        Some(ident)
-    }
+    if ident.is_empty() { None } else { Some(ident) }
 }
 
 fn traverse(
+    file: &str,
     source: &str,
     cursor: &mut tree_sitter::TreeCursor<'_>,
     fn_stack: &mut Vec<String>,
@@ -198,10 +370,73 @@ fn traverse(
     refs: &mut Vec<ReferenceFact>,
     calls: &mut Vec<CallFact>,
     rels: &mut Vec<RelationFact>,
+    imports: &mut Vec<ImportFact>,
 ) {
     loop {
         let node = cursor.node();
         match node.kind() {
+            "use_declaration" => {
+                if let Some(text) = node_text(source, node) {
+                    let trimmed = text.trim_start().trim_start_matches("pub ").trim_start();
+                    let stmt = trimmed
+                        .strip_prefix("use ")
+                        .unwrap_or(trimmed)
+                        .trim_end()
+                        .trim_end_matches(';')
+                        .trim();
+                    imports.extend(parse_rust_use_stmt(
+                        file,
+                        node.start_position().row as usize + 1,
+                        stmt,
+                    ));
+                }
+            }
+            "extern_crate_declaration" => {
+                if let Some(text) = node_text(source, node) {
+                    let name = text
+                        .trim()
+                        .trim_start_matches("extern crate ")
+                        .trim_end_matches(';')
+                        .trim()
+                        .split_whitespace()
+                        .next()
+                        .unwrap_or("");
+                    if !name.is_empty() {
+                        imports.push(ImportFact {
+                            file: file.to_string(),
+                            line: node.start_position().row as usize + 1,
+                            kind: ImportKind::SideEffect,
+                            source: name.to_string(),
+                            symbols: Vec::new(),
+                            alias: None,
+                        });
+                    }
+                }
+            }
+            "mod_item" => {
+                if let Some(text) = node_text(source, node) {
+                    let trimmed = text.trim();
+                    if trimmed.ends_with(';') && !trimmed.contains('{') {
+                        let name = trimmed
+                            .trim_start_matches("mod ")
+                            .trim_end_matches(';')
+                            .trim()
+                            .split(|ch: char| !(ch.is_ascii_alphanumeric() || ch == '_'))
+                            .next()
+                            .unwrap_or("");
+                        if !name.is_empty() {
+                            imports.push(ImportFact {
+                                file: file.to_string(),
+                                line: node.start_position().row as usize + 1,
+                                kind: ImportKind::SideEffect,
+                                source: name.to_string(),
+                                symbols: Vec::new(),
+                                alias: None,
+                            });
+                        }
+                    }
+                }
+            }
             "struct_item" | "enum_item" | "trait_item" => {
                 if let Some(name) = node.child_by_field_name("name") {
                     if let Some(symbol) = node_text(source, name) {
@@ -210,7 +445,9 @@ fn traverse(
                 }
             }
             "impl_item" => {
-                let ty = node.child_by_field_name("type").and_then(|n| node_text(source, n));
+                let ty = node
+                    .child_by_field_name("type")
+                    .and_then(|n| node_text(source, n));
                 let tr = node
                     .child_by_field_name("trait")
                     .and_then(|n| node_text(source, n));
@@ -265,7 +502,9 @@ fn traverse(
         }
 
         if cursor.goto_first_child() {
-            traverse(source, cursor, fn_stack, defs, refs, calls, rels);
+            traverse(
+                file, source, cursor, fn_stack, defs, refs, calls, rels, imports,
+            );
             cursor.goto_parent();
         }
 
@@ -287,6 +526,7 @@ fn push_def(defs: &mut Vec<DefinitionFact>, symbol: String, kind: &str, name_nod
         kind: kind.to_string(),
         line: start,
         span: Some((start, end)),
+        signature: None,
     });
 }
 
@@ -373,7 +613,7 @@ fn extract_qualified_callee(source: &str, func_node: Node<'_>) -> Option<String>
             // Simple function call like foo()
             node_text(source, func_node)
         }
-        _ => node_text(source, func_node)
+        _ => node_text(source, func_node),
     }
 }
 
@@ -396,7 +636,7 @@ fn infer_receiver_type(source: &str, receiver: Node<'_>) -> Option<String> {
             }
             None
         }
-        _ => None
+        _ => None,
     }
 }
 
@@ -424,8 +664,7 @@ fn extract_macro_calls(source: &str, node: &Node<'_>, caller: &str, calls: &mut 
 fn is_call_stopword(name: &str) -> bool {
     matches!(
         name,
-        "if"
-            | "for"
+        "if" | "for"
             | "while"
             | "loop"
             | "match"

@@ -56,7 +56,7 @@ Based on analysis of 5 feedback reports from Dec 9, 2025, this plan prioritizes 
 5. **rg.rs** - Add `-i` flag to ripgrep invocation when `ignore_case` is set.
 
 **Tests:**
-- `cargo test --package swe-grep-core -- ignore_case`
+- `cargo test -p swe-grep -- ignore_case`
 - Manual: `swe-grep search --symbol "searchengine" -i --path .`
 
 ---

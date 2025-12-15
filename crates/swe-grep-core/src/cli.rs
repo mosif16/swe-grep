@@ -28,6 +28,8 @@ pub enum Commands {
     Usages(UsageCommand),
     /// Explore callers/callees for a symbol.
     Refs(RefsCommand),
+    /// Assemble a budgeted context bundle for a symbol (definition, callers/callees, types/imports, tests).
+    Context(ContextCommand),
     /// Generate a removal/refactor plan for a symbol.
     Remove(RemoveCommand),
     /// Run benchmark scenarios and collect performance metrics.
@@ -376,6 +378,18 @@ pub struct RefsCommand {
     #[arg(long, default_value_t = false, action = ArgAction::SetTrue)]
     pub callees: bool,
 
+    /// Show what this file/symbol imports.
+    #[arg(long, default_value_t = false, action = ArgAction::SetTrue)]
+    pub imports: bool,
+
+    /// Show what imports this file/symbol.
+    #[arg(long, default_value_t = false, action = ArgAction::SetTrue)]
+    pub importers: bool,
+
+    /// Depth for transitive traversal (default: 1).
+    #[arg(long, default_value_t = 1)]
+    pub import_depth: usize,
+
     /// Output style for references.
     #[arg(long, value_enum, default_value = "json")]
     pub format: RefsFormat,
@@ -385,6 +399,72 @@ pub struct RefsCommand {
 pub enum RefsFormat {
     Json,
     Tree,
+}
+
+#[derive(Copy, Clone, Debug, ValueEnum)]
+pub enum ContextPreset {
+    /// Callers + callees + types (refactoring-oriented).
+    Refactor,
+    /// Callers + definition body + tests (debugging-oriented).
+    Debug,
+    /// Everything (budgeted and summarized).
+    Understand,
+}
+
+/// Arguments for the `context` subcommand.
+#[derive(clap::Args, Debug)]
+pub struct ContextCommand {
+    /// Symbol to assemble context for.
+    #[arg(long)]
+    pub symbol: String,
+
+    /// Preset configuration for common workflows (refactor|debug|understand).
+    #[arg(long, value_enum)]
+    pub preset: Option<ContextPreset>,
+
+    /// Minimize context output (single compact JSON object; omits bodies and signatures).
+    #[arg(long, default_value_t = false, action = ArgAction::SetTrue, conflicts_with = "stream")]
+    pub concise: bool,
+
+    /// Stream NDJSON sections as they are computed.
+    #[arg(long, default_value_t = false, action = ArgAction::SetTrue, conflicts_with = "concise")]
+    pub stream: bool,
+
+    /// Include locations that call the symbol.
+    #[arg(long, action = ArgAction::SetTrue)]
+    pub callers: Option<bool>,
+
+    /// Include callees extracted from the symbol's definition body.
+    #[arg(long, action = ArgAction::SetTrue)]
+    pub callees: Option<bool>,
+
+    /// Include type relationships (best-effort).
+    #[arg(long, action = ArgAction::SetTrue)]
+    pub types: Option<bool>,
+
+    /// Include import relationships (best-effort; may be empty).
+    #[arg(long, action = ArgAction::SetTrue)]
+    pub imports: Option<bool>,
+
+    /// Include related test files (best-effort).
+    #[arg(long, alias = "include-tests", action = ArgAction::SetTrue)]
+    pub tests: Option<bool>,
+
+    /// Include a definition body when available.
+    #[arg(long = "body", action = ArgAction::SetTrue)]
+    pub include_body: Option<bool>,
+
+    /// Graph expansion depth (e.g. callers-of-callers when depth=2).
+    #[arg(long)]
+    pub depth: Option<usize>,
+
+    /// Maximum total output lines before truncation.
+    #[arg(long = "max-lines")]
+    pub max_lines: Option<usize>,
+
+    /// Root directory to scan; defaults to the current working directory.
+    #[arg(long)]
+    pub path: Option<PathBuf>,
 }
 
 /// Arguments for the `remove` subcommand.
@@ -535,4 +615,37 @@ pub struct ShellFeedbackArgs {
     /// Emit prompt output as JSON instead of plain text.
     #[arg(long, default_value_t = false, action = ArgAction::SetTrue)]
     pub json: bool,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_context_preset_and_flags() {
+        let cli = Cli::try_parse_from([
+            "swe-grep",
+            "context",
+            "--preset",
+            "refactor",
+            "--symbol",
+            "Foo",
+            "--path",
+            ".",
+            "--types",
+            "--concise",
+        ])
+        .expect("expected context args to parse");
+
+        match cli.command {
+            Commands::Context(cmd) => {
+                assert_eq!(cmd.symbol, "Foo");
+                assert!(matches!(cmd.preset, Some(ContextPreset::Refactor)));
+                assert_eq!(cmd.path, Some(PathBuf::from(".")));
+                assert_eq!(cmd.types, Some(true));
+                assert!(cmd.concise);
+            }
+            _ => panic!("expected context command"),
+        }
+    }
 }

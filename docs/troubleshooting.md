@@ -20,8 +20,10 @@ Common runtime issues and remediation steps.
 
 ## Cache path permissions
 
-- By default caches live at `<root>/.swe-grep-cache`. Override with
-  `--cache-dir` when running in read-only environments.
+- By default caches live under `$XDG_CACHE_HOME/swe-grep/<root-hash>/` (or
+  `$HOME/.cache/swe-grep/<root-hash>/`); fallback is
+  `<root>/.swe-grep-cache/<root-hash>/`. Override with `--cache-dir` when
+  running in read-only environments.
 - Verify the process user has write access; otherwise structured state cannot
   persist between runs.
 

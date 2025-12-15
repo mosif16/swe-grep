@@ -2,6 +2,7 @@ pub mod agent;
 pub mod analysis;
 pub mod bench;
 pub mod cli;
+pub mod context;
 pub mod feedback;
 pub mod file_cache;
 pub mod language;

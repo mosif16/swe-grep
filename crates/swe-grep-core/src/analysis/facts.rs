@@ -1,6 +1,8 @@
 use serde::{Deserialize, Serialize};
 
-pub const FACTS_SCHEMA_VERSION: u32 = 2;
+pub const FACTS_SCHEMA_VERSION: u32 = 3;
+
+use super::imports::{ExportFact, ImportFact};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FileFacts {
@@ -22,6 +24,10 @@ pub struct FactBundle {
     pub calls: Vec<CallFact>,
     #[serde(default)]
     pub relations: Vec<RelationFact>,
+    #[serde(default)]
+    pub imports: Vec<ImportFact>,
+    #[serde(default)]
+    pub exports: Vec<ExportFact>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -31,6 +37,8 @@ pub struct DefinitionFact {
     pub line: usize,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub span: Option<(usize, usize)>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub signature: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
