@@ -53,6 +53,7 @@ concise = true
 - `swe-grep search --agent --symbols Foo,Bar --path . --format json` — batch search with jq-ready output and schema versioning.
 - `swe-grep search --json-only --symbols Foo,Bar --path .` — shorthand for pipeline-safe JSON-only output (implies `--agent --format json --quiet`).
 - `swe-grep search --agent --symbols Foo,Bar --stream` — NDJSON per symbol (final line has `done=true`), exit code `2` on runtime errors, `1` on usage errors.
+- `swe-grep search --agent --grouped --budget 2000 --symbol Foo --path .` — semantic grouping (definition/impl/usages/tests) with token-budget truncation to avoid re-sending redundant context.
 - Defaults: telemetry off, bodies fetched (first 50 lines by default), deterministic ordering; add `--definitions` for best-effort signatures, `--concise` to drop context/origin/score/body, and `--json-pretty`/`--progress`/`--trim-body N` to tune output.
 - See `docs/agent-mode.md` for the schema, exit codes, batch inputs (`--symbols/--symbols-file/--stdin-symbols`), and `--format json|table`.
 
@@ -61,6 +62,7 @@ concise = true
 - Concept/semantic search: `swe-grep search --concept "text to speech"` builds intent-driven rewrites that surface related symbols even when names do not match.
 - Literal text: `swe-grep search --text --symbol "Practice aloud" --path .` performs raw fixed-string searches without symbol rewrites or AST.
 - Regex/wildcard friendly: `--regex` accepts raw patterns (e.g. `speak|aloud`), `--wildcard` translates `*`/`?`; AST disambiguation is skipped automatically when patterns are non-literal.
+- Fuzzy no-hit guidance: when there are zero hits, swe-grep returns `fuzzy_matches` + `did_you_mean` (agent mode) to suggest symbols like `AuthService` for a query like `authservice`; tune with `--fuzzy 0.7` (0.0–1.0).
 - Single-file scope: `swe-grep search --symbol deckHeaderSection --scope-file path/to/View.swift --path .` restricts the search surface to a single file (useful for local/private symbols).
 - String literals: `--string` generates quoted/ci variants and disables AST so inline CSS vars or JSX strings are easy to surface.
 - CSS/SCSS aware: `--language css|scss` scopes discovery to stylesheets; extension filters include CSS/SCSS by default when selected.
@@ -75,7 +77,9 @@ concise = true
   - **Output formats**: `--format json|tree|compact` for different use cases.
 - Context bundles: `swe-grep context --symbol Foo --path .` assembles a single JSON response with the definition, callers/callees, type relationships, and related tests (best-effort).
   - **Presets**: `--preset refactor|debug|understand` selects common bundles; flags like `--tests` and `--body` can add more detail.
+  - **Symbol intelligence**: `--explain` enriches the `definition` with kind/visibility/docs/fields/methods/complexity (not available in `--concise` mode).
   - **Concise mode**: `--concise` returns a minimal object (`symbol/def/callers/callees/tests`) for token-sensitive prompts.
+  - **Grouped mode**: `--grouped --budget 2000` groups output by file and truncates intelligently to reduce repeated context.
   - **Streaming**: `--stream` outputs NDJSON sections (`definition`, `callers`, `callees`, `types`, `imports`, `tests`, `summary`) for incremental UIs/pipelines.
 - Git metadata: add `--git-info` to search/usages/refs to append the last commit hash/date per hit.
 - Removal planning: `swe-grep remove --symbol Foo --dry-run` lists files to modify/delete; add `--apply` to delete obvious symbol-owned files cautiously.

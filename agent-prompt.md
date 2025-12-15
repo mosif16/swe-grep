@@ -25,7 +25,7 @@ swe-grep context --symbol AuthService --depth 2 --path .
 swe-grep context --symbol Foo --max-lines 300 --include-tests --path .
 ```
 
-**Key flags:** `--language`, `--body`, `--wildcard`, `--regex`, `--max-matches`, `--path-glob`, `--callers`, `--callees`, `--preset`, `--max-lines`, `--depth`, `--concise`, `--stream`, `--tests`
+**Key flags:** `--language`, `--body`, `--wildcard`, `--regex`, `--max-matches`, `--path-glob`, `--callers`, `--callees`, `--preset`, `--explain`, `--max-lines`, `--depth`, `--concise`, `--stream`, `--tests`
 
 ## Workflow
 

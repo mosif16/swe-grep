@@ -74,6 +74,8 @@ fn fallback_extract(file: &str, source: &str) -> FactBundle {
                 kind: kind.to_string(),
                 line: line_no,
                 span: Some((line_no, line_no)),
+                visibility: None,
+                doc: None,
                 signature: Some(signature),
             });
         } else if let Some(symbol) = trimmed.strip_prefix("class ").and_then(next_ident) {
@@ -82,6 +84,8 @@ fn fallback_extract(file: &str, source: &str) -> FactBundle {
                 kind: "class".to_string(),
                 line: line_no,
                 span: Some((line_no, line_no)),
+                visibility: None,
+                doc: None,
                 signature: Some(trimmed.to_string()),
             });
         } else if let Some(caller) = current_fn.as_deref() {
@@ -140,6 +144,8 @@ fn traverse(
                             node.start_position().row as usize + 1,
                             node.end_position().row as usize + 1,
                         )),
+                        visibility: None,
+                        doc: None,
                         signature: node_text(source, node),
                     });
                 }
@@ -155,6 +161,8 @@ fn traverse(
                                 name_node.start_position().row as usize + 1,
                                 name_node.end_position().row as usize + 1,
                             )),
+                            visibility: None,
+                            doc: None,
                             signature: signature_for_block_header(source, &node),
                         });
 
@@ -207,6 +215,8 @@ fn traverse(
                                 name_node.start_position().row as usize + 1,
                                 name_node.end_position().row as usize + 1,
                             )),
+                            visibility: None,
+                            doc: None,
                             signature,
                         });
 

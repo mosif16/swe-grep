@@ -36,11 +36,32 @@ pub struct Definition {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub line: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub kind: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub visibility: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub signature: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub docstring: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub doc: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub fields: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub methods: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub implements: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub complexity: Option<SymbolComplexity>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub body: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct SymbolComplexity {
+    pub fields: usize,
+    pub methods: usize,
+    pub loc: usize,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -48,6 +69,8 @@ pub struct Caller {
     pub symbol: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub signature: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub call_context: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub file: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -59,6 +82,8 @@ pub struct Callee {
     pub symbol: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub signature: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub call_context: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub file: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]

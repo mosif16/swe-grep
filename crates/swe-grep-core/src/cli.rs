@@ -62,6 +62,14 @@ pub struct SearchCommand {
     #[arg(long, default_value_t = false, action = ArgAction::SetTrue)]
     pub concise: bool,
 
+    /// Group results semantically (definition/impl/usages/tests) to reduce redundant context.
+    #[arg(long, default_value_t = false, action = ArgAction::SetTrue)]
+    pub grouped: bool,
+
+    /// Approximate token budget for grouped output; truncates usage sites when exceeded.
+    #[arg(long)]
+    pub budget: Option<usize>,
+
     /// Pretty-print agent JSON output (ignored for streaming).
     #[arg(long, default_value_t = false, action = ArgAction::SetTrue)]
     pub json_pretty: bool,
@@ -234,6 +242,14 @@ pub struct SearchArgs {
     #[arg(short = 'i', long = "ignore-case", default_value_t = false, action = ArgAction::SetTrue)]
     pub ignore_case: bool,
 
+    /// Fuzzy-match threshold for did-you-mean suggestions (0.0-1.0).
+    #[arg(
+        long = "fuzzy",
+        default_value_t = 0.7,
+        value_parser = parse_fuzzy_threshold
+    )]
+    pub fuzzy_threshold: f32,
+
     /// Only show definition sites (struct, fn, class, etc.), excluding usages.
     #[arg(long = "definitions-only", default_value_t = false, action = ArgAction::SetTrue)]
     pub definitions_only: bool,
@@ -346,6 +362,23 @@ pub struct SearchArgs {
     pub log_dir: Option<PathBuf>,
 }
 
+fn parse_fuzzy_threshold(value: &str) -> Result<f32, String> {
+    let parsed: f32 = value
+        .parse()
+        .map_err(|_| format!("invalid --fuzzy value (expected 0.0..=1.0): {value}"))?;
+    if !parsed.is_finite() {
+        return Err(format!(
+            "invalid --fuzzy value (expected 0.0..=1.0): {value}"
+        ));
+    }
+    if !(0.0..=1.0).contains(&parsed) {
+        return Err(format!(
+            "invalid --fuzzy value (expected 0.0..=1.0): {value}"
+        ));
+    }
+    Ok(parsed)
+}
+
 /// Arguments for the `usages` subcommand.
 #[derive(clap::Args, Debug)]
 pub struct UsageCommand {
@@ -430,6 +463,18 @@ pub struct ContextCommand {
     #[arg(long, default_value_t = false, action = ArgAction::SetTrue, conflicts_with = "concise")]
     pub stream: bool,
 
+    /// Group output fields by file to reduce repetition (primarily affects --concise output).
+    #[arg(long, default_value_t = false, action = ArgAction::SetTrue)]
+    pub grouped: bool,
+
+    /// Approximate token budget for grouped output; truncates when exceeded.
+    #[arg(long)]
+    pub budget: Option<usize>,
+
+    /// Include function signatures and call-site context for callers/callees (default: true; pass --signatures=false to disable).
+    #[arg(long, default_value_t = true, action = ArgAction::Set)]
+    pub signatures: bool,
+
     /// Include locations that call the symbol.
     #[arg(long, action = ArgAction::SetTrue)]
     pub callers: Option<bool>,
@@ -453,6 +498,10 @@ pub struct ContextCommand {
     /// Include a definition body when available.
     #[arg(long = "body", action = ArgAction::SetTrue)]
     pub include_body: Option<bool>,
+
+    /// Include symbol intelligence (doc, fields, methods, complexity) in the definition payload.
+    #[arg(long, default_value_t = false, action = ArgAction::SetTrue)]
+    pub explain: bool,
 
     /// Graph expansion depth (e.g. callers-of-callers when depth=2).
     #[arg(long)]

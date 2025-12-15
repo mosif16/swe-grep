@@ -3,7 +3,9 @@ use std::collections::HashSet;
 use anyhow::Result;
 use tree_sitter::{Node, Parser};
 
-use super::facts::{CallFact, DefinitionFact, FactBundle, ReferenceFact, RelationFact};
+use super::facts::{
+    CallFact, DefinitionFact, FactBundle, FieldFact, MethodFact, ReferenceFact, RelationFact,
+};
 use super::imports::{ExportFact, ExportKind, ImportFact, ImportKind};
 
 pub(crate) fn extract(file: &str, source: &str, variant: &str) -> Result<FactBundle> {
@@ -21,6 +23,7 @@ pub(crate) fn extract(file: &str, source: &str, variant: &str) -> Result<FactBun
         .ok_or_else(|| anyhow::anyhow!("failed to parse typescript source"))?;
 
     let mut facts = FactBundle::default();
+    let lines: Vec<&str> = source.lines().collect();
     let root = tree.root_node();
     let mut cursor = root.walk();
     let mut stack: Vec<String> = Vec::new();
@@ -28,12 +31,15 @@ pub(crate) fn extract(file: &str, source: &str, variant: &str) -> Result<FactBun
     traverse(
         file,
         source,
+        &lines,
         &mut cursor,
         &mut stack,
         &mut facts.definitions,
         &mut facts.references,
         &mut facts.calls,
         &mut facts.relations,
+        &mut facts.fields,
+        &mut facts.methods,
         &mut facts.imports,
         &mut facts.exports,
     );
@@ -65,6 +71,8 @@ fn fallback_extract(file: &str, source: &str) -> FactBundle {
                 kind: "func".to_string(),
                 line: line_no,
                 span: Some((line_no, line_no)),
+                visibility: None,
+                doc: None,
                 signature: None,
             });
         }
@@ -77,6 +85,8 @@ fn fallback_extract(file: &str, source: &str) -> FactBundle {
                 kind: "func".to_string(),
                 line: line_no,
                 span: Some((line_no, line_no)),
+                visibility: None,
+                doc: None,
                 signature: None,
             });
         }
@@ -86,6 +96,8 @@ fn fallback_extract(file: &str, source: &str) -> FactBundle {
                 kind: "class".to_string(),
                 line: line_no,
                 span: Some((line_no, line_no)),
+                visibility: None,
+                doc: None,
                 signature: None,
             });
         }
@@ -95,6 +107,8 @@ fn fallback_extract(file: &str, source: &str) -> FactBundle {
                 kind: "class".to_string(),
                 line: line_no,
                 span: Some((line_no, line_no)),
+                visibility: None,
+                doc: None,
                 signature: None,
             });
         }
@@ -104,6 +118,8 @@ fn fallback_extract(file: &str, source: &str) -> FactBundle {
                 kind: "interface".to_string(),
                 line: line_no,
                 span: Some((line_no, line_no)),
+                visibility: None,
+                doc: None,
                 signature: None,
             });
         }
@@ -116,6 +132,8 @@ fn fallback_extract(file: &str, source: &str) -> FactBundle {
                 kind: "interface".to_string(),
                 line: line_no,
                 span: Some((line_no, line_no)),
+                visibility: None,
+                doc: None,
                 signature: None,
             });
         }
@@ -125,6 +143,8 @@ fn fallback_extract(file: &str, source: &str) -> FactBundle {
                 kind: "type".to_string(),
                 line: line_no,
                 span: Some((line_no, line_no)),
+                visibility: None,
+                doc: None,
                 signature: None,
             });
         }
@@ -134,6 +154,8 @@ fn fallback_extract(file: &str, source: &str) -> FactBundle {
                 kind: "type".to_string(),
                 line: line_no,
                 span: Some((line_no, line_no)),
+                visibility: None,
+                doc: None,
                 signature: None,
             });
         }
@@ -571,12 +593,15 @@ fn next_ident(raw: &str) -> Option<&str> {
 fn traverse(
     file: &str,
     source: &str,
+    lines: &[&str],
     cursor: &mut tree_sitter::TreeCursor<'_>,
     fn_stack: &mut Vec<String>,
     defs: &mut Vec<DefinitionFact>,
     refs: &mut Vec<ReferenceFact>,
     calls: &mut Vec<CallFact>,
     rels: &mut Vec<RelationFact>,
+    fields: &mut Vec<FieldFact>,
+    methods: &mut Vec<MethodFact>,
     imports: &mut Vec<ImportFact>,
     exports: &mut Vec<ExportFact>,
 ) {
@@ -599,7 +624,7 @@ fn traverse(
             "class_declaration" => {
                 if let Some(name) = node.child_by_field_name("name") {
                     if let Some(symbol) = node_text(source, name) {
-                        push_def(defs, symbol.clone(), node.kind(), name);
+                        push_definition_fact(lines, source, defs, symbol.clone(), "class", node);
                         if let Some(superclass) = node
                             .child_by_field_name("superclass")
                             .and_then(|n| node_text(source, n))
@@ -617,15 +642,73 @@ fn traverse(
             "interface_declaration" | "type_alias_declaration" => {
                 if let Some(name) = node.child_by_field_name("name") {
                     if let Some(symbol) = node_text(source, name) {
-                        push_def(defs, symbol, node.kind(), name);
+                        let kind = match node.kind() {
+                            "interface_declaration" => "interface",
+                            "type_alias_declaration" => "type",
+                            other => other,
+                        };
+                        push_definition_fact(lines, source, defs, symbol, kind, node);
                     }
                 }
             }
-            "function_declaration" | "method_definition" => {
+            "function_declaration" => {
                 if let Some(name) = node.child_by_field_name("name") {
                     if let Some(symbol) = node_text(source, name) {
-                        push_def(defs, symbol.clone(), "func", name);
+                        push_definition_fact(lines, source, defs, symbol.clone(), "func", node);
                         fn_stack.push(symbol);
+                    }
+                }
+            }
+            "method_definition" => {
+                if let Some(name) = node.child_by_field_name("name") {
+                    if let Some(symbol) = node_text(source, name) {
+                        push_definition_fact(lines, source, defs, symbol.clone(), "func", node);
+                        if let Some(owner) = find_enclosing_class_name(source, &node) {
+                            let signature =
+                                extract_signature_lines(lines, node.start_position().row as usize);
+                            methods.push(MethodFact {
+                                owner,
+                                name: symbol.clone(),
+                                line: node.start_position().row as usize + 1,
+                                span: Some((
+                                    node.start_position().row as usize + 1,
+                                    node.end_position().row as usize + 1,
+                                )),
+                                visibility: extract_ts_visibility(signature.as_deref()),
+                                doc: extract_jsdoc_before(
+                                    lines,
+                                    node.start_position().row as usize,
+                                ),
+                                signature,
+                            });
+                        }
+                        fn_stack.push(symbol);
+                    }
+                }
+            }
+            "public_field_definition" => {
+                if let Some(owner) = find_enclosing_class_name(source, &node) {
+                    if let Some(name) = node
+                        .child_by_field_name("name")
+                        .and_then(|n| node_text(source, n))
+                    {
+                        let type_repr = node
+                            .child_by_field_name("type")
+                            .and_then(|n| node_text(source, n));
+                        let signature =
+                            extract_signature_lines(lines, node.start_position().row as usize);
+                        fields.push(FieldFact {
+                            owner,
+                            name,
+                            line: node.start_position().row as usize + 1,
+                            span: Some((
+                                node.start_position().row as usize + 1,
+                                node.end_position().row as usize + 1,
+                            )),
+                            visibility: extract_ts_visibility(signature.as_deref()),
+                            doc: extract_jsdoc_before(lines, node.start_position().row as usize),
+                            type_repr,
+                        });
                     }
                 }
             }
@@ -676,7 +759,8 @@ fn traverse(
 
         if cursor.goto_first_child() {
             traverse(
-                file, source, cursor, fn_stack, defs, refs, calls, rels, imports, exports,
+                file, source, lines, cursor, fn_stack, defs, refs, calls, rels, fields, methods,
+                imports, exports,
             );
             cursor.goto_parent();
         }
@@ -782,21 +866,193 @@ fn extract_require_source(call_text: &str) -> Option<String> {
     unquote_js_string_literal(lit)
 }
 
-fn push_def(defs: &mut Vec<DefinitionFact>, symbol: String, kind: &str, name_node: Node<'_>) {
-    let start = name_node.start_position().row as usize + 1;
-    let end = name_node.end_position().row as usize + 1;
-    defs.push(DefinitionFact {
-        symbol,
-        kind: kind.to_string(),
-        line: start,
-        span: Some((start, end)),
-        signature: None,
-    });
-}
-
 fn node_text(source: &str, node: Node<'_>) -> Option<String> {
     node.utf8_text(source.as_bytes())
         .ok()
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
+}
+
+fn push_definition_fact(
+    lines: &[&str],
+    _source: &str,
+    defs: &mut Vec<DefinitionFact>,
+    symbol: String,
+    kind: &str,
+    item_node: Node<'_>,
+) {
+    let start = item_node.start_position().row as usize + 1;
+    let end = item_node.end_position().row as usize + 1;
+    let signature = extract_signature_lines(lines, item_node.start_position().row as usize);
+    defs.push(DefinitionFact {
+        symbol,
+        kind: kind.to_string(),
+        line: start,
+        span: Some((start, end)),
+        visibility: extract_ts_definition_visibility(signature.as_deref()),
+        doc: extract_jsdoc_before(lines, item_node.start_position().row as usize),
+        signature,
+    });
+}
+
+fn extract_signature_lines(lines: &[&str], start_row: usize) -> Option<String> {
+    if lines.is_empty() || start_row >= lines.len() {
+        return None;
+    }
+    let end_row = usize::min(lines.len().saturating_sub(1), start_row.saturating_add(6));
+    let mut buf = String::new();
+    for row in start_row..=end_row {
+        let line = lines.get(row).copied().unwrap_or_default();
+        if !buf.is_empty() {
+            buf.push(' ');
+        }
+        buf.push_str(line.trim());
+        if buf.contains('{') || buf.contains(';') {
+            break;
+        }
+    }
+    let compact = buf.split_whitespace().collect::<Vec<_>>().join(" ");
+    let cutoff = compact
+        .find('{')
+        .map(|idx| idx + 1)
+        .or_else(|| compact.find(';').map(|idx| idx + 1))
+        .unwrap_or(compact.len());
+    let out = compact[..cutoff].trim().to_string();
+    if out.is_empty() { None } else { Some(out) }
+}
+
+fn extract_ts_definition_visibility(signature: Option<&str>) -> Option<String> {
+    let sig = signature?;
+    if sig.starts_with("export ") || sig.contains(" export ") {
+        return Some("export".to_string());
+    }
+    None
+}
+
+fn extract_ts_visibility(signature: Option<&str>) -> Option<String> {
+    let sig = signature?;
+    for vis in ["public", "private", "protected"] {
+        if sig.contains(&format!("{vis} ")) {
+            return Some(vis.to_string());
+        }
+    }
+    None
+}
+
+fn extract_jsdoc_before(lines: &[&str], start_row: usize) -> Option<String> {
+    if start_row == 0 || lines.is_empty() {
+        return None;
+    }
+
+    let mut idx = start_row.saturating_sub(1);
+    let mut budget = 60usize;
+    while budget > 0 {
+        let line = lines.get(idx).copied().unwrap_or_default();
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            break;
+        }
+        if trimmed.starts_with("///") {
+            let mut collected = Vec::new();
+            while budget > 0 {
+                let current = lines.get(idx).copied().unwrap_or_default().trim();
+                if !current.starts_with("///") {
+                    break;
+                }
+                collected.push(current.to_string());
+                budget -= 1;
+                if idx == 0 {
+                    break;
+                }
+                idx -= 1;
+            }
+            collected.reverse();
+            return clean_doc_lines(&collected);
+        }
+        if trimmed.ends_with("*/") {
+            let mut block = vec![trimmed.to_string()];
+            budget -= 1;
+            while budget > 0 && idx > 0 {
+                idx -= 1;
+                let prev = lines
+                    .get(idx)
+                    .copied()
+                    .unwrap_or_default()
+                    .trim()
+                    .to_string();
+                if prev.is_empty() {
+                    break;
+                }
+                block.push(prev.clone());
+                budget -= 1;
+                if prev.contains("/**") {
+                    break;
+                }
+            }
+            block.reverse();
+            return clean_doc_lines(&block);
+        }
+        break;
+    }
+    None
+}
+
+fn clean_doc_lines(raw: &[String]) -> Option<String> {
+    if raw.is_empty() {
+        return None;
+    }
+
+    let mut out = Vec::new();
+    for line in raw {
+        let trimmed = line.trim();
+        if trimmed.starts_with("///") {
+            out.push(trimmed.trim_start_matches("///").trim_start().to_string());
+            continue;
+        }
+        if trimmed.starts_with("/**") {
+            let cleaned = trimmed
+                .trim_start_matches("/**")
+                .trim_end_matches("*/")
+                .trim();
+            if !cleaned.is_empty() {
+                out.push(cleaned.to_string());
+            }
+            continue;
+        }
+        if trimmed.ends_with("*/") {
+            let cleaned = trimmed.trim_end_matches("*/").trim();
+            if !cleaned.is_empty() {
+                out.push(cleaned.to_string());
+            }
+            continue;
+        }
+        let cleaned = trimmed
+            .trim_start_matches('*')
+            .trim_start()
+            .trim_end_matches("*/")
+            .trim();
+        if !cleaned.is_empty() {
+            out.push(cleaned.to_string());
+        }
+    }
+
+    let joined = out.join("\n").trim().to_string();
+    if joined.is_empty() {
+        None
+    } else {
+        Some(joined)
+    }
+}
+
+fn find_enclosing_class_name(source: &str, node: &Node<'_>) -> Option<String> {
+    let mut current = node.parent();
+    while let Some(parent) = current {
+        if parent.kind() == "class_declaration" {
+            return parent
+                .child_by_field_name("name")
+                .and_then(|n| node_text(source, n));
+        }
+        current = parent.parent();
+    }
+    None
 }

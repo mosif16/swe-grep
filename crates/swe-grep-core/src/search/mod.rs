@@ -10,8 +10,11 @@ mod stats;
 
 pub(crate) use config::passes_extension_filter;
 pub use formatting::ContextHint;
+pub(crate) use hits::{
+    HitSemanticKind, SemanticClassification, UsageContextKind, classify_semantic,
+};
 pub use stats::{
-    ConceptExpansionSummary, GitInfo, SearchSummary, StageStats, StartupStats, TopHit,
+    ConceptExpansionSummary, FuzzyMatch, GitInfo, SearchSummary, StageStats, StartupStats, TopHit,
 };
 
 use anyhow::Result;

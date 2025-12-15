@@ -87,6 +87,7 @@ swe-grep refs --imports --import-depth 3 --symbol src/api.rs --path .  # transit
 | `--importers` | Show importers (refs) |
 | `--import-depth N` | Set traversal depth (refs) |
 | `--preset X` | Use preset: refactor/debug/understand (context) |
+| `--explain` | Enrich `context.definition` with symbol intelligence |
 | `--tests` | Include related test files (context) |
 
 ## Output Schema (v1)
@@ -118,7 +119,14 @@ swe-grep refs --imports --import-depth 3 --symbol src/api.rs --path .  # transit
   "definition": {
     "file": "src/auth.rs",
     "line": 42,
-    "signature": "pub struct AuthService {"
+    "kind": "struct",
+    "visibility": "pub",
+    "signature": "pub struct AuthService {",
+    "doc": "Authentication service (example).",
+    "fields": ["config: AuthConfig", "repo: UserRepo"],
+    "methods": ["new(config)", "login(user, password)", "logout(user)"],
+    "implements": ["Service", "Clone"],
+    "complexity": { "fields": 2, "methods": 3, "loc": 120 }
   },
   "callers": [
     { "symbol": "handle_login", "file": "src/api.rs", "line": 89 }

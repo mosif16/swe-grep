@@ -23,8 +23,8 @@ use swe_grep::cli::{
 };
 use swe_grep::cli::{FeedbackCommand, FeedbackSubcommand, ShellFeedbackArgs};
 use swe_grep::context::{
-    Callee, Caller, ContextResponse, ContextSummary, Definition, ImportContext, TestFile,
-    TypeContext,
+    Callee, Caller, ContextResponse, ContextSummary, Definition, ImportContext, SymbolComplexity,
+    TestFile, TypeContext,
 };
 use swe_grep::feedback::{
     DEFAULT_FEEDBACK_DIR, SHELL_TOOL_NAME, ShellFeedback, ShellInvocation,
@@ -245,6 +245,24 @@ async fn handle_search(mut cmd: SearchCommand, disable_telemetry: bool) -> Resul
             "--json-pretty cannot be combined with --stream".to_string(),
         ));
     }
+    if cmd.grouped && !cmd.agent {
+        return Err(AppError::Usage(
+            "--grouped is only available in --agent mode".to_string(),
+        ));
+    }
+    if cmd.budget.is_some() && !cmd.grouped {
+        return Err(AppError::Usage("--budget requires --grouped".to_string()));
+    }
+    if cmd.grouped && !matches!(cmd.format, OutputFormat::Json) {
+        return Err(AppError::Usage(
+            "--grouped currently only supports --format json".to_string(),
+        ));
+    }
+    if cmd.grouped && cmd.open {
+        return Err(AppError::Usage(
+            "--grouped cannot be combined with --open".to_string(),
+        ));
+    }
     if cmd.json_pretty
         && matches!(
             cmd.format,
@@ -320,6 +338,8 @@ async fn handle_search(mut cmd: SearchCommand, disable_telemetry: bool) -> Resul
             symbols,
             cmd.format,
             cmd.stream,
+            cmd.grouped,
+            cmd.budget,
             cmd.definitions,
             cmd.trim_body,
             cmd.body_head,
@@ -408,6 +428,8 @@ async fn run_agent_search(
     symbols: Vec<String>,
     format: OutputFormat,
     stream: bool,
+    grouped: bool,
+    budget: Option<usize>,
     definitions: bool,
     trim_body: Option<usize>,
     body_head: Option<usize>,
@@ -452,7 +474,15 @@ async fn run_agent_search(
                 root_hint.get_or_insert(summary.root.clone());
                 let result = AgentResult::from_summary(symbol, &summary, &settings);
                 if stream {
-                    emit_json_line(&stream_entry(&result, idx + 1 == symbols.len()))?;
+                    if grouped {
+                        emit_json_line(&swe_grep::agent::grouped_stream_entry(
+                            &result,
+                            idx + 1 == symbols.len(),
+                            budget,
+                        ))?;
+                    } else {
+                        emit_json_line(&stream_entry(&result, idx + 1 == symbols.len()))?;
+                    }
                 } else {
                     results.push(result);
                 }
@@ -464,7 +494,15 @@ async fn run_agent_search(
                 result.errors.push(err.to_string());
 
                 if stream {
-                    emit_json_line(&stream_entry(&result, idx + 1 == symbols.len()))?;
+                    if grouped {
+                        emit_json_line(&swe_grep::agent::grouped_stream_entry(
+                            &result,
+                            idx + 1 == symbols.len(),
+                            budget,
+                        ))?;
+                    } else {
+                        emit_json_line(&stream_entry(&result, idx + 1 == symbols.len()))?;
+                    }
                 } else {
                     results.push(result);
                 }
@@ -485,6 +523,23 @@ async fn run_agent_search(
     }
 
     let root = root_hint.unwrap_or(resolve_root(&args)?);
+    if grouped {
+        let output = swe_grep::agent::aggregate_grouped_output(&root, &symbols, &results, budget);
+        if assert_absent && output.summary.count > 0 {
+            return Err(AppError::AssertionFailed(format!(
+                "symbol(s) found ({} hits)",
+                output.summary.count
+            )));
+        }
+        let rendered = if json_pretty {
+            serde_json::to_string_pretty(&output)?
+        } else {
+            serde_json::to_string(&output)?
+        };
+        println!("{rendered}");
+        return Ok(());
+    }
+
     let mut output = aggregate_output(&root, &symbols, &results);
     if open {
         output.open_commands = build_open_commands_from_agent_hits(&output.hits, open_command);
@@ -588,6 +643,15 @@ async fn handle_context(cmd: ContextCommand, disable_telemetry: bool) -> Result<
         telemetry::init()?;
     }
 
+    if cmd.budget.is_some() && !cmd.grouped {
+        return Err(AppError::Usage("--budget requires --grouped".to_string()));
+    }
+    if cmd.grouped && cmd.stream {
+        return Err(AppError::Usage(
+            "--grouped cannot be combined with --stream".to_string(),
+        ));
+    }
+
     let selection = ContextSelection::from_command(&cmd);
     let root = resolve_context_root(cmd.path.as_ref())?;
     let cache_dir = search::default_cache_dir_for_root(&root);
@@ -611,6 +675,13 @@ async fn handle_context(cmd: ContextCommand, disable_telemetry: bool) -> Result<
         ContextResponse::empty(cmd.symbol.clone())
     };
 
+    if cmd.grouped {
+        let grouped = GroupedContextOutput::from_response(&response, cmd.budget);
+        let json = serde_json::to_string_pretty(&grouped)?;
+        println!("{json}");
+        return Ok(());
+    }
+
     if cmd.concise {
         let concise = ConciseContextOutput::from_response(&response);
         println!("{}", serde_json::to_string(&concise)?);
@@ -632,6 +703,8 @@ struct ContextSelection {
     include_imports: bool,
     include_tests: bool,
     include_body: bool,
+    include_signatures: bool,
+    include_explain: bool,
 }
 
 impl ContextSelection {
@@ -647,6 +720,8 @@ impl ContextSelection {
                     include_imports: false,
                     include_tests: false,
                     include_body: false,
+                    include_signatures: true,
+                    include_explain: false,
                 },
                 ContextPreset::Debug => Self {
                     depth: 2,
@@ -657,6 +732,8 @@ impl ContextSelection {
                     include_imports: false,
                     include_tests: true,
                     include_body: true,
+                    include_signatures: true,
+                    include_explain: false,
                 },
                 ContextPreset::Understand => Self {
                     depth: 2,
@@ -667,6 +744,8 @@ impl ContextSelection {
                     include_imports: true,
                     include_tests: true,
                     include_body: false,
+                    include_signatures: true,
+                    include_explain: false,
                 },
             }
         } else {
@@ -679,6 +758,8 @@ impl ContextSelection {
                 include_imports: true,
                 include_tests: false,
                 include_body: false,
+                include_signatures: true,
+                include_explain: false,
             }
         };
 
@@ -707,6 +788,8 @@ impl ContextSelection {
             selection.include_body = value;
         }
 
+        selection.include_signatures = cmd.signatures && !cmd.concise;
+        selection.include_explain = cmd.explain && !cmd.concise;
         selection
     }
 }
@@ -719,6 +802,157 @@ struct ConciseContextOutput {
     callers: Vec<String>,
     callees: Vec<String>,
     tests: Vec<String>,
+}
+
+#[derive(Serialize)]
+struct GroupedContextOutput {
+    symbol: String,
+    grouped: GroupedContextBuckets,
+    summary: GroupedContextSummary,
+    truncated: bool,
+}
+
+#[derive(Serialize)]
+struct GroupedContextBuckets {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    definition: Option<GroupedContextDefinition>,
+    callers_by_file: BTreeMap<String, Vec<usize>>,
+    callees: Vec<String>,
+    test_coverage: Vec<String>,
+}
+
+#[derive(Serialize)]
+struct GroupedContextDefinition {
+    file: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    signature: Option<String>,
+}
+
+#[derive(Serialize)]
+struct GroupedContextSummary {
+    definition: usize,
+    callers: usize,
+    callees: usize,
+    tests: usize,
+}
+
+impl GroupedContextOutput {
+    fn from_response(response: &ContextResponse, budget: Option<usize>) -> Self {
+        let definition = response.definition.as_ref().and_then(|definition| {
+            let file = match (definition.file.as_deref(), definition.line) {
+                (Some(file), Some(line)) => format!("{file}:{line}"),
+                (Some(file), None) => file.to_string(),
+                _ => return None,
+            };
+            Some(GroupedContextDefinition {
+                file,
+                signature: definition.signature.as_deref().map(normalize_line_snippet),
+            })
+        });
+
+        let mut callers_by_file: BTreeMap<String, Vec<usize>> = BTreeMap::new();
+        for caller in &response.callers {
+            let Some(file) = caller.file.as_deref() else {
+                continue;
+            };
+            let Some(line) = caller.line else { continue };
+            callers_by_file
+                .entry(file.to_string())
+                .or_default()
+                .push(line);
+        }
+        for lines in callers_by_file.values_mut() {
+            lines.sort();
+            lines.dedup();
+        }
+
+        let mut callees: Vec<String> = response
+            .callees
+            .iter()
+            .map(|callee| callee.symbol.clone())
+            .collect();
+        callees.sort();
+        callees.dedup();
+
+        let mut test_coverage: Vec<String> = response
+            .tests
+            .iter()
+            .map(|test| test.path.clone())
+            .collect();
+        test_coverage.sort();
+        test_coverage.dedup();
+
+        let summary = GroupedContextSummary {
+            definition: usize::from(definition.is_some()),
+            callers: callers_by_file.values().map(|lines| lines.len()).sum(),
+            callees: callees.len(),
+            tests: test_coverage.len(),
+        };
+
+        let mut grouped = GroupedContextBuckets {
+            definition,
+            callers_by_file,
+            callees,
+            test_coverage,
+        };
+
+        let mut truncated = false;
+        if let Some(budget_tokens) = budget {
+            truncated = apply_grouped_context_budget(&mut grouped, budget_tokens);
+        }
+
+        Self {
+            symbol: response.symbol.clone(),
+            grouped,
+            summary,
+            truncated,
+        }
+    }
+}
+
+fn apply_grouped_context_budget(grouped: &mut GroupedContextBuckets, budget_tokens: usize) -> bool {
+    if budget_tokens == 0 {
+        grouped.callers_by_file.clear();
+        grouped.callees.clear();
+        grouped.test_coverage.clear();
+        return true;
+    }
+
+    grouped.test_coverage.truncate(20);
+    grouped.callees.truncate(50);
+
+    let mut per_file_limit = 50usize;
+    for _ in 0..6 {
+        let bytes = serde_json::to_vec(grouped).map(|v| v.len()).unwrap_or(0);
+        let tokens = usize::max(1, bytes / 4);
+        if tokens <= budget_tokens {
+            return false;
+        }
+
+        if per_file_limit > 5 {
+            per_file_limit = usize::max(5, per_file_limit / 2);
+            for lines in grouped.callers_by_file.values_mut() {
+                if lines.len() > per_file_limit {
+                    lines.truncate(per_file_limit);
+                }
+            }
+            continue;
+        }
+
+        if grouped.callers_by_file.len() > 10 {
+            grouped.callers_by_file = grouped
+                .callers_by_file
+                .iter()
+                .take(10)
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect();
+            continue;
+        }
+
+        return true;
+    }
+
+    true
 }
 
 impl ConciseContextOutput {
@@ -795,13 +1029,13 @@ fn stream_context(
         }
 
         if selection.include_callers {
-            response.callers = assemble_callers_from_facts(symbol, selection, files);
+            response.callers = assemble_callers_from_facts(root, symbol, selection, files);
         }
         enforce_context_budget(&mut response, selection.max_lines);
         emit_json_line(&serde_json::json!({"type":"callers","data":&response.callers}))?;
 
         if selection.include_callees {
-            response.callees = assemble_callees_from_facts(symbol, selection, files);
+            response.callees = assemble_callees_from_facts(root, symbol, selection, files);
         }
         enforce_context_budget(&mut response, selection.max_lines);
         emit_json_line(&serde_json::json!({"type":"callees","data":&response.callees}))?;
@@ -854,10 +1088,10 @@ fn assemble_context_from_facts(
     let mut response = ContextResponse::empty(symbol.to_string());
     response.definition = assemble_definition_from_facts(root, symbol, selection, files);
     if selection.include_callers {
-        response.callers = assemble_callers_from_facts(symbol, selection, files);
+        response.callers = assemble_callers_from_facts(root, symbol, selection, files);
     }
     if selection.include_callees {
-        response.callees = assemble_callees_from_facts(symbol, selection, files);
+        response.callees = assemble_callees_from_facts(root, symbol, selection, files);
     }
     if selection.include_types {
         response.types = assemble_types_from_facts(symbol, files);
@@ -914,21 +1148,198 @@ fn assemble_definition_from_facts(
     let contents = std::fs::read_to_string(&abs_path).ok()?;
     let lines: Vec<&str> = contents.lines().collect();
     let idx = def.line.saturating_sub(1);
-    let signature = lines.get(idx).map(|s| normalize_line_snippet(s));
-    let docstring = extract_leading_docstring(&lines, idx);
+    let include_signature = selection.include_signatures || selection.include_explain;
+    let signature = if include_signature {
+        def.signature
+            .as_ref()
+            .map(|s| normalize_line_snippet(s))
+            .or_else(|| lines.get(idx).map(|s| normalize_line_snippet(s)))
+    } else {
+        None
+    };
+
+    let docstring = if selection.include_explain {
+        None
+    } else {
+        extract_leading_docstring(&lines, idx)
+    };
     let body = if selection.include_body {
         extract_definition_body(&lines, def.line, def.span, selection.max_lines)
     } else {
         None
     };
 
-    Some(Definition {
+    let mut definition = Definition {
         file: Some(file.file.clone()),
         line: Some(def.line),
+        kind: if selection.include_explain {
+            Some(def.kind.clone())
+        } else {
+            None
+        },
+        visibility: if selection.include_explain {
+            def.visibility.clone()
+        } else {
+            None
+        },
         signature,
         docstring,
+        doc: if selection.include_explain {
+            def.doc
+                .as_ref()
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+        } else {
+            None
+        },
+        fields: Vec::new(),
+        methods: Vec::new(),
+        implements: Vec::new(),
+        complexity: None,
         body,
-    })
+    };
+
+    if selection.include_explain {
+        enrich_definition_explain(&mut definition, symbol, &target, files, def.span);
+    }
+
+    Some(definition)
+}
+
+fn enrich_definition_explain(
+    definition: &mut Definition,
+    symbol: &str,
+    target: &str,
+    files: &[FileFacts],
+    def_span: Option<(usize, usize)>,
+) {
+    let mut fields_by_line: Vec<(usize, String)> = Vec::new();
+    let mut methods_by_line: Vec<(usize, String, Option<(usize, usize)>)> = Vec::new();
+
+    for file in files {
+        for field in &file.facts.fields {
+            if !symbol_matches(&field.owner, symbol, target) {
+                continue;
+            }
+            fields_by_line.push((field.line, format_field_fact(field)));
+        }
+        for method in &file.facts.methods {
+            if !symbol_matches(&method.owner, symbol, target) {
+                continue;
+            }
+            let display = summarize_method_fact(method);
+            methods_by_line.push((method.line, display, method.span));
+        }
+    }
+
+    fields_by_line.sort_by_key(|(line, _)| *line);
+    methods_by_line.sort_by_key(|(line, _, _)| *line);
+
+    definition.fields = fields_by_line.into_iter().map(|(_, s)| s).collect();
+    definition.methods = methods_by_line.iter().map(|(_, s, _)| s.clone()).collect();
+
+    let mut implements = std::collections::BTreeSet::new();
+    for file in files {
+        for rel in &file.facts.relations {
+            if !symbol_matches(&rel.from, symbol, target) {
+                continue;
+            }
+            if rel.kind != "impl_trait" && rel.kind != "implements" {
+                continue;
+            }
+            implements.insert(rel.to.clone());
+        }
+    }
+    definition.implements = implements.into_iter().collect();
+
+    let mut loc = def_span
+        .map(|(s, e)| e.saturating_sub(s).saturating_add(1))
+        .unwrap_or(0);
+    for (_, _, span) in methods_by_line {
+        if let Some((s, e)) = span {
+            loc = loc.saturating_add(e.saturating_sub(s).saturating_add(1));
+        }
+    }
+    definition.complexity = Some(SymbolComplexity {
+        fields: definition.fields.len(),
+        methods: definition.methods.len(),
+        loc,
+    });
+}
+
+fn symbol_matches(candidate: &str, symbol: &str, target: &str) -> bool {
+    candidate == symbol
+        || candidate.ends_with(&format!("::{symbol}"))
+        || normalize_symbol(candidate) == target
+}
+
+fn format_field_fact(field: &swe_grep::analysis::FieldFact) -> String {
+    if let Some(ty) = &field.type_repr {
+        let ty = ty.trim();
+        if !ty.is_empty() {
+            return format!("{}: {}", field.name.trim(), ty);
+        }
+    }
+    field.name.trim().to_string()
+}
+
+fn summarize_method_fact(method: &swe_grep::analysis::MethodFact) -> String {
+    summarize_method_name_and_params(method.name.as_str(), method.signature.as_deref())
+}
+
+fn summarize_method_name_and_params(name: &str, signature: Option<&str>) -> String {
+    let Some(sig) = signature else {
+        return format!("{name}()");
+    };
+    let Some(name_pos) = sig.find(name) else {
+        return format!("{name}()");
+    };
+    let after_name = &sig[name_pos + name.len()..];
+    let Some(open_rel) = after_name.find('(') else {
+        return format!("{name}()");
+    };
+    let after_open = &after_name[open_rel + 1..];
+    let Some(close_rel) = after_open.find(')') else {
+        return format!("{name}()");
+    };
+    let params_raw = &after_open[..close_rel];
+    let params = params_raw
+        .split(',')
+        .map(|p| p.trim())
+        .filter(|p| !p.is_empty())
+        .map(simplify_param_name)
+        .filter(|p| !p.is_empty())
+        .collect::<Vec<_>>();
+    if params.is_empty() {
+        format!("{name}()")
+    } else {
+        format!("{name}({})", params.join(", "))
+    }
+}
+
+fn simplify_param_name(param: &str) -> String {
+    let mut p = param.trim();
+    if p.is_empty() {
+        return String::new();
+    }
+    if p.contains("self") && (p.starts_with('&') || p.starts_with("self") || p.contains(" self")) {
+        return "self".to_string();
+    }
+
+    if let Some((before, _)) = p.split_once(':') {
+        p = before.trim();
+    }
+    if let Some((before, _)) = p.split_once('=') {
+        p = before.trim();
+    }
+    p = p.trim_start_matches("...");
+    p = p.trim_end_matches('?');
+
+    let p = p
+        .trim_start_matches("mut ")
+        .trim_start_matches("ref ")
+        .trim();
+    p.split_whitespace().last().unwrap_or("").trim().to_string()
 }
 
 fn extract_leading_docstring(lines: &[&str], def_line_idx: usize) -> Option<String> {
@@ -991,11 +1402,16 @@ fn extract_definition_body(
 }
 
 fn assemble_callers_from_facts(
+    root: &Path,
     symbol: &str,
     selection: &ContextSelection,
     files: &[FileFacts],
 ) -> Vec<Caller> {
-    let graph = CallGraph::from_facts(files);
+    let graph = if selection.include_signatures {
+        CallGraph::from_facts_enriched(root, files, true, true)
+    } else {
+        CallGraph::from_facts(files)
+    };
     let view = graph.callers_view(
         symbol,
         selection.depth,
@@ -1005,7 +1421,16 @@ fn assemble_callers_from_facts(
         .into_iter()
         .map(|node| Caller {
             symbol: node.symbol,
-            signature: None,
+            signature: if selection.include_signatures {
+                node.signature
+            } else {
+                None
+            },
+            call_context: if selection.include_signatures {
+                node.call_context
+            } else {
+                None
+            },
             file: node.file,
             line: node.line,
         })
@@ -1013,11 +1438,16 @@ fn assemble_callers_from_facts(
 }
 
 fn assemble_callees_from_facts(
+    root: &Path,
     symbol: &str,
     selection: &ContextSelection,
     files: &[FileFacts],
 ) -> Vec<Callee> {
-    let graph = CallGraph::from_facts(files);
+    let graph = if selection.include_signatures {
+        CallGraph::from_facts_enriched(root, files, true, true)
+    } else {
+        CallGraph::from_facts(files)
+    };
     let view = graph.callees_view(
         symbol,
         selection.depth,
@@ -1027,7 +1457,16 @@ fn assemble_callees_from_facts(
         .into_iter()
         .map(|node| Callee {
             symbol: node.symbol,
-            signature: None,
+            signature: if selection.include_signatures {
+                node.signature
+            } else {
+                None
+            },
+            call_context: if selection.include_signatures {
+                node.call_context
+            } else {
+                None
+            },
             file: node.file,
             line: node.line,
         })
@@ -2195,6 +2634,7 @@ mod tests {
             include_strings: false,
             code_only: false,
             ignore_case: false,
+            fuzzy_threshold: 0.7,
             definitions_only: false,
             usages_only: false,
             mode: None,
@@ -2239,6 +2679,8 @@ mod tests {
             agent: true,
             format: OutputFormat::Json,
             concise: false,
+            grouped: false,
+            budget: None,
             json_pretty: false,
             symbols: Some("Alpha,Beta,Alpha,Gamma".to_string()),
             symbols_file: None,

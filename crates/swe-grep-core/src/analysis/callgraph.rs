@@ -1,15 +1,43 @@
 use std::collections::{HashMap, HashSet};
+use std::hash::{Hash, Hasher};
+use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
 use super::facts::FileFacts;
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct CallEdge {
     pub caller: String,
     pub callee: String,
     pub file: String,
     pub line: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub caller_signature: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub callee_signature: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub call_context: Option<String>,
+}
+
+impl PartialEq for CallEdge {
+    fn eq(&self, other: &Self) -> bool {
+        self.caller == other.caller
+            && self.callee == other.callee
+            && self.file == other.file
+            && self.line == other.line
+    }
+}
+
+impl Eq for CallEdge {}
+
+impl Hash for CallEdge {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.caller.hash(state);
+        self.callee.hash(state);
+        self.file.hash(state);
+        self.line.hash(state);
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -29,9 +57,13 @@ pub struct CallGraphIndex {
 pub struct CallTreeNode {
     pub symbol: String,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub signature: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub file: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub line: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub call_context: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub children: Vec<CallTreeNode>,
 }
@@ -47,6 +79,7 @@ pub struct CallGraphView {
 
 impl CallGraph {
     pub fn from_facts(files: &[FileFacts]) -> Self {
+        let signature_index = build_signature_index(None, files);
         let mut edges: Vec<CallEdge> = Vec::new();
         for file in files {
             for call in &file.facts.calls {
@@ -55,6 +88,86 @@ impl CallGraph {
                     callee: call.callee.clone(),
                     file: file.file.clone(),
                     line: call.line,
+                    caller_signature: lookup_signature(&signature_index, &call.caller),
+                    callee_signature: lookup_signature(&signature_index, &call.callee),
+                    call_context: None,
+                });
+            }
+        }
+
+        // Build indexes for both qualified and unqualified lookups
+        let mut outgoing: HashMap<String, Vec<usize>> = HashMap::new();
+        let mut incoming: HashMap<String, Vec<usize>> = HashMap::new();
+        for (idx, edge) in edges.iter().enumerate() {
+            // Index by full qualified name (Type::method)
+            let caller_full = normalize_qualified(&edge.caller);
+            let callee_full = normalize_qualified(&edge.callee);
+            outgoing.entry(caller_full.clone()).or_default().push(idx);
+            incoming.entry(callee_full.clone()).or_default().push(idx);
+
+            // Also index by simple name for unqualified queries
+            let caller_simple = extract_simple_name(&edge.caller);
+            let callee_simple = extract_simple_name(&edge.callee);
+            if caller_simple != caller_full {
+                outgoing.entry(caller_simple).or_default().push(idx);
+            }
+            if callee_simple != callee_full {
+                incoming.entry(callee_simple).or_default().push(idx);
+            }
+        }
+
+        Self {
+            edges,
+            outgoing,
+            incoming,
+        }
+    }
+
+    pub fn from_facts_enriched(
+        root: &Path,
+        files: &[FileFacts],
+        include_signatures: bool,
+        include_call_context: bool,
+    ) -> Self {
+        let file_lines = if include_signatures || include_call_context {
+            load_file_lines(root, files)
+        } else {
+            HashMap::new()
+        };
+
+        let signature_index = if include_signatures {
+            build_signature_index(Some(&file_lines), files)
+        } else {
+            HashMap::new()
+        };
+
+        let mut edges: Vec<CallEdge> = Vec::new();
+        for file in files {
+            let lines = file_lines.get(&file.file);
+            for call in &file.facts.calls {
+                let call_context = if include_call_context {
+                    lines
+                        .and_then(|lines| lines.get(call.line.saturating_sub(1)))
+                        .cloned()
+                } else {
+                    None
+                };
+                edges.push(CallEdge {
+                    caller: call.caller.clone(),
+                    callee: call.callee.clone(),
+                    file: file.file.clone(),
+                    line: call.line,
+                    caller_signature: if include_signatures {
+                        lookup_signature(&signature_index, &call.caller)
+                    } else {
+                        None
+                    },
+                    callee_signature: if include_signatures {
+                        lookup_signature(&signature_index, &call.callee)
+                    } else {
+                        None
+                    },
+                    call_context,
                 });
             }
         }
@@ -197,10 +310,17 @@ impl CallGraph {
                 direction,
             );
 
+            let signature = match direction {
+                Direction::Callers => edge.caller_signature.clone(),
+                Direction::Callees => edge.callee_signature.clone(),
+            };
+
             children.push(CallTreeNode {
                 symbol: next_symbol,
+                signature,
                 file: Some(edge.file.clone()),
                 line: Some(edge.line),
+                call_context: edge.call_context.clone(),
                 children: grand,
             });
         }
@@ -379,4 +499,74 @@ fn remove_index_edge(map: &mut HashMap<String, Vec<CallEdge>>, key: &str, edge: 
     if remove_empty {
         map.remove(key);
     }
+}
+
+fn normalize_line_snippet(value: &str) -> String {
+    value.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+fn load_file_lines(root: &Path, files: &[FileFacts]) -> HashMap<String, Vec<String>> {
+    let mut out: HashMap<String, Vec<String>> = HashMap::new();
+    for file in files {
+        if out.contains_key(&file.file) {
+            continue;
+        }
+        let abs = root.join(&file.file);
+        let Ok(contents) = std::fs::read_to_string(&abs) else {
+            continue;
+        };
+        let lines: Vec<String> = contents.lines().map(normalize_line_snippet).collect();
+        out.insert(file.file.clone(), lines);
+    }
+    out
+}
+
+fn build_signature_index(
+    file_lines: Option<&HashMap<String, Vec<String>>>,
+    files: &[FileFacts],
+) -> HashMap<String, String> {
+    let mut index: HashMap<String, String> = HashMap::new();
+    for file in files {
+        for def in &file.facts.definitions {
+            let mut signature = def.signature.clone();
+            if signature.is_none() {
+                signature = file_lines
+                    .and_then(|file_lines| file_lines.get(&file.file))
+                    .and_then(|lines| lines.get(def.line.saturating_sub(1)))
+                    .cloned();
+            }
+            let Some(signature) = signature else {
+                continue;
+            };
+            let signature = normalize_line_snippet(&signature);
+            insert_signature(&mut index, &def.symbol, &signature);
+        }
+    }
+    index
+}
+
+fn insert_signature(index: &mut HashMap<String, String>, symbol: &str, signature: &str) {
+    let keys = [
+        symbol.to_string(),
+        normalize_qualified(symbol),
+        extract_simple_name(symbol),
+    ];
+
+    for key in keys {
+        let should_replace = match index.get(&key) {
+            None => true,
+            Some(existing) => existing.len() < signature.len(),
+        };
+        if should_replace {
+            index.insert(key, signature.to_string());
+        }
+    }
+}
+
+fn lookup_signature(index: &HashMap<String, String>, symbol: &str) -> Option<String> {
+    index
+        .get(symbol)
+        .cloned()
+        .or_else(|| index.get(&normalize_qualified(symbol)).cloned())
+        .or_else(|| index.get(&extract_simple_name(symbol)).cloned())
 }

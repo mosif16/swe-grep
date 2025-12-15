@@ -71,6 +71,8 @@ fn fallback_extract(file: &str, source: &str) -> FactBundle {
                 kind: kind.to_string(),
                 line: line_no,
                 span: Some((line_no, line_no)),
+                visibility: None,
+                doc: None,
                 signature: Some(trimmed.to_string()),
             });
         }
@@ -83,6 +85,8 @@ fn fallback_extract(file: &str, source: &str) -> FactBundle {
                 kind: "func".to_string(),
                 line: line_no,
                 span: Some((line_no, line_no)),
+                visibility: None,
+                doc: None,
                 signature: Some(signature),
             });
         } else if let Some(caller) = current_fn.as_deref() {
@@ -178,6 +182,8 @@ fn traverse(
                                         name_node.start_position().row as usize + 1,
                                         name_node.end_position().row as usize + 1,
                                     )),
+                                    visibility: None,
+                                    doc: None,
                                     signature: Some(struct_signature(source, &node)),
                                 });
 
@@ -199,6 +205,8 @@ fn traverse(
                                         name_node.start_position().row as usize + 1,
                                         name_node.end_position().row as usize + 1,
                                     )),
+                                    visibility: None,
+                                    doc: None,
                                     signature: Some(interface_signature(source, &node)),
                                 });
 
@@ -208,6 +216,8 @@ fn traverse(
                                         kind: "interface_method".to_string(),
                                         line,
                                         span: Some((line, line)),
+                                        visibility: None,
+                                        doc: None,
                                         signature: Some(sig),
                                     });
                                 }
@@ -295,6 +305,8 @@ fn push_def(
         kind: kind.to_string(),
         line: start,
         span: Some((start, end)),
+        visibility: None,
+        doc: None,
         signature,
     });
 }

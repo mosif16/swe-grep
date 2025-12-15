@@ -182,6 +182,7 @@ impl DesktopApp {
                             include_strings,
                             code_only,
                             ignore_case,
+                            fuzzy_threshold: 0.7,
                             definitions_only: false,
                             usages_only: false,
                             path: Some(repo_root.clone()),

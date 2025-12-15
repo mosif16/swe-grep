@@ -29,13 +29,14 @@ use super::config::{
 use super::formatting::{
     ContextHint, format_snippet, gather_expanded_snippet, rust_context_hints, swift_context_hints,
 };
-use super::fuzzy::{rank_suggestions, tokenize};
+use super::fuzzy::{rank_scored_suggestions, tokenize};
 use super::hits::{BodyPayload, HitOrigin, ProbeKind, SearchCache, SearchHit};
 use super::query::{PatternMode, QueryRewriter};
 use super::state::PersistentState;
 use super::stats::{
-    ConceptExpansionSummary, GitInfo, SearchMetrics, SearchSummary, StageStats, StartupStats,
-    TopHit, aggregate_language_counts, compute_metrics, elapsed_ms, elapsed_std_ms, round_two,
+    ConceptExpansionSummary, FuzzyMatch, GitInfo, SearchMetrics, SearchSummary, StageStats,
+    StartupStats, TopHit, aggregate_language_counts, compute_metrics, elapsed_ms, elapsed_std_ms,
+    round_two,
 };
 use crate::cli::{SearchMode, SymbolKind};
 use crate::language::detect_language_from_path;
@@ -206,7 +207,14 @@ impl SearchEngine {
             crate::telemetry::record_stage_latency("verify", stage_stats.verify_ms);
 
             let empty_candidates: Vec<PathBuf> = Vec::new();
-            let (related_symbols, related_paths, suggested_symbols, mut alt_notes) = self
+            let (
+                related_symbols,
+                related_paths,
+                suggested_symbols,
+                fuzzy_matches,
+                did_you_mean,
+                mut alt_notes,
+            ) = self
                 .suggest_alternatives(&empty_candidates, &verification, &rewrites)
                 .await;
             let mut notes = verification.notes;
@@ -225,6 +233,8 @@ impl SearchEngine {
                 next_actions: verification.next_actions,
                 related_symbols,
                 suggested_symbols,
+                fuzzy_matches,
+                did_you_mean,
                 related_paths,
                 notes,
                 fd_candidates: verification.fd_candidates,
@@ -389,7 +399,14 @@ impl SearchEngine {
         crate::telemetry::record_stage_latency("ast", stage_stats.disambiguate_ms);
         crate::telemetry::record_stage_latency("verify", stage_stats.verify_ms);
 
-        let (related_symbols, related_paths, suggested_symbols, mut alt_notes) = self
+        let (
+            related_symbols,
+            related_paths,
+            suggested_symbols,
+            fuzzy_matches,
+            did_you_mean,
+            mut alt_notes,
+        ) = self
             .suggest_alternatives(&discover_candidates, &verification, &rewrites)
             .await;
         let mut notes = verification.notes;
@@ -408,6 +425,8 @@ impl SearchEngine {
             next_actions: verification.next_actions,
             related_symbols,
             suggested_symbols,
+            fuzzy_matches,
+            did_you_mean,
             related_paths,
             notes,
             fd_candidates: verification.fd_candidates,
@@ -557,6 +576,8 @@ impl SearchEngine {
             next_actions: verification.next_actions,
             related_symbols: Vec::new(),
             suggested_symbols: Vec::new(),
+            fuzzy_matches: Vec::new(),
+            did_you_mean: None,
             related_paths: Vec::new(),
             notes: verification.notes,
             fd_candidates: Vec::new(),
@@ -909,9 +930,23 @@ impl SearchEngine {
         discover_candidates: &[PathBuf],
         verification: &VerificationOutcome,
         rewrites: &[String],
-    ) -> (Vec<String>, Vec<String>, Vec<String>, Vec<String>) {
+    ) -> (
+        Vec<String>,
+        Vec<String>,
+        Vec<String>,
+        Vec<FuzzyMatch>,
+        Option<String>,
+        Vec<String>,
+    ) {
         if !verification.top_hits.is_empty() {
-            return (Vec::new(), Vec::new(), Vec::new(), Vec::new());
+            return (
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                None,
+                Vec::new(),
+            );
         }
 
         let target = if let Some(concept) = &self.config.concept {
@@ -950,13 +985,39 @@ impl SearchEngine {
         let mut seen_paths: HashSet<String> = HashSet::new();
         related_paths.retain(|p| seen_paths.insert(p.clone()));
 
-        let ranked = rank_suggestions(target, candidates, 5);
-        for candidate in &ranked {
+        let scored = rank_scored_suggestions(target, candidates, 8);
+        let scored_filtered: Vec<_> = scored
+            .into_iter()
+            .filter(|s| s.score >= self.config.fuzzy_threshold)
+            .collect();
+
+        let suggested_symbols: Vec<String> = scored_filtered
+            .iter()
+            .map(|s| s.symbol.clone())
+            .take(5)
+            .collect();
+
+        for candidate in suggested_symbols.iter() {
             let lower = candidate.to_ascii_lowercase();
             if lower.contains(&target_lower) || contains_synonym(&lower, &target_lower) {
                 related_symbols.push(candidate.clone());
             }
         }
+
+        let mut fuzzy_matches: Vec<FuzzyMatch> = Vec::new();
+        for suggestion in scored_filtered.into_iter().take(5) {
+            if let Some((path, line)) = self.locate_symbol_occurrence(&suggestion.symbol).await {
+                fuzzy_matches.push(FuzzyMatch {
+                    symbol: suggestion.symbol,
+                    score: suggestion.score,
+                    file: format!("{path}:{line}"),
+                });
+            }
+        }
+
+        let did_you_mean = fuzzy_matches
+            .first()
+            .map(|m| format!("{} (exact match available)", m.symbol));
 
         let mut notes = Vec::new();
         if self.config.concept.is_some() {
@@ -972,7 +1033,14 @@ impl SearchEngine {
             notes.push("no queries generated for provided input".to_string());
         }
 
-        (related_symbols, related_paths, ranked, notes)
+        (
+            related_symbols,
+            related_paths,
+            suggested_symbols,
+            fuzzy_matches,
+            did_you_mean,
+            notes,
+        )
     }
 
     fn fuzzy_prefix(&self, target: &str) -> Option<String> {
@@ -1023,6 +1091,45 @@ impl SearchEngine {
             Err(err) => {
                 tracing::debug!(error = %err, "fuzzy ripgrep probe failed");
                 Vec::new()
+            }
+        }
+    }
+
+    async fn locate_symbol_occurrence(&self, symbol: &str) -> Option<(String, usize)> {
+        for hint in self.state.hints_for_symbol(symbol) {
+            let absolute = self.config.root.join(&hint);
+            if let Ok(contents) = fs::read_to_string(&absolute) {
+                if let Some(line) = first_line_containing(&contents, symbol) {
+                    return Some((hint.to_string_lossy().to_string(), line));
+                }
+            }
+        }
+
+        let queries = vec![escape_regex_literal(symbol)];
+        let scope = self.effective_scope(&[]);
+        match self
+            .rg_tool
+            .search_union(
+                &self.config.root,
+                &queries,
+                scope.as_ref(),
+                self.config.exclude_globs.as_ref(),
+                self.config.extension_filter.as_deref(),
+            )
+            .await
+        {
+            Ok(matches) => matches.first().map(|m| {
+                let absolute = if m.path.is_absolute() {
+                    m.path.clone()
+                } else {
+                    self.config.root.join(&m.path)
+                };
+                let normalized = normalize_path(&self.config.root, &absolute).unwrap_or(absolute);
+                (normalized.to_string_lossy().to_string(), m.line_number)
+            }),
+            Err(err) => {
+                tracing::debug!(error = %err, "fuzzy locate ripgrep probe failed");
+                None
             }
         }
     }
@@ -1884,6 +1991,31 @@ fn collect_candidate_symbols(paths: &[PathBuf]) -> Vec<String> {
         .into_iter()
         .filter(|item| seen.insert(item.to_ascii_lowercase()))
         .collect()
+}
+
+fn escape_regex_literal(value: &str) -> String {
+    let mut escaped = String::with_capacity(value.len());
+    for ch in value.chars() {
+        match ch {
+            '\\' | '.' | '+' | '*' | '?' | '^' | '$' | '(' | ')' | '[' | ']' | '{' | '}' | '|'
+            | '-' => {
+                escaped.push('\\');
+                escaped.push(ch);
+            }
+            _ => escaped.push(ch),
+        }
+    }
+    escaped
+}
+
+fn first_line_containing(contents: &str, needle: &str) -> Option<usize> {
+    if needle.is_empty() {
+        return None;
+    }
+    contents
+        .lines()
+        .enumerate()
+        .find_map(|(idx, line)| line.contains(needle).then_some(idx + 1))
 }
 
 fn contains_synonym(candidate_lower: &str, target_lower: &str) -> bool {

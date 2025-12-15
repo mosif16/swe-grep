@@ -50,6 +50,7 @@ pub(crate) struct SearchConfig {
     pub(crate) search_mode: SearchMode,
     pub(crate) pattern_mode: PatternMode,
     pub(crate) ignore_case: bool,
+    pub(crate) fuzzy_threshold: f32,
     pub(crate) timeout: Duration,
     pub(crate) max_matches: usize,
     #[allow(dead_code)]
@@ -194,6 +195,7 @@ impl SearchConfig {
 
         let concurrency = usize::max(1, args.concurrency);
         let timeout = Duration::from_secs(args.timeout_secs);
+        let fuzzy_threshold = args.fuzzy_threshold.clamp(0.0, 1.0);
         let index_dir = args
             .index_dir
             .clone()
@@ -309,6 +311,7 @@ impl SearchConfig {
             language_tokens,
             search_mode,
             ignore_case: args.ignore_case,
+            fuzzy_threshold,
             timeout,
             max_matches: usize::max(1, args.max_matches),
             concurrency,

@@ -10,6 +10,13 @@ use crate::search::formatting::ContextHint;
 use crate::search::hits::SearchHit;
 use crate::tools::ast_grep::AstGrepMatch;
 
+#[derive(Clone, Serialize)]
+pub struct FuzzyMatch {
+    pub symbol: String,
+    pub score: f32,
+    pub file: String,
+}
+
 #[derive(Default)]
 pub(crate) struct SearchMetrics {
     pub(crate) precision: f32,
@@ -273,6 +280,10 @@ pub struct SearchSummary {
     pub related_symbols: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub suggested_symbols: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub fuzzy_matches: Vec<FuzzyMatch>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub did_you_mean: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub related_paths: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]

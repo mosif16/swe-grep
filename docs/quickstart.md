@@ -43,6 +43,14 @@ RUST_LOG=error cargo run -- search \
   --path fixtures/multi_lang
 ```
 
+Agent-friendly grouped output (definition/impl/usages/tests) for token-sensitive workflows:
+
+```bash
+cargo run -p swe-grep -- search --agent --grouped --budget 2000 \
+  --symbol login_user \
+  --path fixtures/multi_lang
+```
+
 Assemble a context bundle (definition + callers/callees + types/tests) for the same symbol:
 
 ```bash
@@ -55,10 +63,22 @@ Token-efficient output for LLM prompts:
 cargo run -p swe-grep -- context --symbol login_user --path fixtures/multi_lang --concise
 ```
 
+Grouped context output with token budgeting:
+
+```bash
+cargo run -p swe-grep -- context --symbol login_user --path fixtures/multi_lang --grouped --budget 2000
+```
+
 NDJSON streaming (useful for UIs/pipelines):
 
 ```bash
 cargo run -p swe-grep -- context --symbol login_user --path fixtures/multi_lang --stream
+```
+
+Symbol intelligence (enrich the definition with fields/methods/doc/complexity):
+
+```bash
+cargo run -p swe-grep -- context --symbol login_user --path fixtures/multi_lang --explain
 ```
 
 Presets (can be overridden with flags like `--tests` / `--body`):

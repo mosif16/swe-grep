@@ -189,6 +189,7 @@ fn build_search_args(repo_root: &Path, scenario: &Scenario, bench: &BenchArgs) -
         include_strings: false,
         code_only: false,
         ignore_case: false,
+        fuzzy_threshold: 0.7,
         definitions_only: false,
         usages_only: false,
         kind: None,

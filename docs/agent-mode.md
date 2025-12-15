@@ -5,7 +5,7 @@ Agent mode shapes CLI output for programmatic consumption and bundles sensible d
 - Defaults: telemetry off, bodies fetched (first 50 lines by default), compact context, deterministic sorting.
 - Exit codes: `0` success (hits or none), `1` usage/argument error, `2` runtime error.
 - Noise control: data on stdout only; logs on stderr; `--quiet` silences logs entirely (tracing subscriber disabled in agent/quiet mode). Optional tools (`fd`, `ast-grep`) auto-disable after a single “command not found” and stop emitting user-facing warnings; real runtime errors still appear in `warnings`.
-- Convenience: `--json-only` implies `--agent --format json --quiet` for pipeline-safe output; `--concise` drops context/origin/score/body; `--json-pretty` formats JSON; `--trim-body N` overrides the 50-line default; `--full-body` disables body trimming; `--body-limit BYTES` / `--no-truncate` control max body bytes; `--progress` emits `[idx/total] Searching <symbol>...` on stderr.
+- Convenience: `--json-only` implies `--agent --format json --quiet` for pipeline-safe output; `--concise` drops context/origin/score/body; `--grouped` buckets results to reduce redundant context; `--budget N` truncates grouped output to an approximate token budget; `--json-pretty` formats JSON; `--trim-body N` overrides the 50-line default; `--full-body` disables body trimming; `--body-limit BYTES` / `--no-truncate` control max body bytes; `--progress` emits `[idx/total] Searching <symbol>...` on stderr.
 - Strings/paths: `--text` treats `--symbol` as raw literal text (no rewrites/AST); `--string` generates quoted variants for literal string lookups; `--path-glob "src/**/*.tsx"` narrows scope without forcing a language hint.
 
 ## Schema (version 1)
@@ -33,6 +33,14 @@ Agent mode shapes CLI output for programmatic consumption and bundles sensible d
   "summary": {"count": 5, "latency_ms": 12},
   "errors": [],
   "warnings": [],
+  "related_symbols": [],
+  "suggested_symbols": [],
+  "fuzzy_matches": [{"symbol": "AuthService", "score": 0.95, "file": "src/auth.rs:42"}],
+  "did_you_mean": "AuthService (exact match available)",
+  "related_paths": [],
+  "notes": [],
+  "fd_candidates": [],
+  "ast_fallback": false,
   "truncated": false
 }
 ```
@@ -41,6 +49,47 @@ Agent mode shapes CLI output for programmatic consumption and bundles sensible d
 - `errors` carries per-symbol failures; `warnings` surfaces tool degradations.
 - `cli_version` pins the emitting binary version.
 - Bodies default to the first 50 lines in agent/streaming mode; override via `--trim-body` or drop them entirely with `--concise`.
+- When there are **zero hits**, swe-grep populates `fuzzy_matches` + `did_you_mean` to help agents recover from casing/qualification mismatches (e.g. `authservice` → `AuthService`, `::new` → `Foo::new`). Control the threshold with `--fuzzy 0.0..=1.0` (default `0.7`).
+
+## Grouped output (`--grouped`)
+
+Grouped output reduces repeated context by emitting a per-symbol object that buckets hits into: `definition`, `implementations`, `usages_by_file`, and `test_coverage`.
+
+- `--grouped` currently supports `--format json` only.
+- `--budget N` is an approximate token budget (based on JSON size) and truncates usages/impls/tests when exceeded.
+
+```json
+{
+  "version": 1,
+  "cli_version": "0.1.0",
+  "query": {"symbols": ["AuthService"], "path": "/abs/repo"},
+  "results": [
+    {
+      "symbol": "AuthService",
+      "grouped": {
+        "definition": {"file": "src/auth.rs:42", "signature": "pub struct AuthService"},
+        "implementations": [{"file": "src/auth.rs:89", "trait": "Service", "methods": ["handle"]}],
+        "usages_by_file": {"src/main.rs": [{"line": 8, "context": "import"}]},
+        "test_coverage": ["tests/auth_test.rs"]
+      },
+      "summary": {"definition": 1, "impls": 1, "usages": 1, "tests": 1},
+      "truncated": false
+    }
+  ],
+  "summary": {"count": 1, "latency_ms": 12},
+  "errors": [],
+  "warnings": [],
+  "related_symbols": [],
+  "suggested_symbols": [],
+  "related_paths": [],
+  "notes": [],
+  "fd_candidates": [],
+  "concept": null,
+  "concept_expansion": null,
+  "ast_fallback": false,
+  "truncated": false
+}
+```
 
 ## Batch inputs and streaming
 
@@ -58,6 +107,9 @@ printf "Foo\nBar\n" | swe-grep search --agent --stdin-symbols --path .
 swe-grep search --agent --symbols Foo,Bar --stream --path .
 # Add --progress to log batch status to stderr
 swe-grep search --agent --symbols Foo,Bar --stream --progress --path .
+
+# NDJSON streaming (grouped per symbol)
+swe-grep search --agent --symbols Foo,Bar --stream --grouped --budget 2000 --path .
 ```
 
 ## Output formatting and body control

@@ -120,6 +120,7 @@ impl From<HttpSearchRequest> for SearchInput {
             include_strings: req.include_strings,
             code_only: req.code_only,
             ignore_case: req.ignore_case,
+            fuzzy_threshold: None,
             definitions_only: req.definitions_only,
             usages_only: req.usages_only,
             path_glob: req.path_glob,

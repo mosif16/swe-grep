@@ -88,6 +88,7 @@ fn map_request(proto: proto::SearchRequest) -> SearchInput {
         include_strings: Some(proto.include_strings),
         code_only: Some(proto.code_only),
         ignore_case: Some(proto.ignore_case),
+        fuzzy_threshold: None,
         definitions_only: Some(proto.definitions_only),
         usages_only: Some(proto.usages_only),
         path_glob: if proto.path_glob.is_empty() {

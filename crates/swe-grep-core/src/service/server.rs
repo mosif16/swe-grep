@@ -136,6 +136,7 @@ impl SearchExecutor {
             include_strings,
             code_only,
             ignore_case,
+            fuzzy_threshold,
             definitions_only,
             usages_only,
             path_glob,
@@ -204,6 +205,7 @@ impl SearchExecutor {
             }
         });
         let ignore_case = ignore_case.unwrap_or(false);
+        let fuzzy_threshold = fuzzy_threshold.unwrap_or(0.7).clamp(0.0, 1.0);
         let definitions_only = definitions_only.unwrap_or(false);
         let usages_only = usages_only.unwrap_or(false);
         let code_only = code_only.unwrap_or(false);
@@ -258,6 +260,7 @@ impl SearchExecutor {
             include_strings,
             code_only,
             ignore_case,
+            fuzzy_threshold,
             definitions_only,
             usages_only,
             path_glob,
@@ -294,6 +297,7 @@ pub struct SearchInput {
     pub include_strings: Option<bool>,
     pub code_only: Option<bool>,
     pub ignore_case: Option<bool>,
+    pub fuzzy_threshold: Option<f32>,
     pub definitions_only: Option<bool>,
     pub usages_only: Option<bool>,
     pub path_glob: Option<Vec<String>>,

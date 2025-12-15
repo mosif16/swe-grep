@@ -62,6 +62,8 @@ fn fallback_extract(file: &str, source: &str) -> FactBundle {
                 kind: "func".to_string(),
                 line: line_no,
                 span: Some((line_no, line_no)),
+                visibility: None,
+                doc: None,
                 signature: None,
             });
         }
@@ -71,6 +73,8 @@ fn fallback_extract(file: &str, source: &str) -> FactBundle {
                 kind: "struct".to_string(),
                 line: line_no,
                 span: Some((line_no, line_no)),
+                visibility: None,
+                doc: None,
                 signature: None,
             });
         }
@@ -80,6 +84,8 @@ fn fallback_extract(file: &str, source: &str) -> FactBundle {
                 kind: "class".to_string(),
                 line: line_no,
                 span: Some((line_no, line_no)),
+                visibility: None,
+                doc: None,
                 signature: None,
             });
         }
@@ -89,6 +95,8 @@ fn fallback_extract(file: &str, source: &str) -> FactBundle {
                 kind: "protocol".to_string(),
                 line: line_no,
                 span: Some((line_no, line_no)),
+                visibility: None,
+                doc: None,
                 signature: None,
             });
         }
@@ -292,6 +300,8 @@ fn push_def(defs: &mut Vec<DefinitionFact>, symbol: String, kind: &str, name_nod
         kind: kind.to_string(),
         line: start,
         span: Some((start, end)),
+        visibility: None,
+        doc: None,
         signature: None,
     });
 }

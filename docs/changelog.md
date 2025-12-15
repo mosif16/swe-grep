@@ -5,12 +5,13 @@ Latest-first snapshot of the recent work so docs stay in sync with code:
 - `HEAD` — **Context Retrieval: The #1 Agent Search Tool**
   - **New `swe-grep context` command**: One call returns everything an agent needs
     - Definition with signature and docstring
-    - Callers (with their signatures and snippets)
+    - Callers (with their signatures and call_context)
     - Callees (what the symbol calls)
     - Type relationships (implements, extends, contains)
     - Import chain (who imports this, what it imports)
     - Related test files (auto-discovered)
   - **Presets**: `--preset refactor|debug|understand` for common workflows
+  - **Symbol intelligence**: `context --explain` enriches the definition with kind/visibility/docs/fields/methods/complexity
   - **Concise mode**: `--concise` returns minimal `file:line` format for token efficiency
   - **Streaming**: `--stream` outputs NDJSON sections as computed
   - **Import Graph**: Full import/export tracking

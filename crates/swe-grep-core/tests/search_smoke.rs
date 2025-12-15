@@ -26,6 +26,7 @@ fn base_args(symbol: &str, path: PathBuf, language: Option<&str>) -> SearchArgs 
         include_strings: false,
         code_only: false,
         ignore_case: false,
+        fuzzy_threshold: 0.7,
         definitions_only: false,
         usages_only: false,
         path: Some(path),

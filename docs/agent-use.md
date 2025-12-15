@@ -11,16 +11,18 @@ One call returns everything an agent needs:
 ```bash
 swe-grep context --symbol Foo --path .                    # full context
 swe-grep context --symbol Foo --concise --path .          # minimal tokens
+swe-grep context --symbol Foo --grouped --budget 2000 --path . # grouped, budgeted context
 swe-grep context --symbol Foo --preset refactor --path .  # callers + callees + types
+swe-grep context --symbol Foo --explain --path .          # symbol intelligence
 ```
 
 **Output:**
 ```json
 {
   "symbol": "Foo",
-  "definition": { "file": "src/lib.rs", "line": 42, "signature": "pub fn Foo()" },
-  "callers": [{ "symbol": "main", "file": "src/main.rs", "line": 10 }],
-  "callees": [{ "symbol": "bar", "file": "src/util.rs", "line": 5 }],
+  "definition": { "file": "src/lib.rs", "line": 42, "kind": "struct", "signature": "pub struct Foo {", "fields": ["bar: Bar"], "methods": ["new(bar)"] },
+  "callers": [{ "symbol": "main", "signature": "fn main()", "file": "src/main.rs", "line": 10, "call_context": "let foo = Foo::new();" }],
+  "callees": [{ "symbol": "bar", "signature": "fn bar()", "file": "src/util.rs", "line": 5, "call_context": "bar();" }],
   "types": { "implements": [], "extended_by": [], "contains": [] },
   "imports": { "exported_from": [], "imported_by": [] },
   "tests": [],
@@ -41,9 +43,13 @@ swe-grep context --symbol Foo --preset refactor --path .  # callers + callees + 
 | `--types` | Type relationships |
 | `--imports` | Import chain |
 | `--tests` | Related test files |
+| `--signatures` | Include `signature` + `call_context` in callers/callees (default: true; use `--signatures=false` to disable) |
 | `--concise` | Minimal `file:line` format |
+| `--grouped` | Group output by semantic bucket/file |
+| `--budget` | Approx token budget (grouped) |
 | `--stream` | NDJSON per section |
 | `--preset refactor\|debug\|understand` | Common bundles |
+| `--explain` | Enrich `definition` with fields/methods/doc/etc. |
 
 ---
 
@@ -53,6 +59,7 @@ swe-grep context --symbol Foo --preset refactor --path .  # callers + callees + 
 swe-grep search --agent --symbol Foo --path .             # single symbol
 swe-grep search --agent --symbols "A,B,C" --path .        # batch
 swe-grep search --agent --concise --symbol Foo --path .   # minimal
+swe-grep search --agent --grouped --budget 2000 --symbol Foo --path . # grouped, budgeted
 ```
 
 ---

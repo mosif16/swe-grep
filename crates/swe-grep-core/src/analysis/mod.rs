@@ -12,7 +12,10 @@ mod typescript;
 
 pub use cache::{AnalysisCache, CacheStats, GraphCache, GraphCacheStats, RepoGraphs};
 pub use extract::{ExtractFactsOptions, extract_repo_facts};
-pub use facts::{CallFact, DefinitionFact, FactBundle, FileFacts, ReferenceFact, RelationFact};
+pub use facts::{
+    CallFact, DefinitionFact, FactBundle, FieldFact, FileFacts, MethodFact, ReferenceFact,
+    RelationFact,
+};
 pub use import_graph::{ImportEdge, ImportGraph};
 pub use imports::{ExportFact, ExportKind, ImportFact, ImportKind};
 mod callgraph;

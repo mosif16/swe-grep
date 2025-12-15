@@ -61,7 +61,8 @@ impl AnalysisCache {
             Ok(bytes) => bytes,
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
             Err(err) => {
-                return Err(err).with_context(|| format!("failed to read {}", cache_path.display()));
+                return Err(err)
+                    .with_context(|| format!("failed to read {}", cache_path.display()));
             }
         };
 
@@ -403,14 +404,53 @@ impl GraphCache {
             }
         };
 
+        let normalized_lines: Vec<String> = source
+            .lines()
+            .map(|line| line.split_whitespace().collect::<Vec<_>>().join(" "))
+            .collect();
+        let mut signature_index: HashMap<String, String> = HashMap::new();
+        for def in &facts.definitions {
+            let sig = def
+                .signature
+                .as_deref()
+                .map(|s| s.to_string())
+                .or_else(|| normalized_lines.get(def.line.saturating_sub(1)).cloned());
+            let Some(sig) = sig else { continue };
+            let key = super::callgraph::normalize_symbol(&def.symbol);
+            signature_index
+                .entry(def.symbol.clone())
+                .or_insert_with(|| sig.clone());
+            signature_index.entry(key).or_insert_with(|| sig.clone());
+            if let Some(simple) = def.symbol.rsplit("::").next() {
+                signature_index
+                    .entry(simple.to_string())
+                    .or_insert_with(|| sig.clone());
+            }
+        }
+
         let call_edges: Vec<CallEdge> = facts
             .calls
             .into_iter()
-            .map(|call| CallEdge {
-                caller: call.caller,
-                callee: call.callee,
-                file: candidate.rel_path.clone(),
-                line: call.line,
+            .map(|call| {
+                let caller = call.caller;
+                let callee = call.callee;
+                CallEdge {
+                    caller_signature: signature_index.get(&caller).cloned().or_else(|| {
+                        signature_index
+                            .get(&super::callgraph::normalize_symbol(&caller))
+                            .cloned()
+                    }),
+                    callee_signature: signature_index.get(&callee).cloned().or_else(|| {
+                        signature_index
+                            .get(&super::callgraph::normalize_symbol(&callee))
+                            .cloned()
+                    }),
+                    call_context: normalized_lines.get(call.line.saturating_sub(1)).cloned(),
+                    caller,
+                    callee,
+                    file: candidate.rel_path.clone(),
+                    line: call.line,
+                }
             })
             .collect();
         let type_edges: Vec<TypeRelationEdge> = facts
