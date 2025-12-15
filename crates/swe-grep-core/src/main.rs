@@ -102,7 +102,19 @@ async fn run(cli: Cli) -> Result<(), AppError> {
     if cli.clear_cache {
         clear_cache_for_command(&cli)?;
     }
-    match cli.command {
+
+    // Simple mode: `swe-grep <symbol> [language]`
+    if cli.command.is_none() {
+        if let Some(symbol) = cli.symbol {
+            return handle_simple_search(symbol, cli.lang_or_path, disable_telemetry).await;
+        }
+        // No symbol provided, show help
+        return Err(AppError::Usage(
+            "Usage: swe-grep <symbol> [language]\n\nExamples:\n  swe-grep AuthService\n  swe-grep AuthService rust\n  swe-grep AuthService src/\n\nOr use subcommands: search, context, refs, usages".to_string()
+        ));
+    }
+
+    match cli.command.unwrap() {
         Commands::Search(cmd) => handle_search(cmd, disable_telemetry).await,
         Commands::Usages(cmd) => handle_usages(cmd, disable_telemetry).await,
         Commands::Refs(cmd) => handle_refs(cmd, disable_telemetry).await,
@@ -124,6 +136,65 @@ async fn run(cli: Cli) -> Result<(), AppError> {
             Ok(())
         }
     }
+}
+
+/// Simple mode: `swe-grep <symbol> [language]`
+/// Output: file:line | code context
+async fn handle_simple_search(
+    symbol: String,
+    lang_or_path: Option<String>,
+    _disable_telemetry: bool,
+) -> Result<(), AppError> {
+    use swe_grep::cli::SearchArgs;
+
+    // Simple mode is always quiet - no telemetry, no logs
+
+    // Parse lang_or_path: could be a language (rust, swift, ts) or a path (src/)
+    let (language, path) = match &lang_or_path {
+        Some(arg) => {
+            // Check if it's a known language
+            let known_langs = ["rust", "rs", "swift", "typescript", "ts", "tsx", "javascript", "js", "go", "python", "py"];
+            if known_langs.contains(&arg.to_lowercase().as_str()) {
+                (Some(arg.clone()), PathBuf::from("."))
+            } else {
+                // Treat as path
+                (None, PathBuf::from(arg))
+            }
+        }
+        None => (None, PathBuf::from(".")),
+    };
+
+    let args = SearchArgs {
+        symbol: symbol.clone(),
+        path: Some(path.clone()),
+        language,
+        max_matches: 50,
+        top_hits: 20,
+        context_before: 0,
+        context_after: 0,
+        body: false,
+        timeout_secs: 10,
+        ..Default::default()
+    };
+
+    let summary = search::execute(args).await?;
+
+    // Output: file:line | snippet
+    if summary.top_hits.is_empty() {
+        println!("No results for '{}'", symbol);
+        return Ok(());
+    }
+
+    for hit in &summary.top_hits {
+        // Strip root prefix for cleaner output
+        let file_path = Path::new(&hit.path);
+        let display_path = file_path.strip_prefix(&path).unwrap_or(file_path);
+        let snippet = hit.snippet.as_deref().unwrap_or("");
+        let trimmed = snippet.trim();
+        println!("{}:{} | {}", display_path.display(), hit.line, trimmed);
+    }
+
+    Ok(())
 }
 
 async fn handle_feedback(cmd: FeedbackCommand) -> Result<(), AppError> {
@@ -2532,10 +2603,10 @@ fn render_removal_plan(plan: &RemovalPlan, applied: bool) -> String {
 
 fn clear_cache_for_command(cli: &Cli) -> Result<(), AppError> {
     let root = match &cli.command {
-        Commands::Search(cmd) => resolve_root(&cmd.search)?,
-        Commands::Usages(cmd) => resolve_root(&cmd.search)?,
-        Commands::Refs(cmd) => resolve_root(&cmd.search)?,
-        Commands::Context(cmd) => {
+        Some(Commands::Search(cmd)) => resolve_root(&cmd.search)?,
+        Some(Commands::Usages(cmd)) => resolve_root(&cmd.search)?,
+        Some(Commands::Refs(cmd)) => resolve_root(&cmd.search)?,
+        Some(Commands::Context(cmd)) => {
             let base = if let Some(path) = &cmd.path {
                 path.clone()
             } else {
@@ -2543,23 +2614,27 @@ fn clear_cache_for_command(cli: &Cli) -> Result<(), AppError> {
             };
             base.canonicalize().unwrap_or(base)
         }
-        Commands::Remove(cmd) => resolve_root(&cmd.search)?,
-        Commands::Feedback(_) => {
+        Some(Commands::Remove(cmd)) => resolve_root(&cmd.search)?,
+        Some(Commands::Feedback(_)) => {
             std::env::current_dir().context("failed to resolve current directory")?
         }
-        Commands::Serve(args) => {
+        Some(Commands::Serve(args)) => {
             if let Some(path) = &args.path {
                 path.clone()
             } else {
                 std::env::current_dir().context("failed to resolve current directory")?
             }
         }
-        Commands::Bench(args) => {
+        Some(Commands::Bench(args)) => {
             if let Some(path) = &args.cache_dir {
                 path.clone()
             } else {
                 std::env::current_dir().context("failed to resolve current directory")?
             }
+        }
+        None => {
+            // Simple mode - use current directory
+            std::env::current_dir().context("failed to resolve current directory")?
         }
     };
     clear_cache_dirs(&root)?;

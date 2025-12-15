@@ -2,7 +2,21 @@
 
 Latest-first snapshot of the recent work so docs stay in sync with code:
 
-- `HEAD` — **Context Retrieval: The #1 Agent Search Tool**
+- `HEAD` — **Simple Mode + Agent Search Supremacy**
+  - **Simple mode**: `swe-grep <symbol> [language|path]` - instant search with `file:line | code` output
+  - No subcommand needed: `swe-grep AuthService rust` just works
+
+- `prev` — **Agent Search Supremacy: Symbol Intelligence + Semantic Grouping**
+  - **Symbol Intelligence (`--explain`)**: Enriches definitions with kind, visibility, fields, methods, doc comments, and complexity metrics
+  - **Signature-rich references**: Callers/callees now include full signatures and call context lines
+  - **Semantic grouping (`--grouped`)**: Groups results into definition → implementations → usages_by_file → test_coverage
+  - **Token budget (`--budget N`)**: Intelligently truncates grouped output to approximate token budget
+  - **Fuzzy resolution (`--fuzzy N`)**: Auto-suggests symbols when exact match fails (e.g., `authservice` → `AuthService`)
+  - **Did-you-mean**: Returns `fuzzy_matches` array with scores + `did_you_mean` string for agent recovery
+  - **Usage context classification**: Usages labeled as `import`, `type_reference`, `method_call`, `construction`, etc.
+  - **Bug fixes**: Fixed slice bounds panic in grouped output method extraction
+
+- `ea01d29` — **Context Retrieval: The #1 Agent Search Tool**
   - **New `swe-grep context` command**: One call returns everything an agent needs
     - Definition with signature and docstring
     - Callers (with their signatures and call_context)

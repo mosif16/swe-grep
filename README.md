@@ -2,11 +2,33 @@
 
 **Instant code understanding in a single call.** Supports Rust, Swift, TypeScript, JavaScript, Go, and Python.
 
+## Quick Start
+
 ```bash
-# One call = complete understanding
+# Simple mode - just symbol and optional language/path
+swe-grep AuthService                    # search current dir
+swe-grep AuthService rust               # with language hint
+swe-grep AuthService src/               # in specific path
+
+# Output: file:line | code
+# src/auth.rs:42 | pub struct AuthService {
+# src/api.rs:89 | let auth = AuthService::new(config);
+```
+
+## Advanced Commands
+
+```bash
+# Complete context in one call
 swe-grep context --symbol AuthService --path .
 
-# Returns: definition + callers + callees + types + imports + tests
+# Symbol intelligence: fields, methods, complexity
+swe-grep context --symbol AuthService --explain --path .
+
+# Semantic grouping with token budget
+swe-grep search --agent --grouped --budget 2000 --symbol Foo --path .
+
+# Fuzzy typo recovery
+swe-grep search --agent --fuzzy 0.5 --symbol authservice --path .
 ```
 
 ## Workspace Layout

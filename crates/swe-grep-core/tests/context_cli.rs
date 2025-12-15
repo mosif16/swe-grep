@@ -17,7 +17,7 @@ fn parses_context_command_defaults() {
     .expect("expected context command to parse");
 
     match cli.command {
-        Commands::Context(cmd) => {
+        Some(Commands::Context(cmd)) => {
             assert_eq!(cmd.symbol, "AuthService");
             assert_eq!(cmd.depth, None);
             assert_eq!(cmd.max_lines, None);
@@ -46,7 +46,7 @@ fn parses_context_command_overrides() {
     .expect("expected context command to parse");
 
     match cli.command {
-        Commands::Context(cmd) => {
+        Some(Commands::Context(cmd)) => {
             assert_eq!(cmd.symbol, "Foo");
             assert_eq!(cmd.depth, Some(3));
             assert_eq!(cmd.max_lines, Some(500));

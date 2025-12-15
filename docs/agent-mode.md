@@ -5,7 +5,7 @@ Agent mode shapes CLI output for programmatic consumption and bundles sensible d
 - Defaults: telemetry off, bodies fetched (first 50 lines by default), compact context, deterministic sorting.
 - Exit codes: `0` success (hits or none), `1` usage/argument error, `2` runtime error.
 - Noise control: data on stdout only; logs on stderr; `--quiet` silences logs entirely (tracing subscriber disabled in agent/quiet mode). Optional tools (`fd`, `ast-grep`) auto-disable after a single “command not found” and stop emitting user-facing warnings; real runtime errors still appear in `warnings`.
-- Convenience: `--json-only` implies `--agent --format json --quiet` for pipeline-safe output; `--concise` drops context/origin/score/body; `--grouped` buckets results to reduce redundant context; `--budget N` truncates grouped output to an approximate token budget; `--json-pretty` formats JSON; `--trim-body N` overrides the 50-line default; `--full-body` disables body trimming; `--body-limit BYTES` / `--no-truncate` control max body bytes; `--progress` emits `[idx/total] Searching <symbol>...` on stderr.
+- Convenience: `--json-only` implies `--agent --format json --quiet` for pipeline-safe output; `--concise` drops context/origin/score/body; `--grouped` buckets results to reduce redundant context; `--budget N` truncates grouped output to an approximate token budget; `--fuzzy N` (0.0-1.0) enables fuzzy matching with did-you-mean suggestions; `--explain` enriches context definitions with fields/methods/complexity; `--json-pretty` formats JSON; `--trim-body N` overrides the 50-line default; `--full-body` disables body trimming; `--body-limit BYTES` / `--no-truncate` control max body bytes; `--progress` emits `[idx/total] Searching <symbol>...` on stderr.
 - Strings/paths: `--text` treats `--symbol` as raw literal text (no rewrites/AST); `--string` generates quoted variants for literal string lookups; `--path-glob "src/**/*.tsx"` narrows scope without forcing a language hint.
 
 ## Schema (version 1)
@@ -50,6 +50,44 @@ Agent mode shapes CLI output for programmatic consumption and bundles sensible d
 - `cli_version` pins the emitting binary version.
 - Bodies default to the first 50 lines in agent/streaming mode; override via `--trim-body` or drop them entirely with `--concise`.
 - When there are **zero hits**, swe-grep populates `fuzzy_matches` + `did_you_mean` to help agents recover from casing/qualification mismatches (e.g. `authservice` → `AuthService`, `::new` → `Foo::new`). Control the threshold with `--fuzzy 0.0..=1.0` (default `0.7`).
+
+## Context output (`swe-grep context --explain`)
+
+The `context` command with `--explain` returns symbol intelligence:
+
+```json
+{
+  "symbol": "SearchEngine",
+  "definition": {
+    "file": "src/search/engine.rs",
+    "line": 65,
+    "kind": "struct",
+    "visibility": "pub(crate)",
+    "signature": "pub(crate) struct SearchEngine {",
+    "fields": ["config: SearchConfig", "rg_tool: RipgrepTool"],
+    "methods": ["new(config)", "run_cycle(self)", "verify(self, hits)"],
+    "complexity": { "fields": 19, "methods": 37, "loc": 1772 }
+  },
+  "callers": [
+    {
+      "symbol": "execute",
+      "signature": "pub async fn execute(&self, request: SearchInput) -> Result<SearchSummary>",
+      "call_context": "engine.run_cycle().await",
+      "file": "src/search/mod.rs",
+      "line": 32
+    }
+  ],
+  "callees": [...],
+  "summary": { "callers": 10, "callees": 5, "tests": 2 }
+}
+```
+
+Key fields in `--explain` mode:
+- `kind`: `struct`, `fn`, `class`, `trait`, `enum`, `interface`, `type`
+- `visibility`: `pub`, `pub(crate)`, `private`, `internal`, `protected`
+- `fields`: Array of `"name: Type"` strings for structs/classes
+- `methods`: Array of `"name(params)"` signatures
+- `complexity`: `{ fields, methods, loc }` counts
 
 ## Grouped output (`--grouped`)
 

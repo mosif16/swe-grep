@@ -2,31 +2,34 @@
 
 Use `swe-grep` for all code searches. Supports **Rust, Swift, TypeScript, TSX, JavaScript, Go, and Python**.
 
-## The Killer Feature: `swe-grep context`
+## Simple Mode (Recommended)
+
+```bash
+swe-grep <symbol> [language|path]
+```
+
+**Examples:**
+```bash
+swe-grep AuthService                    # search current dir
+swe-grep AuthService rust               # with language hint
+swe-grep AuthService src/               # in specific path
+```
+
+**Output:** `file:line | code`
+```
+src/auth.rs:42 | pub struct AuthService {
+src/api.rs:89 | let auth = AuthService::new(config);
+```
+
+## Advanced: `swe-grep context`
 
 **One call = complete understanding.** Returns definition, callers, callees, types, imports, and tests.
 
 ```bash
-# Full context bundle (definition + relationships + tests)
-swe-grep context --symbol AuthService --path .
-
-# With callers/callees explicitly enabled
-swe-grep context --symbol run_cycle --callers --callees --path .
-
-# Minimal output for token efficiency
-swe-grep context --symbol Foo --concise --path .
-# → {"symbol":"Foo","def":"...","callers":["file:line",...],"callees":[...],"tests":[]}
-
-# Streaming NDJSON (one section per line)
-swe-grep context --symbol Bar --stream --path .
-
-# Presets for common workflows
-swe-grep context --symbol Foo --preset refactor --path .   # callers + callees + types
-swe-grep context --symbol Foo --preset debug --path .      # callers + body + tests
-swe-grep context --symbol Foo --preset understand --path . # everything
-
-# Budget control
-swe-grep context --symbol Foo --max-lines 300 --path .
+swe-grep context --symbol AuthService --path .              # full context
+swe-grep context --symbol Foo --explain --path .            # + fields/methods/complexity
+swe-grep context --symbol Foo --concise --path .            # minimal tokens
+swe-grep context --symbol Foo --preset refactor --path .    # callers + callees + types
 ```
 
 ## Quick Start (Search Mode)
@@ -89,6 +92,10 @@ swe-grep refs --imports --import-depth 3 --symbol src/api.rs --path .  # transit
 | `--preset X` | Use preset: refactor/debug/understand (context) |
 | `--explain` | Enrich `context.definition` with symbol intelligence |
 | `--tests` | Include related test files (context) |
+| `--grouped` | Semantic grouping: definition → impls → usages → tests |
+| `--budget N` | Approximate token budget for grouped output |
+| `--fuzzy N` | Fuzzy threshold (0.0-1.0) for typo recovery |
+| `--signatures` | Include full signatures in callers/callees (default: true) |
 
 ## Output Schema (v1)
 
@@ -129,10 +136,10 @@ swe-grep refs --imports --import-depth 3 --symbol src/api.rs --path .  # transit
     "complexity": { "fields": 2, "methods": 3, "loc": 120 }
   },
   "callers": [
-    { "symbol": "handle_login", "file": "src/api.rs", "line": 89 }
+    { "symbol": "handle_login", "signature": "pub async fn handle_login(req: Request) -> Result<Response>", "call_context": "let auth = AuthService::new(config);", "file": "src/api.rs", "line": 89 }
   ],
   "callees": [
-    { "symbol": "hash_password", "file": "src/crypto.rs", "line": 12 }
+    { "symbol": "hash_password", "signature": "fn hash_password(pwd: &str) -> String", "call_context": "hash_password(&user.password)", "file": "src/crypto.rs", "line": 12 }
   ],
   "types": {
     "implements": ["Service", "Clone"],
@@ -152,6 +159,37 @@ swe-grep refs --imports --import-depth 3 --symbol src/api.rs --path .  # transit
 ### Concise Context Output
 ```json
 {"symbol":"Foo","def":"pub fn Foo()","callers":["src/main.rs:42"],"callees":["bar","baz"],"tests":["test_foo.rs"]}
+```
+
+### Grouped Search Output (`--grouped`)
+```json
+{
+  "version": 1,
+  "results": [{
+    "symbol": "AuthService",
+    "grouped": {
+      "definition": { "file": "src/auth.rs:42", "signature": "pub struct AuthService" },
+      "implementations": [{ "file": "src/auth.rs:89", "trait": "Service" }],
+      "usages_by_file": {
+        "src/main.rs": [{ "line": 8, "context": "import" }, { "line": 45, "context": "method_call" }]
+      },
+      "test_coverage": ["tests/auth_test.rs"]
+    },
+    "summary": { "definition": 1, "impls": 1, "usages": 2, "tests": 1 }
+  }]
+}
+```
+
+### Fuzzy Match Output (zero hits)
+```json
+{
+  "hits": [],
+  "fuzzy_matches": [
+    { "symbol": "AuthService", "score": 0.95, "file": "src/auth.rs:42" },
+    { "symbol": "AuthServiceMock", "score": 0.82, "file": "tests/mock.rs:10" }
+  ],
+  "did_you_mean": "AuthService (exact match available)"
+}
 ```
 
 ## Language Support

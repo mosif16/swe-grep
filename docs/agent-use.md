@@ -2,6 +2,27 @@
 
 Use `swe-grep` for all code search. Supports **Rust, Swift, TypeScript, JavaScript, Go, Python**.
 
+## Simple Mode (Fastest)
+
+```bash
+swe-grep <symbol> [language|path]
+```
+
+**Examples:**
+```bash
+swe-grep AuthService                    # search current dir
+swe-grep AuthService rust               # with language hint
+swe-grep AuthService src/               # in specific path
+```
+
+**Output:** `file:line | code`
+```
+src/auth.rs:42 | pub struct AuthService {
+src/api.rs:89 | let auth = AuthService::new(config);
+```
+
+---
+
 ## Commands
 
 ### `context` — Complete Understanding (Recommended)
@@ -45,8 +66,9 @@ swe-grep context --symbol Foo --explain --path .          # symbol intelligence
 | `--tests` | Related test files |
 | `--signatures` | Include `signature` + `call_context` in callers/callees (default: true; use `--signatures=false` to disable) |
 | `--concise` | Minimal `file:line` format |
-| `--grouped` | Group output by semantic bucket/file |
-| `--budget` | Approx token budget (grouped) |
+| `--grouped` | Semantic grouping: definition → impls → usages → tests |
+| `--budget N` | Approximate token budget for grouped output |
+| `--fuzzy N` | Fuzzy threshold (0.0-1.0) for typo recovery |
 | `--stream` | NDJSON per section |
 | `--preset refactor\|debug\|understand` | Common bundles |
 | `--explain` | Enrich `definition` with fields/methods/doc/etc. |
@@ -60,6 +82,16 @@ swe-grep search --agent --symbol Foo --path .             # single symbol
 swe-grep search --agent --symbols "A,B,C" --path .        # batch
 swe-grep search --agent --concise --symbol Foo --path .   # minimal
 swe-grep search --agent --grouped --budget 2000 --symbol Foo --path . # grouped, budgeted
+swe-grep search --agent --fuzzy 0.5 --symbol authservice --path .    # typo recovery
+```
+
+**Fuzzy output (zero exact hits):**
+```json
+{
+  "hits": [],
+  "fuzzy_matches": [{"symbol": "AuthService", "score": 0.95, "file": "src/auth.rs:42"}],
+  "did_you_mean": "AuthService (exact match available)"
+}
 ```
 
 ---

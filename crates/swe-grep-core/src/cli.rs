@@ -17,7 +17,16 @@ pub struct Cli {
     pub clear_cache: bool,
 
     #[command(subcommand)]
-    pub command: Commands,
+    pub command: Option<Commands>,
+
+    // --- Simple mode: `swe-grep <symbol> [language]` ---
+    /// Symbol to search for (simple mode).
+    #[arg(value_name = "SYMBOL")]
+    pub symbol: Option<String>,
+
+    /// Language hint or path (simple mode). Examples: rust, swift, ts, src/
+    #[arg(value_name = "LANG_OR_PATH")]
+    pub lang_or_path: Option<String>,
 }
 
 #[derive(Subcommand, Debug)]
@@ -168,7 +177,7 @@ pub enum SearchMode {
 }
 
 /// Shared tool toggles for search execution.
-#[derive(clap::Args, Debug, Clone)]
+#[derive(clap::Args, Debug, Clone, Default)]
 pub struct ToolArgs {
     /// Enable Tantivy-backed micro-indexing for the current repository.
     #[arg(long, default_value_t = false)]
@@ -188,7 +197,7 @@ pub struct ToolArgs {
 }
 
 /// Arguments for the `search` subcommand.
-#[derive(clap::Args, Debug, Clone)]
+#[derive(clap::Args, Debug, Clone, Default)]
 pub struct SearchArgs {
     /// Symbol or identifier to search for.
     #[arg(long, default_value_t = String::new())]
@@ -687,7 +696,7 @@ mod tests {
         .expect("expected context args to parse");
 
         match cli.command {
-            Commands::Context(cmd) => {
+            Some(Commands::Context(cmd)) => {
                 assert_eq!(cmd.symbol, "Foo");
                 assert!(matches!(cmd.preset, Some(ContextPreset::Refactor)));
                 assert_eq!(cmd.path, Some(PathBuf::from(".")));
