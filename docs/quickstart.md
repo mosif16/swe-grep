@@ -171,7 +171,27 @@ and run the same commands as above:
 Configuration flags match the CLI options listed earlier; no additional config
 files are required.
 
-## 5. Next steps
+## 5. Language support
+
+swe-grep supports analysis for 6 languages with full call graph, type graph, and import graph:
+
+| Language | File Extensions |
+|----------|-----------------|
+| Rust | `.rs` |
+| Swift | `.swift` |
+| TypeScript | `.ts`, `.tsx` |
+| JavaScript | `.js`, `.jsx` |
+| Go | `.go` |
+| Python | `.py` |
+
+Cross-language call graph example (finds callers across all languages):
+
+```bash
+cargo run -p swe-grep -- context --symbol helper --callers --path fixtures/multi_lang
+# Returns callers from both Python (Job::run) and Go (File::Use)
+```
+
+## 6. Next steps
 
 - Integrate the HTTP service with upstream agents (see `docs/integration.md`)
 - Enable Prometheus scraping by pointing at `/metrics`

@@ -1,4 +1,13 @@
-# SWE-Grep Workspace Guide
+# SWE-Grep: The #1 Agent Search Tool
+
+**Instant code understanding in a single call.** Supports Rust, Swift, TypeScript, JavaScript, Go, and Python.
+
+```bash
+# One call = complete understanding
+swe-grep context --symbol AuthService --path .
+
+# Returns: definition + callers + callees + types + imports + tests
+```
 
 ## Workspace Layout
 

@@ -2,6 +2,29 @@
 
 Latest-first snapshot of the recent work so docs stay in sync with code:
 
+- `HEAD` — **Context Retrieval: The #1 Agent Search Tool**
+  - **New `swe-grep context` command**: One call returns everything an agent needs
+    - Definition with signature and docstring
+    - Callers (with their signatures and snippets)
+    - Callees (what the symbol calls)
+    - Type relationships (implements, extends, contains)
+    - Import chain (who imports this, what it imports)
+    - Related test files (auto-discovered)
+  - **Presets**: `--preset refactor|debug|understand` for common workflows
+  - **Concise mode**: `--concise` returns minimal `file:line` format for token efficiency
+  - **Streaming**: `--stream` outputs NDJSON sections as computed
+  - **Import Graph**: Full import/export tracking
+    - `refs --imports` shows what a file/symbol imports
+    - `refs --importers` shows what imports a file/symbol
+    - `refs --import-depth N` for transitive traversal
+    - Cache with hit rate tracking
+  - **Language Expansion**:
+    - Go: functions, methods, structs, interfaces, imports, calls, implicit implements
+    - Python: def, async def, classes, decorators, imports, calls, Protocol support
+  - **Cross-language call graph**: Finds callers across Rust/Swift/TS/Go/Python
+  - **Type graph expansion**: Tracks inheritance across all 5 languages
+  - **New test suites**: imports.rs, context_cli.rs, language fact extraction
+
 - `e7b30ff` — **Call Graph & Type Graph Analysis**
   - Added CallGraph with qualified name preservation (`Foo::new` matches only `Foo::new`, not all `new()`)
   - Dual indexing: supports both qualified (`Type::method`) and simple (`method`) lookups

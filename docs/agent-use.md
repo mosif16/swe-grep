@@ -1,180 +1,101 @@
 # Agent Integration Guide
 
-This document shows agent developers how to call `swe-grep`, interpret the
-response, and adjust runtime knobs for latency-sensitive workflows.
+Use `swe-grep` for all code search. Supports **Rust, Swift, TypeScript, JavaScript, Go, Python**.
 
-**IMPORTANT**: Agents MUST use `swe-grep` for all code search operations in supported languages. Only fall back to alternative search methods (grep, ripgrep, etc.) when searching for content in languages or file types not supported by `swe-grep`.
+## Commands
 
-## 1. Running the binary
+### `context` — Complete Understanding (Recommended)
 
-```bash
-swe-grep search --symbol <identifier> --path <repo-root>
-```
-
-- `--symbol` can be any identifier. Literal symbols (letters, digits, `_`) run
-  through a fast path (~10 ms warm on fixtures) but still produce full context.
-- Non-literal or mixed-case symbols trigger the full workflow (fd → rg →
-  ast-grep). Expect ~25 ms warm in debug builds.
-
-### Feature toggles
-
-- `--disable-fd` – skip fd discovery; useful if `fd` is missing or for literal queries.
-- `--disable-ast-grep` – skip structural validation when unneeded.
-- `--enable-rga` – enable ripgrep-all fallback (requires `rga` on PATH).
-- `--enable-index` – use Tantivy indices (build with `--features indexing`).
-- `--context-before/--context-after` – request additional lines for each hit.
-- `--body` – stream the full UTF-8 file for the surfaced hits (512 KiB guardrail). Rust and Swift hits now return the full body even without this flag.
-- `--cache-dir` – persist symbol and directory hints to this directory. The folder is created lazily when state is flushed; if creation fails (e.g., unwritable path) persistence is disabled quietly for the run.
-
-### Context bundles (`swe-grep context`)
-
-Use `context` when the agent needs a single “understanding” payload (definition + callers/callees + types + tests) instead of raw hit lists:
+One call returns everything an agent needs:
 
 ```bash
-swe-grep context --symbol <identifier> --path <repo-root>
+swe-grep context --symbol Foo --path .                    # full context
+swe-grep context --symbol Foo --concise --path .          # minimal tokens
+swe-grep context --symbol Foo --preset refactor --path .  # callers + callees + types
 ```
 
-Key knobs:
-
-- `--preset refactor|debug|understand` – common bundles for refactoring/debugging/understanding.
-- `--concise` – minimal JSON object (`symbol/def/callers/callees/tests`) optimized for tokens.
-- `--stream` – NDJSON section streaming (`definition`, `callers`, `callees`, `types`, `imports`, `tests`, `summary`).
-- `--tests` / `--body` – include related tests and/or the definition body (best-effort).
-
-### Analysis coverage
-
-`context`/`refs`/`usages` are best-effort and degrade gracefully when analysis is unavailable, but the built-in fact extractors currently support:
-
-- Rust, Swift, TypeScript/TSX
-- Go (functions/methods, structs/interfaces, imports, calls; implicit interface `implements`)
-- Python (def/async def, classes+bases, imports, decorators, calls; Protocol-style `implements_protocol`)
-
-## 2. Output contract
-
-The CLI, HTTP, gRPC, and log outputs share the same JSON structure. A typical
-response now includes enriched hit metadata:
-
+**Output:**
 ```json
 {
-  "cycle": 1,
-  "symbol": "login_user",
-  "queries": ["login_user", "login_user User", "..."],
-  "top_hits": [
-    {
-      "path": "src/lib.rs",
-      "line": 18,
-      "score": 1.2,
-      "origin": "rg-scoped",
-      "origin_label": "rg-scoped [rust]",
-      "snippet": "fn login_user_allows_admin() {",
-      "raw_snippet": "{\"type\":\"match\",...}",
-      "snippet_length": 42,
-      "raw_snippet_truncated": false,
-      "expanded_snippet": "017 fn login_user_allows_admin() {\n018 ...",
-      "context_start": 17,
-      "context_end": 19,
-      "auto_expanded_context": false,
-      "body": "pub fn login_user(...",
-      "body_retrieved": true,
-      "hints": [
-        { "kind": "declaration", "label": "fn login_user_allows_admin() {", "line": 17 }
-      ]
-    }
-  ],
-  "deduped": 4,
-  "next_actions": ["inspect src/lib.rs:18"],
-  "stage_stats": {
-    "discover_ms": 0,
-    "probe_ms": 7,
-    "disambiguate_ms": 0,
-    "cycle_latency_ms": 7,
-    "reward": 0.28
-  },
-  "reward": 0.28
+  "symbol": "Foo",
+  "definition": { "file": "src/lib.rs", "line": 42, "signature": "pub fn Foo()" },
+  "callers": [{ "symbol": "main", "file": "src/main.rs", "line": 10 }],
+  "callees": [{ "symbol": "bar", "file": "src/util.rs", "line": 5 }],
+  "types": { "implements": [], "extended_by": [], "contains": [] },
+  "imports": { "exported_from": [], "imported_by": [] },
+  "tests": [],
+  "summary": { "callers": 1, "callees": 1, "tests": 0 },
+  "truncated": false
 }
 ```
 
-Agents typically:
-
-1. Use `top_hits` snippets for immediate context.
-2. Follow `next_actions` to fetch additional files/lines. When `body_retrieved`
-   is `true`, the full source is already embedded in the hit and can be cached.
-3. Inspect `hints` to jump straight to the surrounding declaration, type, or extension (Rust/Swift populate these automatically).
-4. Inspect `stage_stats` to detect degraded runs (e.g., non-zero `discover_ms`
-   means fast path was bypassed). Optional tools (`fd`, `ast-grep`) disable
-   themselves after a single “command not found” and stop emitting user-facing
-   warnings; real runtime errors still appear in `warnings`.
-
-`swe-grep` automatically widens context windows when the caller omits
-`--context-before/--context-after`. Literal runs now ship with ±2 lines of
-context (±4 when ripgrep truncates the match), and the `auto_expanded_context`
-flag records when this fallback kicked in.
-
-Rust and Swift workflows always include the full file body and emit declaration/extension hints, so agents can render rich previews without an extra fetch even when `--body` is omitted.
-
-## 3. HTTP/gRPC use
-
-Start the service (assumes `swe-grep` is installed globally):
-
-```bash
-swe-grep serve --path <repo-root> --http-addr 0.0.0.0:8080 --grpc-addr 0.0.0.0:50051
+**Concise output** (`--concise`):
+```json
+{"symbol":"Foo","def":"pub fn Foo()","callers":["src/main.rs:10"],"callees":["bar"],"tests":[]}
 ```
 
-HTTP example:
+| Flag | Purpose |
+|------|---------|
+| `--callers` | Who calls this symbol |
+| `--callees` | What this symbol calls |
+| `--types` | Type relationships |
+| `--imports` | Import chain |
+| `--tests` | Related test files |
+| `--concise` | Minimal `file:line` format |
+| `--stream` | NDJSON per section |
+| `--preset refactor\|debug\|understand` | Common bundles |
+
+---
+
+### `search` — Find Symbols
 
 ```bash
-curl -X POST http://localhost:8080/search \
-  -H 'content-type: application/json' \
-  -d '{"symbol":"login_user","root":"/repo"}'
+swe-grep search --agent --symbol Foo --path .             # single symbol
+swe-grep search --agent --symbols "A,B,C" --path .        # batch
+swe-grep search --agent --concise --symbol Foo --path .   # minimal
 ```
 
-gRPC example (grpcurl):
+---
+
+### `refs` — Call Graph & Imports
 
 ```bash
-grpcurl -plaintext \
-  -d '{"symbol":"login_user","root":"/repo"}' \
-  localhost:50051 swegrep.v1.SweGrepService/Search
+swe-grep refs --callers --symbol Foo --path .             # who calls Foo?
+swe-grep refs --callees --symbol Foo --path .             # what does Foo call?
+swe-grep refs --imports --symbol src/main.rs --path .     # what does file import?
+swe-grep refs --importers --symbol Foo --path .           # who imports Foo?
 ```
 
-Both return the same JSON summary as the CLI.
+---
 
-## 4. Performance guidance
+## Language Support
 
-- Literal queries benefit from the fast path (single `rg` union). Keep symbols
-  simple (`foo_bar`) when possible.
-- Disable AST (`--disable-ast-grep`) for bulk raw scans when structural context
-  is unnecessary.
-- For workloads requiring AST precision, expect ~6 ms overhead for the AST pass.
-- Use release builds in production (`cargo build --release`); warm literal runs
-  measure ~9–10 ms vs ~4 ms for raw `rg`.
+| Language | Call Graph | Type Graph | Import Graph |
+|----------|------------|------------|--------------|
+| Rust | ✅ | ✅ | ✅ |
+| Swift | ✅ | ✅ | ✅ |
+| TypeScript/TSX | ✅ | ✅ | ✅ |
+| JavaScript | ✅ | ✅ | ✅ |
+| Go | ✅ | ✅ | ✅ |
+| Python | ✅ | ✅ | ✅ |
 
-## 5. Telemetry & logging
+---
 
-- `--log-dir DIR` writes JSON lines (`search.log.jsonl`) with the full summary
-  plus metadata (`use_fd`, `use_ast_grep`, `latency_ms`).
-- `/metrics` exposes Prometheus counters:
-  - `swegrep_tool_invocations_total`
-  - `swegrep_tool_results_total`
-  - `swegrep_cache_hits_total`
-  - `swegrep_reward_score_bucket`
-  - `swegrep_cycle_latency_ms_bucket`
-
-Disable telemetry via environment variables if needed:
-- `RUST_LOG=off` (suppress tracing)
-- `SWE_GREP_DISABLE_TELEMETRY=true` *(future toggle placeholder)*
-
-## 6. Benchmarking
-
-Use `scripts/bench_rg_vs_sweg.py` locally to evaluate regressions:
+## Quick Reference
 
 ```bash
-python scripts/bench_rg_vs_sweg.py \
-  --repo /path/to/repo \
-  --symbol login_user \
-  --runs 20 \
-  --output docs/benchmark-warm.json
-```
+# Understand a symbol completely
+swe-grep context --symbol AuthService --path .
 
-Compare `mean_ms` and `p95_ms` for `rg` vs `swe_grep`. Production budgets target
-`swe_grep` ≤ `rg` + ~6 ms for literal queries. Run this benchmark locally before
-publishing a new release.
+# Find all definitions
+swe-grep search --agent --symbol AuthService --definitions-only --path .
+
+# Find all usages
+swe-grep search --agent --symbol AuthService --usages-only --path .
+
+# Call graph
+swe-grep refs --callers --symbol AuthService --path .
+
+# Import graph
+swe-grep refs --imports --symbol src/auth.rs --path .
+```
