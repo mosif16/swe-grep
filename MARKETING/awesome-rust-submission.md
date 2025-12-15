@@ -62,10 +62,10 @@ cargo install swe-grep
 
 ```bash
 # Basic search
-swe-grep search --symbol MyStruct --language rust --path .
+swe-grep search MyStruct rust
 
 # Agent mode
-swe-grep search --agent --symbol spawn --path ./tokio
+swe-grep search spawn ./tokio --agent
 
 # Batch search
 swe-grep search --agent --symbols "Foo,Bar,Baz" --path .

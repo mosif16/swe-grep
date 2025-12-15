@@ -5,24 +5,24 @@
 ## Commands
 
 ```bash
-# Basic search
-swe-grep search --symbol "MySymbol" --path .
-swe-grep search --symbol "func" --language rust --path .
-swe-grep search --symbol "MySymbol" --body --path .      # full file
+# Basic search (simple mode)
+swe-grep MySymbol
+swe-grep MySymbol rust
+swe-grep MySymbol src/
 
 # Discovery
 swe-grep search --concept "text to speech" --path .      # semantic
-swe-grep search --symbol "*Foo*" --wildcard --path .
-swe-grep usages --symbol FooFeature --path .
+swe-grep search "*Foo*" . --wildcard
+swe-grep usages FooFeature .                             # usage graph
 
 # Call graph (callers/callees)
-swe-grep refs --callers --symbol Foo::new --path .       # who calls Foo::new()?
-swe-grep refs --callees --symbol run_cycle --path .      # what does run_cycle call?
-swe-grep refs --callers --symbol new --path .            # all new() callers (any type)
+swe-grep refs Foo::new . --callers                       # who calls Foo::new()?
+swe-grep refs run_cycle . --callees                      # what does run_cycle call?
+swe-grep refs new . --callers                            # all new() callers (any type)
 
 # Context bundle (single JSON payload)
-swe-grep context --symbol AuthService --depth 2 --path .
-swe-grep context --symbol Foo --max-lines 300 --include-tests --path .
+swe-grep context AuthService . --depth 2
+swe-grep context Foo . --max-lines 300 --include-tests
 ```
 
 **Key flags:** `--language`, `--body`, `--wildcard`, `--regex`, `--max-matches`, `--path-glob`, `--callers`, `--callees`, `--preset`, `--explain`, `--max-lines`, `--depth`, `--concise`, `--stream`, `--tests`

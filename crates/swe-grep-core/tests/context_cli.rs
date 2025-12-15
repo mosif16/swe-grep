@@ -18,7 +18,7 @@ fn parses_context_command_defaults() {
 
     match cli.command {
         Some(Commands::Context(cmd)) => {
-            assert_eq!(cmd.symbol, "AuthService");
+            assert_eq!(cmd.symbol.as_deref(), Some("AuthService"));
             assert_eq!(cmd.depth, None);
             assert_eq!(cmd.max_lines, None);
             assert_eq!(cmd.tests, Some(false));
@@ -47,7 +47,7 @@ fn parses_context_command_overrides() {
 
     match cli.command {
         Some(Commands::Context(cmd)) => {
-            assert_eq!(cmd.symbol, "Foo");
+            assert_eq!(cmd.symbol.as_deref(), Some("Foo"));
             assert_eq!(cmd.depth, Some(3));
             assert_eq!(cmd.max_lines, Some(500));
             assert_eq!(cmd.tests, Some(true));

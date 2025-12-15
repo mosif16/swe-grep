@@ -19,16 +19,16 @@ swe-grep AuthService src/               # in specific path
 
 ```bash
 # Complete context in one call
-swe-grep context --symbol AuthService --path .
+swe-grep context AuthService .
 
 # Symbol intelligence: fields, methods, complexity
-swe-grep context --symbol AuthService --explain --path .
+swe-grep context AuthService . --explain
 
 # Semantic grouping with token budget
-swe-grep search --agent --grouped --budget 2000 --symbol Foo --path .
+swe-grep search Foo . --agent --grouped --budget 2000
 
 # Fuzzy typo recovery
-swe-grep search --agent --fuzzy 0.5 --symbol authservice --path .
+swe-grep search authservice . --agent --fuzzy 0.5
 ```
 
 ## Workspace Layout
@@ -75,36 +75,36 @@ concise = true
 - `swe-grep search --agent --symbols Foo,Bar --path . --format json` — batch search with jq-ready output and schema versioning.
 - `swe-grep search --json-only --symbols Foo,Bar --path .` — shorthand for pipeline-safe JSON-only output (implies `--agent --format json --quiet`).
 - `swe-grep search --agent --symbols Foo,Bar --stream` — NDJSON per symbol (final line has `done=true`), exit code `2` on runtime errors, `1` on usage errors.
-- `swe-grep search --agent --grouped --budget 2000 --symbol Foo --path .` — semantic grouping (definition/impl/usages/tests) with token-budget truncation to avoid re-sending redundant context.
+- `swe-grep search Foo . --agent --grouped --budget 2000` — semantic grouping (definition/impl/usages/tests) with token-budget truncation to avoid re-sending redundant context.
 - Defaults: telemetry off, bodies fetched (first 50 lines by default), deterministic ordering; add `--definitions` for best-effort signatures, `--concise` to drop context/origin/score/body, and `--json-pretty`/`--progress`/`--trim-body N` to tune output.
 - See `docs/agent-mode.md` for the schema, exit codes, batch inputs (`--symbols/--symbols-file/--stdin-symbols`), and `--format json|table`.
 
 ## Discovery Helpers
 
 - Concept/semantic search: `swe-grep search --concept "text to speech"` builds intent-driven rewrites that surface related symbols even when names do not match.
-- Literal text: `swe-grep search --text --symbol "Practice aloud" --path .` performs raw fixed-string searches without symbol rewrites or AST.
+- Literal text: `swe-grep search --text "Practice aloud" .` performs raw fixed-string searches without symbol rewrites or AST.
 - Regex/wildcard friendly: `--regex` accepts raw patterns (e.g. `speak|aloud`), `--wildcard` translates `*`/`?`; AST disambiguation is skipped automatically when patterns are non-literal.
 - Fuzzy no-hit guidance: when there are zero hits, swe-grep returns `fuzzy_matches` + `did_you_mean` (agent mode) to suggest symbols like `AuthService` for a query like `authservice`; tune with `--fuzzy 0.7` (0.0–1.0).
-- Single-file scope: `swe-grep search --symbol deckHeaderSection --scope-file path/to/View.swift --path .` restricts the search surface to a single file (useful for local/private symbols).
+- Single-file scope: `swe-grep search deckHeaderSection . --scope-file path/to/View.swift` restricts the search surface to a single file (useful for local/private symbols).
 - String literals: `--string` generates quoted/ci variants and disables AST so inline CSS vars or JSX strings are easy to surface.
 - CSS/SCSS aware: `--language css|scss` scopes discovery to stylesheets; extension filters include CSS/SCSS by default when selected.
 - Localization-aware: `--include-strings` folds `xcstrings`/`strings`/`arb`/`json` resources into the search surface so string keys show up alongside code hits.
 - Path globs: `--path-glob "src/**/*.tsx"` narrows scope without forcing a language hint; accepts comma-separated patterns.
 - Output formats: `--format json|json-lines|table|compact|tree|edit|minimal|summary|markdown|csv` (agent mode).
 - Shell completions: `swe-grep completions zsh` (or `bash`/`fish`) prints a completion script to stdout.
-- Usage graph: `swe-grep usages --symbol Foo --path .` emits a tree of references/types/imports; `--format json|compact` are available for automation.
-- Cross-reference: `swe-grep refs --symbol Foo --callers|--callees --path .` surfaces callers (best-effort static call graph; cached + incremental) and callees (extracted from the symbol definition body).
+- Usage graph: `swe-grep usages Foo .` emits a tree of references/types/imports; `--format json|compact` are available for automation.
+- Cross-reference: `swe-grep refs Foo . --callers|--callees` surfaces callers (best-effort static call graph; cached + incremental) and callees (extracted from the symbol definition body).
   - **Qualified name support**: `--symbol Foo::new` finds only `Foo::new()` callers, not all `new()` calls.
   - **Import graph**: `--imports` / `--importers` plus `--import-depth N` for transitive traversal.
   - **Output formats**: `--format json|tree|compact` for different use cases.
-- Context bundles: `swe-grep context --symbol Foo --path .` assembles a single JSON response with the definition, callers/callees, type relationships, and related tests (best-effort).
+- Context bundles: `swe-grep context Foo .` assembles a single JSON response with the definition, callers/callees, type relationships, and related tests (best-effort).
   - **Presets**: `--preset refactor|debug|understand` selects common bundles; flags like `--tests` and `--body` can add more detail.
   - **Symbol intelligence**: `--explain` enriches the `definition` with kind/visibility/docs/fields/methods/complexity (not available in `--concise` mode).
   - **Concise mode**: `--concise` returns a minimal object (`symbol/def/callers/callees/tests`) for token-sensitive prompts.
   - **Grouped mode**: `--grouped --budget 2000` groups output by file and truncates intelligently to reduce repeated context.
   - **Streaming**: `--stream` outputs NDJSON sections (`definition`, `callers`, `callees`, `types`, `imports`, `tests`, `summary`) for incremental UIs/pipelines.
 - Git metadata: add `--git-info` to search/usages/refs to append the last commit hash/date per hit.
-- Removal planning: `swe-grep remove --symbol Foo --dry-run` lists files to modify/delete; add `--apply` to delete obvious symbol-owned files cautiously.
+- Removal planning: `swe-grep remove Foo . --dry-run` lists files to modify/delete; add `--apply` to delete obvious symbol-owned files cautiously.
 - Cache hygiene: `--clear-cache` wipes the computed cache dir (including `facts/` + `graphs/`) plus legacy `.swe-grep-cache/` + `.swe-grep-index/` before executing the chosen subcommand.
 - Tool feedback: `swe-grep feedback shell --command "<cmd>" --prompt-only` prints a JSON-shaped prompt for collecting improvements to the `shell_command` tool; pipe the response back to persist under `<cwd>/Feedback` (when `--cwd` is provided).
 - Feedback autofix: drop records into `Feedback/inbox/` and run `./scripts/feedback/process_inbox.sh` (or enable `.github/workflows/feedback-autofix.yml`) to have Codex implement + verify changes on a branch/PR.

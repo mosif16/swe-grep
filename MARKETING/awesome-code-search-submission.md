@@ -61,13 +61,13 @@ cargo install swe-grep
 
 ```bash
 # Simple search
-swe-grep search --symbol useState --language ts --path .
+swe-grep search useState ts
 
 # Agent mode with JSON output
-swe-grep search --agent --symbol MyClass --path .
+swe-grep search MyClass . --agent
 
 # Code-only (exclude markdown/configs)
-swe-grep search --symbol test --code-only --path .
+swe-grep search test . --code-only
 
 # Concept search
 swe-grep search --concept "authentication flow" --path .

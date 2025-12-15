@@ -103,14 +103,14 @@ async fn run(cli: Cli) -> Result<(), AppError> {
         clear_cache_for_command(&cli)?;
     }
 
-    // Simple mode: `swe-grep <symbol> [language]`
+    // Simple mode: `swe-grep <symbol> [language|path]`
     if cli.command.is_none() {
         if let Some(symbol) = cli.symbol {
             return handle_simple_search(symbol, cli.lang_or_path, disable_telemetry).await;
         }
         // No symbol provided, show help
         return Err(AppError::Usage(
-            "Usage: swe-grep <symbol> [language]\n\nExamples:\n  swe-grep AuthService\n  swe-grep AuthService rust\n  swe-grep AuthService src/\n\nOr use subcommands: search, context, refs, usages".to_string()
+            "Usage: swe-grep <symbol> [language|path]\n\nExamples:\n  swe-grep AuthService\n  swe-grep AuthService rust\n  swe-grep AuthService src/\n\nSubcommands also accept positional shorthand:\n  swe-grep search AuthService src/\n  swe-grep context AuthService .\n  swe-grep refs AuthService src/ --callers".to_string()
         ));
     }
 
@@ -150,17 +150,11 @@ async fn handle_simple_search(
     // Simple mode is always quiet - no telemetry, no logs
 
     // Parse lang_or_path: could be a language (rust, swift, ts) or a path (src/)
-    let (language, path) = match &lang_or_path {
-        Some(arg) => {
-            // Check if it's a known language
-            let known_langs = ["rust", "rs", "swift", "typescript", "ts", "tsx", "javascript", "js", "go", "python", "py"];
-            if known_langs.contains(&arg.to_lowercase().as_str()) {
-                (Some(arg.clone()), PathBuf::from("."))
-            } else {
-                // Treat as path
-                (None, PathBuf::from(arg))
-            }
-        }
+    let (language, path) = match lang_or_path.as_deref() {
+        Some(arg) => match parse_lang_or_path_hint(arg) {
+            LangOrPathHint::Language(lang) => (Some(lang), PathBuf::from(".")),
+            LangOrPathHint::Path(path) => (None, path),
+        },
         None => (None, PathBuf::from(".")),
     };
 
@@ -192,6 +186,84 @@ async fn handle_simple_search(
         let snippet = hit.snippet.as_deref().unwrap_or("");
         let trimmed = snippet.trim();
         println!("{}:{} | {}", display_path.display(), hit.line, trimmed);
+    }
+
+    Ok(())
+}
+
+#[derive(Debug, Clone)]
+enum LangOrPathHint {
+    Language(String),
+    Path(PathBuf),
+}
+
+fn is_language_hint(value: &str) -> bool {
+    // Keep this intentionally permissive for ergonomics; if the user passes an unrecognized
+    // token it will be treated as a path instead.
+    matches!(
+        value,
+        "rust"
+            | "rs"
+            | "swift"
+            | "typescript"
+            | "ts"
+            | "tsx"
+            | "javascript"
+            | "js"
+            | "go"
+            | "python"
+            | "py"
+            | "css"
+            | "scss"
+            | "auto"
+            | "auto-swift-ts"
+    )
+}
+
+fn parse_lang_or_path_hint(value: &str) -> LangOrPathHint {
+    let normalized = value.trim().to_lowercase();
+    if is_language_hint(normalized.as_str()) {
+        return LangOrPathHint::Language(value.to_string());
+    }
+    LangOrPathHint::Path(PathBuf::from(value))
+}
+
+fn apply_positional_query_to_search_args(
+    args: &mut SearchArgs,
+    positional_symbol: Option<&str>,
+    positional_lang_or_path: Option<&str>,
+) -> Result<(), AppError> {
+    if let Some(positional_symbol) = positional_symbol {
+        if !args.symbol.trim().is_empty() {
+            return Err(AppError::Usage(
+                "symbol specified twice (use either --symbol or the positional SYMBOL)"
+                    .to_string(),
+            ));
+        }
+        args.symbol = positional_symbol.to_string();
+    }
+
+    if let Some(positional_lang_or_path) = positional_lang_or_path {
+        match parse_lang_or_path_hint(positional_lang_or_path) {
+            LangOrPathHint::Language(language) => {
+                if args.language.is_some() {
+                    return Err(AppError::Usage(
+                        "language specified twice (use either --language or the positional LANG_OR_PATH)"
+                            .to_string(),
+                    ));
+                }
+                args.language = Some(language);
+            }
+            LangOrPathHint::Path(path) => {
+                if args.path.is_some() {
+                    return Err(AppError::Usage(
+                        "path specified twice (use either --path or the positional LANG_OR_PATH)"
+                            .to_string(),
+                    ));
+                }
+                args.path = Some(path);
+            }
+        }
     }
 
     Ok(())
@@ -286,6 +358,14 @@ fn handle_shell_feedback(args: ShellFeedbackArgs) -> Result<(), AppError> {
 }
 
 async fn handle_search(mut cmd: SearchCommand, disable_telemetry: bool) -> Result<(), AppError> {
+    apply_positional_query_to_search_args(
+        &mut cmd.search,
+        cmd.positional.symbol_pos.as_deref(),
+        cmd.positional.lang_or_path_pos.as_deref(),
+    )?;
+    // Positional args are only an input convenience; from this point on we operate on the resolved
+    // SearchArgs to avoid double-counting `symbol` in downstream validation/collection.
+    cmd.positional = swe_grep::cli::PositionalQueryArgs::default();
     let symbols = collect_symbols(&cmd)?;
 
     if cmd.json_only {
@@ -695,6 +775,12 @@ async fn handle_usages(cmd: UsageCommand, disable_telemetry: bool) -> Result<(),
     if !disable_telemetry {
         telemetry::init()?;
     }
+    let mut cmd = cmd;
+    apply_positional_query_to_search_args(
+        &mut cmd.search,
+        cmd.positional.symbol_pos.as_deref(),
+        cmd.positional.lang_or_path_pos.as_deref(),
+    )?;
     let mut args = cmd.search.clone();
     if args.context_before == 0 && args.context_after == 0 {
         args.context_before = 2;
@@ -723,8 +809,30 @@ async fn handle_context(cmd: ContextCommand, disable_telemetry: bool) -> Result<
         ));
     }
 
+    let symbol = match (&cmd.symbol, &cmd.symbol_pos) {
+        (Some(_), Some(_)) => {
+            return Err(AppError::Usage(
+                "symbol specified twice (use either --symbol or the positional SYMBOL)".to_string(),
+            ));
+        }
+        (Some(symbol), None) => symbol.clone(),
+        (None, Some(symbol)) => symbol.clone(),
+        (None, None) => {
+            return Err(AppError::Usage(
+                "symbol is required (use --symbol or the positional SYMBOL)".to_string(),
+            ));
+        }
+    };
+
+    if cmd.path.is_some() && cmd.path_pos.is_some() && cmd.path != cmd.path_pos {
+        return Err(AppError::Usage(
+            "path specified twice (use either --path or the positional PATH)".to_string(),
+        ));
+    }
+    let path = cmd.path.as_ref().or(cmd.path_pos.as_ref());
+
     let selection = ContextSelection::from_command(&cmd);
-    let root = resolve_context_root(cmd.path.as_ref())?;
+    let root = resolve_context_root(path)?;
     let cache_dir = search::default_cache_dir_for_root(&root);
 
     let options = ExtractFactsOptions::for_search(None, None);
@@ -733,7 +841,7 @@ async fn handle_context(cmd: ContextCommand, disable_telemetry: bool) -> Result<
     if cmd.stream {
         stream_context(
             &root,
-            &cmd.symbol,
+            &symbol,
             &selection,
             extracted.as_ref().map(|v| &v.1),
         )?;
@@ -741,9 +849,9 @@ async fn handle_context(cmd: ContextCommand, disable_telemetry: bool) -> Result<
     }
 
     let response = if let Some((_stats, file_facts)) = extracted {
-        assemble_context_from_facts(&root, &cmd.symbol, &selection, &file_facts)?
+        assemble_context_from_facts(&root, &symbol, &selection, &file_facts)?
     } else {
-        ContextResponse::empty(cmd.symbol.clone())
+        ContextResponse::empty(symbol.clone())
     };
 
     if cmd.grouped {
@@ -1753,7 +1861,7 @@ struct RefsOutput {
     notes: Vec<String>,
 }
 
-async fn handle_refs(cmd: RefsCommand, disable_telemetry: bool) -> Result<(), AppError> {
+async fn handle_refs(mut cmd: RefsCommand, disable_telemetry: bool) -> Result<(), AppError> {
     if !disable_telemetry {
         telemetry::init()?;
     }
@@ -1762,6 +1870,12 @@ async fn handle_refs(cmd: RefsCommand, disable_telemetry: bool) -> Result<(), Ap
     let callees_requested = cmd.callees;
     let imports_requested = cmd.imports;
     let importers_requested = cmd.importers;
+
+    apply_positional_query_to_search_args(
+        &mut cmd.search,
+        cmd.positional.symbol_pos.as_deref(),
+        cmd.positional.lang_or_path_pos.as_deref(),
+    )?;
 
     let mut args = cmd.search.clone();
     if args.context_before == 0 && args.context_after == 0 {
@@ -2019,6 +2133,12 @@ async fn handle_remove(cmd: RemoveCommand, disable_telemetry: bool) -> Result<()
     if !disable_telemetry {
         telemetry::init()?;
     }
+    let mut cmd = cmd;
+    apply_positional_query_to_search_args(
+        &mut cmd.search,
+        cmd.positional.symbol_pos.as_deref(),
+        cmd.positional.lang_or_path_pos.as_deref(),
+    )?;
     let summary = search::execute(cmd.search.clone()).await?;
     let plan = build_removal_plan(&summary);
 
@@ -2692,7 +2812,7 @@ fn telemetry_default_disabled() -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use swe_grep::cli::ToolArgs;
+    use swe_grep::cli::{PositionalQueryArgs, ToolArgs};
 
     fn search_args(symbol: &str) -> SearchArgs {
         SearchArgs {
@@ -2750,6 +2870,7 @@ mod tests {
     fn dedupes_batch_symbols() {
         let cmd = SearchCommand {
             search: search_args("Alpha"),
+            positional: PositionalQueryArgs::default(),
             json_only: false,
             agent: true,
             format: OutputFormat::Json,

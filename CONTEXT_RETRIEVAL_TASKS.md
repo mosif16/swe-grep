@@ -304,7 +304,7 @@ pub struct ContextArgs {
 ```
 
 **Acceptance Criteria**:
-- [ ] `swe-grep context --symbol Foo --path .` parses correctly
+- [ ] `swe-grep context Foo .` parses correctly
 - [ ] Stub implementation returns empty context response
 - [ ] Help text clearly explains purpose
 

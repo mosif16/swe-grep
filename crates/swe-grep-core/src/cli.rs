@@ -7,6 +7,9 @@ use clap::{ArgAction, Parser, Subcommand, ValueEnum};
 #[derive(Parser, Debug)]
 #[command(name = "swe-grep")]
 #[command(about = "Rust-native search agent for blazing-fast code retrieval", long_about = None)]
+#[command(
+    override_usage = "swe-grep [OPTIONS] <SYMBOL> [LANG_OR_PATH]\n       swe-grep [OPTIONS] <COMMAND> ..."
+)]
 pub struct Cli {
     /// Disable telemetry exporters for this invocation.
     #[arg(long, global = true, action = ArgAction::SetTrue)]
@@ -19,7 +22,7 @@ pub struct Cli {
     #[command(subcommand)]
     pub command: Option<Commands>,
 
-    // --- Simple mode: `swe-grep <symbol> [language]` ---
+    // --- Simple mode: `swe-grep <symbol> [language|path]` ---
     /// Symbol to search for (simple mode).
     #[arg(value_name = "SYMBOL")]
     pub symbol: Option<String>,
@@ -27,6 +30,23 @@ pub struct Cli {
     /// Language hint or path (simple mode). Examples: rust, swift, ts, src/
     #[arg(value_name = "LANG_OR_PATH")]
     pub lang_or_path: Option<String>,
+}
+
+/// Positional shorthand for the common “symbol + optional language/path” pattern.
+///
+/// This makes these forms possible across subcommands:
+/// - `swe-grep search Foo`
+/// - `swe-grep search Foo rust`
+/// - `swe-grep search Foo src/`
+#[derive(clap::Args, Debug, Default, Clone)]
+pub struct PositionalQueryArgs {
+    /// Symbol to operate on (shorthand for --symbol where available).
+    #[arg(value_name = "SYMBOL")]
+    pub symbol_pos: Option<String>,
+
+    /// Language hint or path (shorthand for --language/--path where available).
+    #[arg(value_name = "LANG_OR_PATH")]
+    pub lang_or_path_pos: Option<String>,
 }
 
 #[derive(Subcommand, Debug)]
@@ -54,6 +74,9 @@ pub enum Commands {
 pub struct SearchCommand {
     #[command(flatten)]
     pub search: SearchArgs,
+
+    #[command(flatten)]
+    pub positional: PositionalQueryArgs,
 
     /// Shorthand for clean, pipe-friendly JSON output (equivalent to --agent --format json --quiet).
     #[arg(long = "json-only", default_value_t = false, action = ArgAction::SetTrue)]
@@ -394,6 +417,9 @@ pub struct UsageCommand {
     #[command(flatten)]
     pub search: SearchArgs,
 
+    #[command(flatten)]
+    pub positional: PositionalQueryArgs,
+
     /// Output style for the usage graph.
     #[arg(long, value_enum, default_value = "tree")]
     pub format: UsageFormat,
@@ -411,6 +437,9 @@ pub enum UsageFormat {
 pub struct RefsCommand {
     #[command(flatten)]
     pub search: SearchArgs,
+
+    #[command(flatten)]
+    pub positional: PositionalQueryArgs,
 
     /// Include locations that call the symbol.
     #[arg(long, default_value_t = false, action = ArgAction::SetTrue)]
@@ -458,7 +487,11 @@ pub enum ContextPreset {
 pub struct ContextCommand {
     /// Symbol to assemble context for.
     #[arg(long)]
-    pub symbol: String,
+    pub symbol: Option<String>,
+
+    /// Symbol to assemble context for (positional shorthand).
+    #[arg(value_name = "SYMBOL")]
+    pub symbol_pos: Option<String>,
 
     /// Preset configuration for common workflows (refactor|debug|understand).
     #[arg(long, value_enum)]
@@ -523,6 +556,10 @@ pub struct ContextCommand {
     /// Root directory to scan; defaults to the current working directory.
     #[arg(long)]
     pub path: Option<PathBuf>,
+
+    /// Root directory to scan (positional shorthand).
+    #[arg(value_name = "PATH")]
+    pub path_pos: Option<PathBuf>,
 }
 
 /// Arguments for the `remove` subcommand.
@@ -530,6 +567,9 @@ pub struct ContextCommand {
 pub struct RemoveCommand {
     #[command(flatten)]
     pub search: SearchArgs,
+
+    #[command(flatten)]
+    pub positional: PositionalQueryArgs,
 
     /// Emit a plan without touching files.
     #[arg(long, default_value_t = false, action = ArgAction::SetTrue)]
@@ -697,11 +737,27 @@ mod tests {
 
         match cli.command {
             Some(Commands::Context(cmd)) => {
-                assert_eq!(cmd.symbol, "Foo");
+                assert_eq!(cmd.symbol.as_deref(), Some("Foo"));
                 assert!(matches!(cmd.preset, Some(ContextPreset::Refactor)));
                 assert_eq!(cmd.path, Some(PathBuf::from(".")));
                 assert_eq!(cmd.types, Some(true));
                 assert!(cmd.concise);
+            }
+            _ => panic!("expected context command"),
+        }
+    }
+
+    #[test]
+    fn parses_context_positional_shorthand() {
+        let cli = Cli::try_parse_from(["swe-grep", "context", "Foo", "."])
+            .expect("expected context args to parse");
+
+        match cli.command {
+            Some(Commands::Context(cmd)) => {
+                assert_eq!(cmd.symbol, None);
+                assert_eq!(cmd.symbol_pos.as_deref(), Some("Foo"));
+                assert_eq!(cmd.path, None);
+                assert_eq!(cmd.path_pos, Some(PathBuf::from(".")));
             }
             _ => panic!("expected context command"),
         }

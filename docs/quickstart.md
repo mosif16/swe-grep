@@ -38,55 +38,52 @@ discoverable by the CLI.
 Run a search against the fixtures to verify everything is wired correctly:
 
 ```bash
-RUST_LOG=error cargo run -- search \
-  --symbol login_user \
-  --path fixtures/multi_lang
+RUST_LOG=error cargo run -- search login_user fixtures/multi_lang
 ```
 
 Agent-friendly grouped output (definition/impl/usages/tests) for token-sensitive workflows:
 
 ```bash
-cargo run -p swe-grep -- search --agent --grouped --budget 2000 \
-  --symbol login_user \
-  --path fixtures/multi_lang
+cargo run -p swe-grep -- search login_user fixtures/multi_lang \
+  --agent --grouped --budget 2000
 ```
 
 Assemble a context bundle (definition + callers/callees + types/tests) for the same symbol:
 
 ```bash
-cargo run -p swe-grep -- context --symbol login_user --path fixtures/multi_lang
+cargo run -p swe-grep -- context login_user fixtures/multi_lang
 ```
 
 Token-efficient output for LLM prompts:
 
 ```bash
-cargo run -p swe-grep -- context --symbol login_user --path fixtures/multi_lang --concise
+cargo run -p swe-grep -- context login_user fixtures/multi_lang --concise
 ```
 
 Grouped context output with token budgeting:
 
 ```bash
-cargo run -p swe-grep -- context --symbol login_user --path fixtures/multi_lang --grouped --budget 2000
+cargo run -p swe-grep -- context login_user fixtures/multi_lang --grouped --budget 2000
 ```
 
 NDJSON streaming (useful for UIs/pipelines):
 
 ```bash
-cargo run -p swe-grep -- context --symbol login_user --path fixtures/multi_lang --stream
+cargo run -p swe-grep -- context login_user fixtures/multi_lang --stream
 ```
 
 Symbol intelligence (enrich the definition with fields/methods/doc/complexity):
 
 ```bash
-cargo run -p swe-grep -- context --symbol login_user --path fixtures/multi_lang --explain
+cargo run -p swe-grep -- context login_user fixtures/multi_lang --explain
 ```
 
 Presets (can be overridden with flags like `--tests` / `--body`):
 
 ```bash
-cargo run -p swe-grep -- context --preset refactor --symbol login_user --path fixtures/multi_lang
-cargo run -p swe-grep -- context --preset debug --symbol login_user --path fixtures/multi_lang
-cargo run -p swe-grep -- context --preset understand --symbol login_user --path fixtures/multi_lang
+cargo run -p swe-grep -- context login_user fixtures/multi_lang --preset refactor
+cargo run -p swe-grep -- context login_user fixtures/multi_lang --preset debug
+cargo run -p swe-grep -- context login_user fixtures/multi_lang --preset understand
 ```
 
 ### Collecting tool feedback (shell_command)
@@ -137,7 +134,7 @@ Example summary (truncated):
 Enable or disable tools per search:
 
 ```bash
-cargo run -- search --symbol fetch_user \
+cargo run -- search fetch_user . \
   --disable-ast-grep --disable-fd \
   --enable-rga
 ```
@@ -207,7 +204,7 @@ swe-grep supports analysis for 6 languages with full call graph, type graph, and
 Cross-language call graph example (finds callers across all languages):
 
 ```bash
-cargo run -p swe-grep -- context --symbol helper --callers --path fixtures/multi_lang
+cargo run -p swe-grep -- context helper fixtures/multi_lang --callers
 # Returns callers from both Python (Job::run) and Go (File::Use)
 ```
 

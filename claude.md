@@ -26,23 +26,23 @@ src/api.rs:89 | let auth = AuthService::new(config);
 **One call = complete understanding.** Returns definition, callers, callees, types, imports, and tests.
 
 ```bash
-swe-grep context --symbol AuthService --path .              # full context
-swe-grep context --symbol Foo --explain --path .            # + fields/methods/complexity
-swe-grep context --symbol Foo --concise --path .            # minimal tokens
-swe-grep context --symbol Foo --preset refactor --path .    # callers + callees + types
+swe-grep context AuthService .                              # full context
+swe-grep context Foo . --explain                            # + fields/methods/complexity
+swe-grep context Foo . --concise                            # minimal tokens
+swe-grep context Foo . --preset refactor                    # callers + callees + types
 ```
 
 ## Quick Start (Search Mode)
 
 ```bash
 # Single symbol search
-swe-grep search --agent --symbol MyFunction --path .
+swe-grep search MyFunction . --agent
 
 # Batch search (multiple symbols)
 swe-grep search --agent --symbols "Foo,Bar,Baz" --path .
 
 # Minimal output (fastest for LLMs)
-swe-grep search --agent --concise --symbol MyClass --path .
+swe-grep search MyClass . --agent --concise
 
 # Stream results as NDJSON
 swe-grep search --agent --stream --symbols "A,B,C" --path .
@@ -55,13 +55,13 @@ swe-grep search --agent --symbol deckHeaderSection --scope-file path/to/View.swi
 
 ```bash
 # Call graph: find callers/callees
-swe-grep refs --callers --symbol Foo::new --path .    # who calls Foo::new()?
-swe-grep refs --callees --symbol run_cycle --path .   # what does run_cycle call?
+swe-grep refs Foo::new . --callers    # who calls Foo::new()?
+swe-grep refs run_cycle . --callees   # what does run_cycle call?
 
 # Import graph: what imports what
-swe-grep refs --imports --symbol src/main.rs --path .       # what does this file import?
-swe-grep refs --importers --symbol AuthService --path .     # who imports this symbol?
-swe-grep refs --imports --import-depth 3 --symbol src/api.rs --path .  # transitive
+swe-grep refs src/main.rs . --imports                 # what does this file import?
+swe-grep refs AuthService . --importers               # who imports this symbol?
+swe-grep refs src/api.rs . --imports --import-depth 3 # transitive
 ```
 
 ## Agent Mode Defaults

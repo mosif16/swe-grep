@@ -52,11 +52,11 @@ The call graph now uses **dual indexing**:
 
 ```bash
 # Test file with Foo::new() calls
-$ swe-grep refs --callers --symbol "Foo::new" /tmp/test_callgraph.rs
+$ swe-grep refs "Foo::new" /tmp/test_callgraph.rs --callers
 # Returns: 2 callers with origin: "callgraph" (correct!)
 
 # Unqualified search finds all new() variants
-$ swe-grep refs --callers --symbol "new" /tmp/test_callgraph.rs
+$ swe-grep refs "new" /tmp/test_callgraph.rs --callers
 # Returns: 38 callers across different types
 ```
 

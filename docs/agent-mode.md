@@ -51,7 +51,7 @@ Agent mode shapes CLI output for programmatic consumption and bundles sensible d
 - Bodies default to the first 50 lines in agent/streaming mode; override via `--trim-body` or drop them entirely with `--concise`.
 - When there are **zero hits**, swe-grep populates `fuzzy_matches` + `did_you_mean` to help agents recover from casing/qualification mismatches (e.g. `authservice` → `AuthService`, `::new` → `Foo::new`). Control the threshold with `--fuzzy 0.0..=1.0` (default `0.7`).
 
-## Context output (`swe-grep context --explain`)
+## Context output (`swe-grep context <SYMBOL> <PATH> --explain`)
 
 The `context` command with `--explain` returns symbol intelligence:
 

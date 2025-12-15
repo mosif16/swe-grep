@@ -47,9 +47,9 @@ patterns = ["*.md", "PLAN*", "node_modules"]
 Add semantic understanding and code relationship features.
 
 ### 2.1 Call Graph Analysis ✅ COMPLETED
-- [x] `swe-grep refs --callers --symbol X` - find all call sites
-- [x] `swe-grep refs --callees --symbol X` - find all functions X calls
-- [x] `swe-grep refs --symbol X` - bidirectional references
+- [x] `swe-grep refs X . --callers` - find all call sites
+- [x] `swe-grep refs X . --callees` - find all functions X calls
+- [x] `swe-grep refs X .` - bidirectional references
 - [x] Cache call graph in `.swe-grep-cache/` (per-file fact caching)
 - [x] **Qualified name preservation** - `Foo::new` matches only `Foo::new`, not all `new()` calls
 - [x] **Dual indexing** - supports both qualified (`Type::method`) and simple (`method`) lookups

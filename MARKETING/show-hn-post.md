@@ -30,13 +30,13 @@ I built swe-grep because I was frustrated switching between ripgrep (fast but te
 
 ```bash
 # Structured JSON output
-swe-grep search --agent --symbol useState --path ./react
+swe-grep search useState ./react --agent
 
 # Concept search (finds "login", "session", "jwt" when you search "auth")
 swe-grep search --concept "authentication" --path .
 
 # Filter out markdown/docs automatically
-swe-grep search --symbol test --code-only --path .
+swe-grep search test . --code-only
 
 # Batch search multiple symbols
 swe-grep search --agent --symbols "Foo,Bar,Baz" --path .
