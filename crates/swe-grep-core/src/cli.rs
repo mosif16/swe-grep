@@ -8,7 +8,35 @@ use clap::{ArgAction, Parser, Subcommand, ValueEnum};
 #[command(name = "swe-grep")]
 #[command(about = "Rust-native search agent for blazing-fast code retrieval", long_about = None)]
 #[command(
-    override_usage = "swe-grep [OPTIONS] <SYMBOL> [LANG_OR_PATH]\n       swe-grep [OPTIONS] <COMMAND> ..."
+    override_usage = "swe-grep [OPTIONS] <SYMBOL> [LANG_OR_PATH]\n       swe-grep [OPTIONS] <COMMAND> ...",
+    after_help = r#"EXAMPLES:
+    # Basic symbol search
+    swe-grep Foo .
+
+    # Search with context lines
+    swe-grep Foo . -C 3
+
+    # Case-insensitive search
+    swe-grep foo . -i
+
+    # Search only Swift files
+    swe-grep Foo . --ext swift
+
+    # Search only modified files (git)
+    swe-grep Foo . --git-modified
+
+    # Limit results
+    swe-grep Foo . -l 10
+
+    # JSON output
+    swe-grep Foo . --json-only
+
+    # Get definition with callers/callees
+    swe-grep context Foo . --concise
+
+    # Find all callers of a function
+    swe-grep refs Foo . --callers
+"#
 )]
 pub struct Cli {
     /// Disable telemetry exporters for this invocation.
@@ -30,6 +58,71 @@ pub struct Cli {
     /// Language hint or path (simple mode). Examples: rust, swift, ts, src/
     #[arg(value_name = "LANG_OR_PATH")]
     pub lang_or_path: Option<String>,
+
+    // --- Flattened search options for simple mode ---
+    /// Shorthand to set both --context-before and --context-after.
+    #[arg(short = 'C', long, value_name = "N")]
+    pub context: Option<usize>,
+
+    /// Number of neighbouring lines to include before each match.
+    #[arg(long = "context-before", short = 'B')]
+    pub context_before: Option<usize>,
+
+    /// Number of neighbouring lines to include after each match.
+    #[arg(long = "context-after", short = 'A')]
+    pub context_after: Option<usize>,
+
+    /// Perform case-insensitive matching.
+    #[arg(short = 'i', long = "ignore-case", action = ArgAction::SetTrue)]
+    pub ignore_case: bool,
+
+    /// Maximum number of hits to include in the output.
+    #[arg(short = 'l', long = "limit", alias = "top-hits")]
+    pub limit: Option<usize>,
+
+    /// Filter by file extension (e.g., swift, rs, ts). Shorthand for --path-glob.
+    #[arg(long = "ext", short = 'e')]
+    pub ext: Option<String>,
+
+    /// Glob patterns to limit the search scope (e.g. \"src/**/*.tsx\"); can be comma-separated.
+    #[arg(long = "path-glob", value_delimiter = ',')]
+    pub path_glob: Vec<String>,
+
+    /// Glob patterns to exclude from results (e.g., \"*.md,PLAN*\").
+    #[arg(long = "exclude", value_delimiter = ',')]
+    pub exclude_patterns: Vec<String>,
+
+    /// Restrict search to files changed in the working tree.
+    #[arg(long = "git-modified", action = ArgAction::SetTrue)]
+    pub git_modified: bool,
+
+    /// Restrict search to files changed since a commit.
+    #[arg(long = "git-since")]
+    pub git_since: Option<String>,
+
+    /// Treat --symbol as a raw regular expression.
+    #[arg(long, action = ArgAction::SetTrue)]
+    pub regex: bool,
+
+    /// Shorthand for clean, pipe-friendly JSON output.
+    #[arg(long = "json-only", action = ArgAction::SetTrue)]
+    pub json_only: bool,
+
+    /// Only show definition sites (struct, fn, class, etc.), excluding usages.
+    #[arg(long = "definitions-only", short = 'd', action = ArgAction::SetTrue)]
+    pub definitions_only: bool,
+
+    /// Exclude common test files and directories.
+    #[arg(long = "exclude-tests", action = ArgAction::SetTrue)]
+    pub exclude_tests: bool,
+
+    /// Exclude non-code files (markdown, txt, json configs) from results.
+    #[arg(long, action = ArgAction::SetTrue)]
+    pub code_only: bool,
+
+    /// Root directory of the repository; defaults to the current working directory.
+    #[arg(long)]
+    pub path: Option<std::path::PathBuf>,
 }
 
 /// Positional shorthand for the common “symbol + optional language/path” pattern.

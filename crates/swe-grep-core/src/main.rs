@@ -105,8 +105,8 @@ async fn run(cli: Cli) -> Result<(), AppError> {
 
     // Simple mode: `swe-grep <symbol> [language|path]`
     if cli.command.is_none() {
-        if let Some(symbol) = cli.symbol {
-            return handle_simple_search(symbol, cli.lang_or_path, disable_telemetry).await;
+        if let Some(symbol) = cli.symbol.clone() {
+            return handle_simple_search(symbol, &cli, disable_telemetry).await;
         }
         // No symbol provided, show help
         return Err(AppError::Usage(
@@ -142,7 +142,7 @@ async fn run(cli: Cli) -> Result<(), AppError> {
 /// Output: file:line | code context
 async fn handle_simple_search(
     symbol: String,
-    lang_or_path: Option<String>,
+    cli: &Cli,
     _disable_telemetry: bool,
 ) -> Result<(), AppError> {
     use swe_grep::cli::SearchArgs;
@@ -150,7 +150,7 @@ async fn handle_simple_search(
     // Simple mode is always quiet - no telemetry, no logs
 
     // Parse lang_or_path: could be a language (rust, swift, ts) or a path (src/ or a file)
-    let (language, path, scope_file) = match lang_or_path.as_deref() {
+    let (language, path, scope_file) = match cli.lang_or_path.as_deref() {
         Some(arg) => match parse_lang_or_path_hint(arg) {
             LangOrPathHint::Language(lang) => (Some(lang), PathBuf::from("."), None),
             LangOrPathHint::Path(path) => {
@@ -169,19 +169,52 @@ async fn handle_simple_search(
         None => (None, PathBuf::from("."), None),
     };
 
+    // Resolve --path flag (takes precedence over positional)
+    let resolved_path = cli.path.clone().unwrap_or(path.clone());
+
+    // Handle --ext flag by converting to path_glob
+    let mut path_glob = cli.path_glob.clone();
+    if let Some(ext) = &cli.ext {
+        path_glob.push(format!("**/*.{}", ext));
+    }
+
+    // Calculate context lines
+    let (context_before, context_after) = if let Some(c) = cli.context {
+        (c, c)
+    } else {
+        (cli.context_before.unwrap_or(0), cli.context_after.unwrap_or(0))
+    };
+
     let args = SearchArgs {
         symbol: symbol.clone(),
-        path: Some(path.clone()),
+        path: Some(resolved_path.clone()),
         scope_file,
         language,
         max_matches: 50,
-        top_hits: 20,
-        context_before: 0,
-        context_after: 0,
+        top_hits: cli.limit.unwrap_or(20),
+        context_before,
+        context_after,
         body: false,
         timeout_secs: 10,
+        ignore_case: cli.ignore_case,
+        regex: cli.regex,
+        git_modified: cli.git_modified,
+        git_since: cli.git_since.clone(),
+        path_glob,
+        exclude_patterns: cli.exclude_patterns.clone(),
+        definitions_only: cli.definitions_only,
+        exclude_tests: cli.exclude_tests,
+        code_only: cli.code_only,
         ..Default::default()
     };
+
+    // JSON output mode
+    if cli.json_only {
+        let summary = search::execute(args).await?;
+        let json = serde_json::to_string(&summary.top_hits)?;
+        println!("{}", json);
+        return Ok(());
+    }
 
     let summary = search::execute(args).await?;
 
@@ -191,10 +224,11 @@ async fn handle_simple_search(
         return Ok(());
     }
 
+    let display_root = resolved_path;
     for hit in &summary.top_hits {
         // Strip root prefix for cleaner output
         let file_path = Path::new(&hit.path);
-        let display_path = file_path.strip_prefix(&path).unwrap_or(file_path);
+        let display_path = file_path.strip_prefix(&display_root).unwrap_or(file_path);
         let snippet = hit.snippet.as_deref().unwrap_or("");
         let trimmed = snippet.trim();
         println!("{}:{} | {}", display_path.display(), hit.line, trimmed);
