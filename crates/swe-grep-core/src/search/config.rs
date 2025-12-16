@@ -35,6 +35,7 @@ const TEST_EXCLUDE_GLOBS: &[&str] = &[
 pub(crate) struct GitFilter {
     pub(crate) modified: bool,
     pub(crate) since: Option<String>,
+    pub(crate) tracked_only: bool,
 }
 
 pub(crate) struct SearchConfig {
@@ -338,10 +339,11 @@ impl SearchConfig {
             definitions_only: args.definitions_only,
             usages_only: args.usages_only,
             git_info: args.git_info,
-            git_filter: if args.git_modified || args.git_since.is_some() {
+            git_filter: if args.git_modified || args.git_since.is_some() || args.tracked_only {
                 Some(GitFilter {
                     modified: args.git_modified,
                     since: args.git_since.clone(),
+                    tracked_only: args.tracked_only,
                 })
             } else {
                 None

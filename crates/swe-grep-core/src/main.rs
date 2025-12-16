@@ -97,10 +97,195 @@ async fn main() {
     std::process::exit(exit_code);
 }
 
+/// Emit a compact system prompt to stderr for AI agents
+fn emit_agent_system_prompt() {
+    let prompt = r#"<swe-grep-system>
+swe-grep: semantic code search for AI agents
+
+COMMANDS:
+  swe-grep <symbol> .              → Basic search (file:line | code)
+  swe-grep context Foo . --concise → Definition + callers/callees (JSON)
+  swe-grep refs Foo . --callers    → Find all callers
+  swe-grep refs Foo . --callees    → Find all callees
+
+KEY FLAGS:
+  -l N, --limit N      → Max results (default: 20)
+  -i, --ignore-case    → Case-insensitive
+  -f, --files-only     → Output unique file paths only
+  --tracked-only       → Git-tracked files only (excludes lockfiles)
+  --exclude "*.lock"   → Exclude patterns
+  --ext swift          → Filter by extension
+  --text               → Literal text search (not symbol)
+  --json-only          → JSON output
+
+EXAMPLES:
+  swe-grep AuthService src/              → Find AuthService in src/
+  swe-grep fetch . --tracked-only -f     → Files with 'fetch', no lockfiles
+  swe-grep context UserStore . --concise → Get UserStore call graph
+</swe-grep-system>
+"#;
+    eprintln!("{}", prompt);
+}
+
+fn print_agent_hint(format: &str) {
+    let hint_md = r#"# swe-grep Agent Guide
+
+**swe-grep** is a semantic code search tool optimized for AI agents.
+
+## Quick Start
+```bash
+swe-grep <symbol> [path]        # Basic symbol search
+swe-grep context Foo . --concise  # Get definition with callers/callees
+swe-grep refs Foo . --callers     # Find all callers of Foo
+```
+
+## Core Commands
+
+| Command | Description | Example |
+|---------|-------------|---------|
+| `swe-grep <symbol> .` | Basic symbol search | `swe-grep AuthService .` |
+| `swe-grep context` | Definition + call graph | `swe-grep context Foo . --concise` |
+| `swe-grep refs --callers` | Find callers | `swe-grep refs Foo . --callers` |
+| `swe-grep refs --callees` | Find callees | `swe-grep refs Foo . --callees` |
+| `swe-grep search` | Advanced search | `swe-grep search Foo . --agent` |
+
+## Key Flags (work in simple mode: `swe-grep <symbol> .`)
+
+### Filtering
+- `-l, --limit N` — Max results (default: 20)
+- `-i, --ignore-case` — Case-insensitive search
+- `-e, --ext EXT` — Filter by extension (e.g., `--ext swift`)
+- `--path-glob GLOB` — Include glob patterns (e.g., `src/**/*.ts`)
+- `--exclude GLOB` — Exclude glob patterns (e.g., `*.md,*.lock`)
+- `--exclude-tests` — Exclude test files
+- `--code-only` — Exclude docs/configs
+- `-d, --definitions-only` — Only show definitions
+
+### Git Integration
+- `--git-modified` — Only modified files
+- `--git-since COMMIT` — Files changed since commit
+- `--tracked-only` — Only git-tracked files (excludes lockfiles/generated)
+
+### Output Control
+- `-f, --files-only` — Output unique file paths only
+- `-C N` — Context lines before/after
+- `--json-only` — Pipe-friendly JSON output
+- `--regex` — Treat symbol as regex
+- `--text` — Literal string search (not just symbols)
+- `--string` — Search inside string literals
+
+## Common Patterns
+
+```bash
+# Find all usages of a function
+swe-grep MyFunction src/
+
+# Get definition + callers (structured JSON)
+swe-grep context MyClass . --concise
+
+# Search only in Swift files, exclude tests
+swe-grep ViewModel . --ext swift --exclude-tests
+
+# Find in git-tracked files only (no lockfiles)
+swe-grep fetch . --tracked-only
+
+# List only affected files
+swe-grep deprecated . --files-only
+
+# Case-insensitive with limit
+swe-grep error . -i -l 5
+
+# Literal text search (not symbol)
+swe-grep "TODO:" . --text
+
+# JSON output for parsing
+swe-grep AuthService . --json-only
+```
+
+## Output Format
+Default: `file:line | code snippet`
+JSON: Use `--json-only` for structured output
+"#;
+
+    let hint_json = serde_json::json!({
+        "tool": "swe-grep",
+        "version": env!("CARGO_PKG_VERSION"),
+        "commands": {
+            "simple": {
+                "syntax": "swe-grep <symbol> [path]",
+                "description": "Basic symbol search",
+                "example": "swe-grep AuthService ."
+            },
+            "context": {
+                "syntax": "swe-grep context <symbol> <path> --concise",
+                "description": "Get definition with callers/callees as JSON",
+                "example": "swe-grep context Foo . --concise"
+            },
+            "refs": {
+                "syntax": "swe-grep refs <symbol> <path> --callers|--callees",
+                "description": "Find callers or callees of a symbol",
+                "example": "swe-grep refs Foo . --callers"
+            },
+            "search": {
+                "syntax": "swe-grep search <symbol> <path> [options]",
+                "description": "Advanced search with agent mode",
+                "example": "swe-grep search Foo . --agent --format json"
+            }
+        },
+        "flags": {
+            "filtering": {
+                "--limit, -l": "Max results (default: 20)",
+                "--ignore-case, -i": "Case-insensitive search",
+                "--ext, -e": "Filter by extension",
+                "--path-glob": "Include glob patterns",
+                "--exclude": "Exclude glob patterns",
+                "--exclude-tests": "Exclude test files",
+                "--code-only": "Exclude docs/configs",
+                "--definitions-only, -d": "Only definitions"
+            },
+            "git": {
+                "--git-modified": "Only modified files",
+                "--git-since": "Files changed since commit",
+                "--tracked-only": "Only git-tracked files"
+            },
+            "output": {
+                "--files-only, -f": "Output unique file paths only",
+                "--context, -C": "Context lines",
+                "--json-only": "JSON output",
+                "--regex": "Regex mode",
+                "--text": "Literal text search",
+                "--string": "Search in string literals"
+            }
+        },
+        "tips": [
+            "Use --tracked-only to exclude lockfiles and generated files",
+            "Use --files-only for quick impact assessment",
+            "Use --concise with context for structured call graph data",
+            "Use --json-only for pipe-friendly structured output"
+        ]
+    });
+
+    match format.to_lowercase().as_str() {
+        "json" => println!("{}", serde_json::to_string_pretty(&hint_json).unwrap()),
+        _ => println!("{}", hint_md),
+    }
+}
+
 async fn run(cli: Cli) -> Result<(), AppError> {
     let disable_telemetry = cli.disable_telemetry || telemetry_default_disabled();
     if cli.clear_cache {
         clear_cache_for_command(&cli)?;
+    }
+
+    // Emit agent hint and exit early
+    if let Some(format) = &cli.agent_hint {
+        print_agent_hint(format);
+        return Ok(());
+    }
+
+    // Emit compact agent hint to stderr (agents will see this) unless suppressed
+    if !cli.quiet_hint {
+        emit_agent_system_prompt();
     }
 
     // Simple mode: `swe-grep <symbol> [language|path]`
@@ -205,6 +390,7 @@ async fn handle_simple_search(
         definitions_only: cli.definitions_only,
         exclude_tests: cli.exclude_tests,
         code_only: cli.code_only,
+        tracked_only: cli.tracked_only,
         ..Default::default()
     };
 
@@ -225,6 +411,24 @@ async fn handle_simple_search(
     }
 
     let display_root = resolved_path;
+
+    // --files-only: unique file paths only
+    if cli.files_only {
+        let mut seen: HashSet<String> = HashSet::new();
+        for hit in &summary.top_hits {
+            let file_path = Path::new(&hit.path);
+            let display_path = file_path
+                .strip_prefix(&display_root)
+                .unwrap_or(file_path)
+                .to_string_lossy()
+                .to_string();
+            if seen.insert(display_path.clone()) {
+                println!("{}", display_path);
+            }
+        }
+        return Ok(());
+    }
+
     for hit in &summary.top_hits {
         // Strip root prefix for cleaner output
         let file_path = Path::new(&hit.path);

@@ -1946,6 +1946,32 @@ fn build_git_scope(config: &SearchConfig) -> Result<Option<HashSet<String>>> {
         }
     }
 
+    if filter.tracked_only {
+        let output = run_command_with_timeout(
+            {
+                let mut cmd = Command::new("git");
+                cmd.args(["ls-files"]).current_dir(&config.root);
+                cmd
+            },
+            config.timeout,
+        )
+        .with_context(|| "failed to run git ls-files")?;
+        if !output.status.success() {
+            anyhow::bail!("git ls-files failed with {}", output.status);
+        }
+        // If no other filters, tracked_only defines the entire scope
+        // If combined with modified/since, take the intersection
+        let tracked: HashSet<String> = String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .filter_map(|line| normalize_git_path(&config.root, line.trim()))
+            .collect();
+        if scoped.is_empty() {
+            scoped = tracked;
+        } else {
+            scoped = scoped.intersection(&tracked).cloned().collect();
+        }
+    }
+
     Ok(Some(scoped))
 }
 

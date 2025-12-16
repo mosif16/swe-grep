@@ -123,6 +123,22 @@ pub struct Cli {
     /// Root directory of the repository; defaults to the current working directory.
     #[arg(long)]
     pub path: Option<std::path::PathBuf>,
+
+    /// Only output unique file paths (no line numbers or snippets).
+    #[arg(long = "files-only", short = 'f', action = ArgAction::SetTrue)]
+    pub files_only: bool,
+
+    /// Restrict search to git-tracked files only.
+    #[arg(long = "tracked-only", action = ArgAction::SetTrue)]
+    pub tracked_only: bool,
+
+    /// Emit a structured agent hint (feature documentation) and exit. Use "json" or "md" format.
+    #[arg(long = "agent-hint", value_name = "FORMAT")]
+    pub agent_hint: Option<String>,
+
+    /// Suppress the agent system prompt on stderr.
+    #[arg(long = "quiet-hint", short = 'q', global = true, action = ArgAction::SetTrue)]
+    pub quiet_hint: bool,
 }
 
 /// Positional shorthand for the common “symbol + optional language/path” pattern.
@@ -254,6 +270,10 @@ pub struct SearchCommand {
     /// Assert that the symbol does not exist; exits with status 1 if found.
     #[arg(long = "assert-absent", default_value_t = false, action = ArgAction::SetTrue)]
     pub assert_absent: bool,
+
+    /// Only output unique file paths (no line numbers or snippets).
+    #[arg(long = "files-only", short = 'f', default_value_t = false, action = ArgAction::SetTrue)]
+    pub files_only: bool,
 }
 
 /// Output format for agent mode.
@@ -473,6 +493,10 @@ pub struct SearchArgs {
     /// Attach git metadata (last commit hash/date) for each hit when available.
     #[arg(long = "git-info", action = ArgAction::SetTrue, default_value_t = false)]
     pub git_info: bool,
+
+    /// Restrict search to git-tracked files only.
+    #[arg(long = "tracked-only", default_value_t = false, action = ArgAction::SetTrue)]
+    pub tracked_only: bool,
 
     /// Override the default path for the Tantivy index directory.
     #[arg(long)]

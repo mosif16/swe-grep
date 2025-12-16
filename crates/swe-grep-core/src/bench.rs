@@ -220,6 +220,7 @@ fn build_search_args(repo_root: &Path, scenario: &Scenario, bench: &BenchArgs) -
         git_modified: false,
         git_since: None,
         git_info: false,
+        tracked_only: false,
         index_dir: Some(index_dir),
         cache_dir,
         log_dir,

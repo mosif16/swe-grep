@@ -252,6 +252,7 @@ impl SearchExecutor {
             git_modified,
             git_since,
             git_info,
+            tracked_only: false,
             regex: regex.unwrap_or(false),
             literal_regex: false,
             wildcard: wildcard.unwrap_or(false),
