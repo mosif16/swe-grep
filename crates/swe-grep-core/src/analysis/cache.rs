@@ -196,9 +196,17 @@ impl GraphCache {
             }
         };
 
-        let parsed: GraphCacheData = bincode::deserialize(&bytes)
-            .with_context(|| format!("failed to deserialize {}", self.graphs_path.display()))?;
+        let parsed: GraphCacheData = match bincode::deserialize(&bytes) {
+            Ok(data) => data,
+            Err(_) => {
+                // Cache corrupted or format changed; delete and rebuild
+                let _ = fs::remove_file(&self.graphs_path);
+                return Ok(None);
+            }
+        };
         if parsed.version != GRAPH_CACHE_VERSION {
+            // Version mismatch; delete and rebuild
+            let _ = fs::remove_file(&self.graphs_path);
             return Ok(None);
         }
         Ok(Some(parsed))
