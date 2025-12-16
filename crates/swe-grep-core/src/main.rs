@@ -795,10 +795,9 @@ async fn handle_usages(cmd: UsageCommand, disable_telemetry: bool) -> Result<(),
     Ok(())
 }
 
-async fn handle_context(cmd: ContextCommand, disable_telemetry: bool) -> Result<(), AppError> {
-    if !disable_telemetry {
-        telemetry::init()?;
-    }
+async fn handle_context(cmd: ContextCommand, _disable_telemetry: bool) -> Result<(), AppError> {
+    // Silence tracing by default for context (outputs structured JSON)
+    telemetry::silence_tracing();
 
     if cmd.budget.is_some() && !cmd.grouped {
         return Err(AppError::Usage("--budget requires --grouped".to_string()));
@@ -1861,10 +1860,9 @@ struct RefsOutput {
     notes: Vec<String>,
 }
 
-async fn handle_refs(mut cmd: RefsCommand, disable_telemetry: bool) -> Result<(), AppError> {
-    if !disable_telemetry {
-        telemetry::init()?;
-    }
+async fn handle_refs(mut cmd: RefsCommand, _disable_telemetry: bool) -> Result<(), AppError> {
+    // Silence tracing by default for refs (outputs structured JSON)
+    telemetry::silence_tracing();
 
     let callers_requested = cmd.callers || (!cmd.callers && !cmd.callees);
     let callees_requested = cmd.callees;

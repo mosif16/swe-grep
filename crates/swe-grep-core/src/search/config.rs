@@ -187,10 +187,11 @@ impl SearchConfig {
         }
 
         let root = root.canonicalize().with_context(|| {
-            format!(
-                "failed to canonicalize repository root path: {}",
-                root.display()
-            )
+            if !root.exists() {
+                format!("path not found: {}", root.display())
+            } else {
+                format!("cannot access path: {}", root.display())
+            }
         })?;
 
         let concurrency = usize::max(1, args.concurrency);
