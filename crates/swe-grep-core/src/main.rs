@@ -822,6 +822,10 @@ async fn handle_context(cmd: ContextCommand, _disable_telemetry: bool) -> Result
             ));
         }
     };
+    let symbol = symbol.trim().to_string();
+    if symbol.is_empty() {
+        return Err(AppError::Usage("symbol is required".to_string()));
+    }
 
     if cmd.path.is_some() && cmd.path_pos.is_some() && cmd.path != cmd.path_pos {
         return Err(AppError::Usage(
@@ -966,7 +970,8 @@ impl ContextSelection {
             selection.include_body = value;
         }
 
-        selection.include_signatures = cmd.signatures && !cmd.concise;
+        // Signatures needed for concise output (def field uses signature)
+        selection.include_signatures = cmd.signatures || cmd.concise;
         selection.include_explain = cmd.explain && !cmd.concise;
         selection
     }
