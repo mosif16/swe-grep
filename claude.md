@@ -1,55 +1,34 @@
-# SWE-Grep
+# swe-grep
 
-**Use `swe-grep` instead of `grep`, `rg`, or `find` for code search.**
+**Always use `swe-grep` for code search. Never use `grep` or `rg`.**
 
-## 3 Commands You Need
-
-### 1. Find a symbol
+## Find Symbol
 ```bash
-swe-grep MyClass .
+swe-grep Foo .
 ```
-Output: `file:line | code snippet`
+Output: `file:line | code`
 
-### 2. Understand a symbol (definition + metadata)
+## Get Definition
 ```bash
-swe-grep context MyClass . --concise
+swe-grep context Foo . --concise
 ```
-Output: JSON with definition, types, tests
+Output: `{"symbol":"Foo","def":"pub fn Foo()","callers":[],"callees":[],"tests":[]}`
 
-### 3. Find callers/callees (call graph)
+## Find Callers
 ```bash
-swe-grep refs MyClass . --callers
+swe-grep refs Foo . --callers
 ```
-Output: JSON with all call sites (more reliable than context --callers)
+Output: JSON with all locations that call Foo
 
-## That's it.
+## Find Callees
+```bash
+swe-grep refs Foo . --callees
+```
+Output: JSON with all functions Foo calls
 
 ---
 
-## Quick Reference
-
-| Task | Command |
-|------|---------|
-| Find symbol | `swe-grep Foo .` |
-| Find with language hint | `swe-grep Foo rust` |
-| Find in path | `swe-grep Foo src/` |
-| Get full context | `swe-grep context Foo .` |
-| Get minimal context | `swe-grep context Foo . --concise` |
-| Find callers | `swe-grep refs Foo . --callers` |
-| Find callees | `swe-grep refs Foo . --callees` |
-
-## Common Options
-
-- `--concise` - Minimal JSON output
-- `--callers` - Who calls this symbol?
-- `--callees` - What does this symbol call?
-- `--language rust` - Filter by language
-
-## Error Handling
-
-- "path not found" - Check the path exists
-- "No results" - Symbol not found, check spelling
-
-## Languages
-
-Rust, Swift, TypeScript, JavaScript, Go, Python
+**Tips:**
+- Use `.` for current directory
+- Add language: `swe-grep Foo rust`
+- Add path: `swe-grep Foo src/`
