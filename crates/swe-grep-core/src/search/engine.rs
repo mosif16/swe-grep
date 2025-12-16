@@ -4,7 +4,9 @@ use std::fs;
 use std::io::ErrorKind;
 use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Output, Stdio};
+use std::sync::mpsc;
+use std::thread;
 use std::time::{Instant as StdInstant, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result};
@@ -691,17 +693,22 @@ impl SearchEngine {
             .unwrap_or(&absolute)
             .to_path_buf();
 
-        let output = Command::new("git")
-            .arg("-C")
-            .arg(&self.config.root)
-            .arg("log")
-            .arg("-n")
-            .arg("1")
-            .arg("--format=%h\t%cs")
-            .arg("--")
-            .arg(&relative)
-            .output()
-            .ok()?;
+        let output = run_command_with_timeout(
+            {
+                let mut cmd = Command::new("git");
+                cmd.arg("-C")
+                    .arg(&self.config.root)
+                    .arg("log")
+                    .arg("-n")
+                    .arg("1")
+                    .arg("--format=%h\t%cs")
+                    .arg("--")
+                    .arg(&relative);
+                cmd
+            },
+            self.config.timeout,
+        )
+        .ok()?;
 
         if !output.status.success() {
             return None;
@@ -1894,11 +1901,15 @@ fn build_git_scope(config: &SearchConfig) -> Result<Option<HashSet<String>>> {
     let mut scoped: HashSet<String> = HashSet::new();
 
     if filter.modified {
-        let output = Command::new("git")
-            .args(["status", "--porcelain"])
-            .current_dir(&config.root)
-            .output()
-            .with_context(|| "failed to run git status --porcelain")?;
+        let output = run_command_with_timeout(
+            {
+                let mut cmd = Command::new("git");
+                cmd.args(["status", "--porcelain"]).current_dir(&config.root);
+                cmd
+            },
+            config.timeout,
+        )
+        .with_context(|| "failed to run git status --porcelain")?;
         if !output.status.success() {
             anyhow::bail!("git status --porcelain failed with {}", output.status);
         }
@@ -1914,11 +1925,16 @@ fn build_git_scope(config: &SearchConfig) -> Result<Option<HashSet<String>>> {
     }
 
     if let Some(since) = &filter.since {
-        let output = Command::new("git")
-            .args(["diff", "--name-only", since, "--"])
-            .current_dir(&config.root)
-            .output()
-            .with_context(|| format!("failed to run git diff --name-only {since}"))?;
+        let output = run_command_with_timeout(
+            {
+                let mut cmd = Command::new("git");
+                cmd.args(["diff", "--name-only", since, "--"])
+                    .current_dir(&config.root);
+                cmd
+            },
+            config.timeout,
+        )
+        .with_context(|| format!("failed to run git diff --name-only {since}"))?;
         if !output.status.success() {
             anyhow::bail!("git diff --name-only {since} failed with {}", output.status);
         }
@@ -1931,6 +1947,57 @@ fn build_git_scope(config: &SearchConfig) -> Result<Option<HashSet<String>>> {
     }
 
     Ok(Some(scoped))
+}
+
+fn run_command_with_timeout(mut cmd: Command, timeout: std::time::Duration) -> Result<Output> {
+    cmd.stdout(Stdio::piped());
+    cmd.stderr(Stdio::piped());
+
+    let mut child = cmd.spawn().with_context(|| "failed to spawn process")?;
+
+    let stdout = child
+        .stdout
+        .take()
+        .context("process did not produce stdout pipe")?;
+    let stderr = child
+        .stderr
+        .take()
+        .context("process did not produce stderr pipe")?;
+
+    let (stdout_tx, stdout_rx) = mpsc::channel();
+    let (stderr_tx, stderr_rx) = mpsc::channel();
+
+    thread::spawn(move || {
+        let mut buf = Vec::new();
+        let mut reader = stdout;
+        let _ = reader.read_to_end(&mut buf);
+        let _ = stdout_tx.send(buf);
+    });
+    thread::spawn(move || {
+        let mut buf = Vec::new();
+        let mut reader = stderr;
+        let _ = reader.read_to_end(&mut buf);
+        let _ = stderr_tx.send(buf);
+    });
+
+    let start = StdInstant::now();
+    loop {
+        if let Some(status) = child.try_wait().with_context(|| "failed to poll child status")? {
+            let stdout = stdout_rx.recv().unwrap_or_default();
+            let stderr = stderr_rx.recv().unwrap_or_default();
+            return Ok(Output {
+                status,
+                stdout,
+                stderr,
+            });
+        }
+        if start.elapsed() >= timeout {
+            let _ = child.kill();
+            let _ = child.wait();
+            anyhow::bail!("process timed out after {}ms", timeout.as_millis());
+        }
+        thread::sleep(std::time::Duration::from_millis(10));
+    }
 }
 
 fn normalize_git_path(root: &Path, raw: &str) -> Option<String> {

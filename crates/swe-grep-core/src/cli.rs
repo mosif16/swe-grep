@@ -464,6 +464,10 @@ pub struct RefsCommand {
     /// Output style for references.
     #[arg(long, value_enum, default_value = "json")]
     pub format: RefsFormat,
+
+    /// Include constructor/enum-variant calls (Rust: Ok/Err/Some/etc) in callee output.
+    #[arg(long, default_value_t = false, action = ArgAction::SetTrue)]
+    pub include_constructors: bool,
 }
 
 #[derive(Copy, Clone, Debug, ValueEnum)]

@@ -149,18 +149,30 @@ async fn handle_simple_search(
 
     // Simple mode is always quiet - no telemetry, no logs
 
-    // Parse lang_or_path: could be a language (rust, swift, ts) or a path (src/)
-    let (language, path) = match lang_or_path.as_deref() {
+    // Parse lang_or_path: could be a language (rust, swift, ts) or a path (src/ or a file)
+    let (language, path, scope_file) = match lang_or_path.as_deref() {
         Some(arg) => match parse_lang_or_path_hint(arg) {
-            LangOrPathHint::Language(lang) => (Some(lang), PathBuf::from(".")),
-            LangOrPathHint::Path(path) => (None, path),
+            LangOrPathHint::Language(lang) => (Some(lang), PathBuf::from("."), None),
+            LangOrPathHint::Path(path) => {
+                if path.is_file() {
+                    let canonical = path.canonicalize().unwrap_or(path);
+                    let parent = canonical
+                        .parent()
+                        .map(|p| p.to_path_buf())
+                        .unwrap_or_else(|| PathBuf::from("."));
+                    (None, parent, Some(canonical))
+                } else {
+                    (None, path, None)
+                }
+            }
         },
-        None => (None, PathBuf::from(".")),
+        None => (None, PathBuf::from("."), None),
     };
 
     let args = SearchArgs {
         symbol: symbol.clone(),
         path: Some(path.clone()),
+        scope_file,
         language,
         max_matches: 50,
         top_hits: 20,
@@ -255,13 +267,24 @@ fn apply_positional_query_to_search_args(
                 args.language = Some(language);
             }
             LangOrPathHint::Path(path) => {
-                if args.path.is_some() {
+                if args.path.is_some() || args.scope_file.is_some() {
                     return Err(AppError::Usage(
                         "path specified twice (use either --path or the positional LANG_OR_PATH)"
                             .to_string(),
                     ));
                 }
-                args.path = Some(path);
+                if path.is_file() {
+                    let canonical = path.canonicalize().unwrap_or(path);
+                    args.scope_file = Some(canonical.clone());
+                    args.path = Some(
+                        canonical
+                            .parent()
+                            .map(|p| p.to_path_buf())
+                            .unwrap_or_else(|| PathBuf::from(".")),
+                    );
+                } else {
+                    args.path = Some(path);
+                }
             }
         }
     }
@@ -1892,13 +1915,14 @@ async fn handle_refs(mut cmd: RefsCommand, _disable_telemetry: bool) -> Result<(
     let summary = search::execute(args.clone()).await?;
 
     let mut caller_hits: Vec<CallerRef> = Vec::new();
+    let mut callee_hits: Vec<CalleeRef> = Vec::new();
     let mut import_hits: Vec<ImportRef> = Vec::new();
     let mut importer_hits: Vec<ImportRef> = Vec::new();
     let mut definition_hits: Vec<&search::TopHit> = Vec::new();
     let mut notes = summary.notes.clone();
     let mut warnings = summary.warnings.clone();
 
-    // Try to get callers from the call graph (static analysis)
+    // Try to get callers/callees from the call graph (static analysis)
     let root = args
         .path
         .clone()
@@ -1910,35 +1934,69 @@ async fn handle_refs(mut cmd: RefsCommand, _disable_telemetry: bool) -> Result<(
     };
     let cache_dir = search::default_cache_dir_for_root(&root);
 
-    if callers_requested {
+    let call_graph_requested = callers_requested || callees_requested;
+    if call_graph_requested {
         let options = ExtractFactsOptions::for_search(None, None);
         let graph_cache = GraphCache::new(&root, &cache_dir);
         match graph_cache.load_or_update(&options) {
             Ok((stats, graphs, graph_warnings)) => {
                 warnings.extend(graph_warnings);
 
-                let caller_edges = graphs.call_graph.caller_edges_for(&summary.symbol);
-                for edge in caller_edges {
-                    let abs_path = root.join(&edge.file);
-                    let snippet = std::fs::read_to_string(&abs_path).ok().and_then(|content| {
-                        content
-                            .lines()
-                            .nth(edge.line.saturating_sub(1))
-                            .map(|s| s.trim().to_string())
-                    });
+                if callers_requested {
+                    let caller_edges = graphs.call_graph.caller_edges_for(&summary.symbol);
+                    for edge in caller_edges {
+                        let abs_path = root.join(&edge.file);
+                        let snippet =
+                            std::fs::read_to_string(&abs_path).ok().and_then(|content| {
+                                content
+                                    .lines()
+                                    .nth(edge.line.saturating_sub(1))
+                                    .map(|s| s.trim().to_string())
+                            });
 
-                    caller_hits.push(CallerRef {
-                        file: edge.file.clone(),
-                        line: edge.line,
-                        snippet,
-                        origin: Some("callgraph".to_string()),
-                        git_info: None,
-                    });
+                        caller_hits.push(CallerRef {
+                            file: edge.file.clone(),
+                            line: edge.line,
+                            snippet,
+                            origin: Some("callgraph".to_string()),
+                            git_info: None,
+                        });
+                    }
+                }
+
+                if callees_requested {
+                    let callee_edges = graphs.call_graph.callee_edges_for(&summary.symbol);
+                    for edge in callee_edges {
+                        if !cmd.include_constructors
+                            && edge.file.ends_with(".rs")
+                            && is_rust_constructor_noise(&edge.callee)
+                        {
+                            continue;
+                        }
+
+                        let abs_path = root.join(&edge.file);
+                        let snippet =
+                            std::fs::read_to_string(&abs_path).ok().and_then(|content| {
+                                content
+                                    .lines()
+                                    .nth(edge.line.saturating_sub(1))
+                                    .map(|s| s.trim().to_string())
+                            });
+
+                        callee_hits.push(CalleeRef {
+                            symbol: edge.callee.clone(),
+                            file: edge.file.clone(),
+                            line: edge.line,
+                            snippet,
+                            git_info: None,
+                        });
+                    }
                 }
 
                 notes.push(format!(
-                    "call graph: {} callers found (updated {} / scanned {})",
+                    "call graph: {} callers, {} callees (updated {} / scanned {})",
                     caller_hits.len(),
+                    callee_hits.len(),
                     stats.updated_files,
                     stats.scanned_files
                 ));
@@ -2011,10 +2069,13 @@ async fn handle_refs(mut cmd: RefsCommand, _disable_telemetry: bool) -> Result<(
     caller_hits.sort_by(|a, b| (&a.file, a.line).cmp(&(&b.file, b.line)));
     caller_hits.dedup_by(|a, b| a.file == b.file && a.line == b.line);
 
-    let callees = if callees_requested {
+    callee_hits.sort_by(|a, b| (&a.file, a.line, &a.symbol).cmp(&(&b.file, b.line, &b.symbol)));
+    callee_hits.dedup_by(|a, b| a.file == b.file && a.line == b.line && a.symbol == b.symbol);
+
+    let callees = if callees_requested && callee_hits.is_empty() {
         extract_callees(&definition_hits, &summary.symbol)
     } else {
-        Vec::new()
+        callee_hits
     };
 
     let output = RefsOutput {
@@ -2039,6 +2100,19 @@ async fn handle_refs(mut cmd: RefsCommand, _disable_telemetry: bool) -> Result<(
     }
 
     Ok(())
+}
+
+fn is_rust_constructor_noise(raw: &str) -> bool {
+    let name = raw
+        .rsplit("::")
+        .next()
+        .unwrap_or(raw)
+        .trim()
+        .trim_matches(|ch: char| !(ch.is_ascii_alphanumeric() || ch == '_' || ch == '$'));
+    matches!(
+        name,
+        "Ok" | "Err" | "Some" | "None" | "Result" | "Option" | "Box" | "Vec" | "String"
+    )
 }
 
 fn resolve_import_graph_targets(graph: &ImportGraph, query: &str) -> Vec<String> {
