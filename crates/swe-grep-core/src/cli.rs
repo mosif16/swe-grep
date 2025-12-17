@@ -8,10 +8,13 @@ use clap::{ArgAction, Parser, Subcommand, ValueEnum};
 #[command(name = "swe-grep")]
 #[command(about = "Rust-native search agent for blazing-fast code retrieval", long_about = None)]
 #[command(
-    override_usage = "swe-grep [OPTIONS] <SYMBOL> [LANG_OR_PATH]\n       swe-grep [OPTIONS] <COMMAND> ...",
+    override_usage = "swe-grep [OPTIONS] <SYMBOL[,SYMBOL...]> [LANG_OR_PATH]\n       swe-grep [OPTIONS] <COMMAND> ...",
     after_help = r#"EXAMPLES:
     # Basic symbol search
     swe-grep Foo .
+
+    # Multi-symbol search (simple mode)
+    swe-grep Foo,Bar .
 
     # Literal text search (not just symbols)
     swe-grep "TODO:" . --text
@@ -34,6 +37,9 @@ use clap::{ArgAction, Parser, Subcommand, ValueEnum};
     # JSON output
     swe-grep Foo . --json-only
 
+    # Count matches only
+    swe-grep Foo . --count
+
     # Get definition with callers/callees
     swe-grep context Foo . --concise
 
@@ -54,7 +60,7 @@ pub struct Cli {
     pub command: Option<Commands>,
 
     // --- Simple mode: `swe-grep <symbol> [language|path]` ---
-    /// Symbol to search for (simple mode).
+    /// Symbol to search for (simple mode). Use commas for batch mode (e.g. Foo,Bar,Baz).
     #[arg(value_name = "SYMBOL")]
     pub symbol: Option<String>,
 
@@ -130,6 +136,10 @@ pub struct Cli {
     /// Only output unique file paths (no line numbers or snippets).
     #[arg(long = "files-only", short = 'f', action = ArgAction::SetTrue)]
     pub files_only: bool,
+
+    /// Only print the number of matches found (per symbol).
+    #[arg(long = "count", short = 'c', action = ArgAction::SetTrue, conflicts_with = "files_only")]
+    pub count: bool,
 
     /// Restrict search to git-tracked files only.
     #[arg(long = "tracked-only", action = ArgAction::SetTrue)]

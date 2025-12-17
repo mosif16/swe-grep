@@ -9,6 +9,8 @@
 swe-grep AuthService                    # search current dir
 swe-grep AuthService rust               # with language hint
 swe-grep AuthService src/               # in specific path
+swe-grep AuthService,UserStore .        # multi-symbol batch
+swe-grep AuthService . --count          # match count only
 
 # Output: file:line | code
 # src/auth.rs:42 | pub struct AuthService {

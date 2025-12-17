@@ -1904,7 +1904,8 @@ fn build_git_scope(config: &SearchConfig) -> Result<Option<HashSet<String>>> {
         let output = run_command_with_timeout(
             {
                 let mut cmd = Command::new("git");
-                cmd.args(["status", "--porcelain"]).current_dir(&config.root);
+                cmd.args(["status", "--porcelain"])
+                    .current_dir(&config.root);
                 cmd
             },
             config.timeout,
@@ -2008,7 +2009,10 @@ fn run_command_with_timeout(mut cmd: Command, timeout: std::time::Duration) -> R
 
     let start = StdInstant::now();
     loop {
-        if let Some(status) = child.try_wait().with_context(|| "failed to poll child status")? {
+        if let Some(status) = child
+            .try_wait()
+            .with_context(|| "failed to poll child status")?
+        {
             let stdout = stdout_rx.recv().unwrap_or_default();
             let stderr = stderr_rx.recv().unwrap_or_default();
             return Ok(Output {

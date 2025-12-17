@@ -21,7 +21,10 @@ impl MappedFile {
     }
 
     pub fn contents(&self) -> &str {
-        debug_assert!(str::from_utf8(&self.mmap).is_ok(), "mmap must remain valid UTF-8");
+        debug_assert!(
+            str::from_utf8(&self.mmap).is_ok(),
+            "mmap must remain valid UTF-8"
+        );
         // SAFETY: UTF-8 was validated in `new` and the mapping is immutable.
         unsafe { str::from_utf8_unchecked(&self.mmap) }
     }

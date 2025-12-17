@@ -4,9 +4,10 @@ use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, anyhow};
-use clap::Parser;
+use clap::{CommandFactory, Parser};
 use regex::Regex;
 use serde::Serialize;
+use strsim::normalized_levenshtein;
 
 use swe_grep::agent::{
     AgentResult, AgentSettings, aggregate_output, render_compact, render_edit, render_minimal,
@@ -62,10 +63,12 @@ impl From<io::Error> for AppError {
 
 #[tokio::main]
 async fn main() {
-    let cli = match Cli::try_parse() {
+    let raw_args: Vec<std::ffi::OsString> = std::env::args_os().collect();
+    let cli = match Cli::try_parse_from(&raw_args) {
         Ok(cli) => cli,
         Err(err) => {
             let _ = err.print();
+            maybe_print_did_you_mean_for_unknown_flags(&raw_args, &err);
             let code = if matches!(
                 err.kind(),
                 clap::error::ErrorKind::DisplayHelp | clap::error::ErrorKind::DisplayVersion
@@ -97,6 +100,163 @@ async fn main() {
     std::process::exit(exit_code);
 }
 
+#[derive(Clone, Debug)]
+struct FlagOrigin {
+    flag: String,
+    command_path: Vec<String>,
+}
+
+fn maybe_print_did_you_mean_for_unknown_flags(raw_args: &[std::ffi::OsString], err: &clap::Error) {
+    if !matches!(err.kind(), clap::error::ErrorKind::UnknownArgument) {
+        return;
+    }
+
+    let message = err.to_string();
+    let Some(unknown) = extract_unknown_flag_from_error(&message) else {
+        return;
+    };
+    if !unknown.starts_with('-') {
+        return;
+    }
+
+    let suggestions = suggest_flags(&unknown, 3);
+    if suggestions.is_empty() {
+        return;
+    }
+
+    let invoked_subcommand = detect_invoked_subcommand(raw_args);
+    for suggestion in suggestions {
+        if suggestion.command_path.is_empty() {
+            eprintln!("Did you mean `{}`?", suggestion.flag);
+            continue;
+        }
+
+        if invoked_subcommand
+            .as_deref()
+            .is_some_and(|name| suggestion.command_path.first().is_some_and(|p| p == name))
+        {
+            eprintln!("Did you mean `{}`?", suggestion.flag);
+            continue;
+        }
+
+        let owner = format!("swe-grep {}", suggestion.command_path.join(" "));
+        eprintln!(
+            "Did you mean `{}`? (flag for: `{}`)",
+            suggestion.flag, owner
+        );
+        if let Some(example) = example_usage_for_flag(&suggestion.command_path, &suggestion.flag) {
+            eprintln!("Example: {example}");
+        }
+    }
+}
+
+fn extract_unknown_flag_from_error(message: &str) -> Option<String> {
+    // Example: "error: unexpected argument '--cont' found"
+    let re = Regex::new("unexpected argument '([^']+)' found").ok()?;
+    re.captures(message)
+        .and_then(|caps| caps.get(1))
+        .map(|m| m.as_str().to_string())
+}
+
+fn detect_invoked_subcommand(raw_args: &[std::ffi::OsString]) -> Option<String> {
+    // Best-effort: look for the first non-flag token that matches a subcommand name.
+    let cmd = Cli::command();
+    let subcommands: HashSet<&str> = cmd.get_subcommands().map(|s| s.get_name()).collect();
+    for arg in raw_args.iter().skip(1) {
+        let text = arg.to_string_lossy();
+        if text.starts_with('-') {
+            continue;
+        }
+        if subcommands.contains(text.as_ref()) {
+            return Some(text.to_string());
+        }
+        // If the first positional isn't a subcommand, we assume simple mode.
+        break;
+    }
+    None
+}
+
+fn suggest_flags(unknown: &str, limit: usize) -> Vec<FlagOrigin> {
+    let all_flags = collect_unique_flags();
+    let mut scored: Vec<(f64, FlagOrigin)> = all_flags
+        .into_iter()
+        .map(|entry| (normalized_levenshtein(unknown, &entry.flag), entry))
+        .collect();
+
+    scored.sort_by(|a, b| {
+        b.0.partial_cmp(&a.0)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| a.1.flag.cmp(&b.1.flag))
+    });
+
+    let threshold = 0.6;
+    scored
+        .into_iter()
+        .filter(|(score, _)| *score >= threshold)
+        .take(limit)
+        .map(|(_, entry)| entry)
+        .collect()
+}
+
+fn collect_unique_flags() -> Vec<FlagOrigin> {
+    let mut all: Vec<FlagOrigin> = Vec::new();
+    let cmd = Cli::command();
+    collect_flags_recursive(&cmd, Vec::new(), &mut all);
+
+    // Many flags are repeated across subcommands (e.g. --path). Prefer the shallowest owner.
+    let mut best_by_flag: std::collections::HashMap<String, FlagOrigin> =
+        std::collections::HashMap::new();
+    for entry in all {
+        best_by_flag
+            .entry(entry.flag.clone())
+            .and_modify(|existing| {
+                if entry.command_path.len() < existing.command_path.len() {
+                    *existing = entry.clone();
+                }
+            })
+            .or_insert(entry);
+    }
+    best_by_flag.into_values().collect()
+}
+
+fn collect_flags_recursive(cmd: &clap::Command, path: Vec<String>, out: &mut Vec<FlagOrigin>) {
+    for arg in cmd.get_arguments() {
+        if let Some(long) = arg.get_long() {
+            out.push(FlagOrigin {
+                flag: format!("--{long}"),
+                command_path: path.clone(),
+            });
+        }
+        if let Some(short) = arg.get_short() {
+            out.push(FlagOrigin {
+                flag: format!("-{short}"),
+                command_path: path.clone(),
+            });
+        }
+    }
+
+    for sub in cmd.get_subcommands() {
+        let mut next = path.clone();
+        next.push(sub.get_name().to_string());
+        collect_flags_recursive(sub, next, out);
+    }
+}
+
+fn example_usage_for_flag(command_path: &[String], flag: &str) -> Option<String> {
+    let Some(first) = command_path.first().map(|s| s.as_str()) else {
+        return Some(format!("swe-grep <SYMBOL> . {flag}"));
+    };
+    let joined = command_path.join(" ");
+    match first {
+        "search" | "context" | "refs" | "usages" | "remove" => {
+            Some(format!("swe-grep {joined} <SYMBOL> . {flag}"))
+        }
+        "bench" | "serve" => Some(format!("swe-grep {joined} {flag}")),
+        "feedback" => Some(format!("swe-grep {joined} {flag}")),
+        _ => None,
+    }
+}
+
 /// Emit a compact system prompt to stderr for AI agents
 fn emit_agent_system_prompt() {
     let prompt = r#"<swe-grep-system>
@@ -112,6 +272,7 @@ KEY FLAGS:
   -l N, --limit N      → Max results (default: 20)
   -i, --ignore-case    → Case-insensitive
   -f, --files-only     → Output unique file paths only
+  -c, --count          → Print match count only
   --tracked-only       → Git-tracked files only (excludes lockfiles)
   --exclude "*.lock"   → Exclude patterns
   --ext swift          → Filter by extension
@@ -134,7 +295,7 @@ fn print_agent_hint(format: &str) {
 
 ## Quick Start
 ```bash
-swe-grep <symbol> [path]        # Basic symbol search
+swe-grep <symbol[,symbol...]> [path]        # Basic symbol search
 swe-grep context Foo . --concise  # Get definition with callers/callees
 swe-grep refs Foo . --callers     # Find all callers of Foo
 ```
@@ -168,6 +329,7 @@ swe-grep refs Foo . --callers     # Find all callers of Foo
 
 ### Output Control
 - `-f, --files-only` — Output unique file paths only
+- `-c, --count` — Output match counts only
 - `-C N` — Context lines before/after
 - `--json-only` — Pipe-friendly JSON output
 - `--regex` — Treat symbol as regex
@@ -212,7 +374,7 @@ JSON: Use `--json-only` for structured output
         "version": env!("CARGO_PKG_VERSION"),
         "commands": {
             "simple": {
-                "syntax": "swe-grep <symbol> [path]",
+                "syntax": "swe-grep <symbol[,symbol...]> [path]",
                 "description": "Basic symbol search",
                 "example": "swe-grep AuthService ."
             },
@@ -250,6 +412,7 @@ JSON: Use `--json-only` for structured output
             },
             "output": {
                 "--files-only, -f": "Output unique file paths only",
+                "--count, -c": "Output match counts only",
                 "--context, -C": "Context lines",
                 "--json-only": "JSON output",
                 "--regex": "Regex mode",
@@ -326,11 +489,11 @@ async fn run(cli: Cli) -> Result<(), AppError> {
 /// Simple mode: `swe-grep <symbol> [language]`
 /// Output: file:line | code context
 async fn handle_simple_search(
-    symbol: String,
+    symbol_input: String,
     cli: &Cli,
     _disable_telemetry: bool,
 ) -> Result<(), AppError> {
-    use swe_grep::cli::SearchArgs;
+    use swe_grep::cli::{SearchArgs, ToolArgs};
 
     // Simple mode is always quiet - no telemetry, no logs
 
@@ -367,23 +530,48 @@ async fn handle_simple_search(
     let (context_before, context_after) = if let Some(c) = cli.context {
         (c, c)
     } else {
-        (cli.context_before.unwrap_or(0), cli.context_after.unwrap_or(0))
+        (
+            cli.context_before.unwrap_or(0),
+            cli.context_after.unwrap_or(0),
+        )
     };
 
-    let args = SearchArgs {
-        symbol: symbol.clone(),
+    let split_commas = !cli.regex && !cli.text;
+    let symbols = parse_simple_symbols(&symbol_input, split_commas);
+    if symbols.is_empty() {
+        return Err(AppError::Usage("symbol is required".to_string()));
+    }
+
+    let max_matches = if cli.count { 10_000 } else { 50 };
+    let top_hits = if cli.count {
+        1
+    } else {
+        cli.limit.unwrap_or(20)
+    };
+
+    let base_args = SearchArgs {
+        symbol: String::new(),
         path: Some(resolved_path.clone()),
         scope_file,
         language,
-        max_matches: 50,
-        top_hits: cli.limit.unwrap_or(20),
+        max_matches,
+        top_hits,
         context_before,
         context_after,
         body: false,
         timeout_secs: 10,
         ignore_case: cli.ignore_case,
+        fuzzy_threshold: 0.7,
         regex: cli.regex,
         text: cli.text,
+        max_columns: 200,
+        concurrency: 8,
+        tools: ToolArgs {
+            enable_index: false,
+            enable_rga: false,
+            use_fd: true,
+            use_ast_grep: true,
+        },
         git_modified: cli.git_modified,
         git_since: cli.git_since.clone(),
         path_glob,
@@ -395,51 +583,151 @@ async fn handle_simple_search(
         ..Default::default()
     };
 
-    // JSON output mode
-    if cli.json_only {
-        let summary = search::execute(args).await?;
-        let json = serde_json::to_string(&summary.top_hits)?;
-        println!("{}", json);
-        return Ok(());
-    }
-
-    let summary = search::execute(args).await?;
-
-    // Output: file:line | snippet
-    if summary.top_hits.is_empty() {
-        println!("No results for '{}'", symbol);
-        return Ok(());
-    }
-
     let display_root = resolved_path;
 
-    // --files-only: unique file paths only
+    let run = |symbol: &str| {
+        let symbol = symbol.to_string();
+        let mut args = base_args.clone();
+        args.symbol = symbol;
+        async move { search::execute(args).await.map_err(AppError::from) }
+    };
+
+    // --count: print match count only
+    if cli.count {
+        if symbols.len() == 1 {
+            let summary = run(&symbols[0]).await?;
+            if cli.json_only {
+                println!("{}", serde_json::to_string(&summary.deduped)?);
+            } else {
+                println!("{}", summary.deduped);
+            }
+            return Ok(());
+        }
+
+        if cli.json_only {
+            let mut counts: BTreeMap<String, usize> = BTreeMap::new();
+            for symbol in &symbols {
+                let summary = run(symbol).await?;
+                counts.insert(symbol.clone(), summary.deduped);
+            }
+            println!("{}", serde_json::to_string(&counts)?);
+            return Ok(());
+        }
+
+        for symbol in &symbols {
+            let summary = run(symbol).await?;
+            println!("{}\t{}", symbol, summary.deduped);
+        }
+        return Ok(());
+    }
+
+    // JSON output mode
+    if cli.json_only {
+        if symbols.len() == 1 {
+            let summary = run(&symbols[0]).await?;
+            let json = serde_json::to_string(&summary.top_hits)?;
+            println!("{}", json);
+            return Ok(());
+        }
+
+        let mut hits_by_symbol: BTreeMap<String, Vec<search::TopHit>> = BTreeMap::new();
+        for symbol in &symbols {
+            let summary = run(symbol).await?;
+            hits_by_symbol.insert(symbol.clone(), summary.top_hits);
+        }
+        println!("{}", serde_json::to_string(&hits_by_symbol)?);
+        return Ok(());
+    }
+
+    // --files-only: unique file paths only (across all symbols)
     if cli.files_only {
         let mut seen: HashSet<String> = HashSet::new();
-        for hit in &summary.top_hits {
-            let file_path = Path::new(&hit.path);
-            let display_path = file_path
-                .strip_prefix(&display_root)
-                .unwrap_or(file_path)
-                .to_string_lossy()
-                .to_string();
-            if seen.insert(display_path.clone()) {
-                println!("{}", display_path);
+        for symbol in &symbols {
+            let summary = run(symbol).await?;
+            for hit in &summary.top_hits {
+                let file_path = Path::new(&hit.path);
+                let display_path = file_path
+                    .strip_prefix(&display_root)
+                    .unwrap_or(file_path)
+                    .to_string_lossy()
+                    .to_string();
+                if seen.insert(display_path.clone()) {
+                    println!("{}", display_path);
+                }
             }
         }
         return Ok(());
     }
 
-    for hit in &summary.top_hits {
-        // Strip root prefix for cleaner output
-        let file_path = Path::new(&hit.path);
-        let display_path = file_path.strip_prefix(&display_root).unwrap_or(file_path);
-        let snippet = hit.snippet.as_deref().unwrap_or("");
-        let trimmed = snippet.trim();
-        println!("{}:{} | {}", display_path.display(), hit.line, trimmed);
+    for (index, symbol) in symbols.iter().enumerate() {
+        let summary = run(symbol).await?;
+        if symbols.len() > 1 {
+            println!("== {} ==", symbol);
+        }
+
+        // Output: file:line | snippet
+        if summary.top_hits.is_empty() {
+            if symbols.len() == 1 {
+                println!("No results for '{}'", symbol);
+            } else {
+                println!("No results");
+            }
+            print_simple_no_hit_suggestions(&summary);
+        } else {
+            for hit in &summary.top_hits {
+                // Strip root prefix for cleaner output
+                let file_path = Path::new(&hit.path);
+                let display_path = file_path.strip_prefix(&display_root).unwrap_or(file_path);
+                let snippet = hit.snippet.as_deref().unwrap_or("");
+                let trimmed = snippet.trim();
+                println!("{}:{} | {}", display_path.display(), hit.line, trimmed);
+            }
+        }
+
+        if symbols.len() > 1 && index + 1 != symbols.len() {
+            println!();
+        }
     }
 
     Ok(())
+}
+
+fn parse_simple_symbols(value: &str, split_commas: bool) -> Vec<String> {
+    let mut seen: HashSet<String> = HashSet::new();
+    let mut out = Vec::new();
+
+    let parts: Vec<&str> = if split_commas && value.contains(',') {
+        value.split(',').collect()
+    } else {
+        vec![value]
+    };
+
+    for part in parts {
+        let trimmed = part.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        if seen.insert(trimmed.to_string()) {
+            out.push(trimmed.to_string());
+        }
+    }
+
+    out
+}
+
+fn print_simple_no_hit_suggestions(summary: &search::SearchSummary) {
+    if !summary.fuzzy_matches.is_empty() {
+        let suggestions: Vec<String> = summary
+            .fuzzy_matches
+            .iter()
+            .take(3)
+            .map(|m| format!("{} ({})", m.symbol, m.file))
+            .collect();
+        println!("Did you mean: {}", suggestions.join(", "));
+    } else if !summary.suggested_symbols.is_empty() {
+        let suggestions: Vec<String> = summary.suggested_symbols.iter().take(3).cloned().collect();
+        println!("Did you mean: {}", suggestions.join(", "));
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -487,8 +775,7 @@ fn apply_positional_query_to_search_args(
     if let Some(positional_symbol) = positional_symbol {
         if !args.symbol.trim().is_empty() {
             return Err(AppError::Usage(
-                "symbol specified twice (use either --symbol or the positional SYMBOL)"
-                    .to_string(),
+                "symbol specified twice (use either --symbol or the positional SYMBOL)".to_string(),
             ));
         }
         args.symbol = positional_symbol.to_string();
@@ -1104,12 +1391,7 @@ async fn handle_context(cmd: ContextCommand, _disable_telemetry: bool) -> Result
     let extracted = extract_repo_facts(&root, &cache_dir, &options).ok();
 
     if cmd.stream {
-        stream_context(
-            &root,
-            &symbol,
-            &selection,
-            extracted.as_ref().map(|v| &v.1),
-        )?;
+        stream_context(&root, &symbol, &selection, extracted.as_ref().map(|v| &v.1))?;
         return Ok(());
     }
 
@@ -2185,13 +2467,12 @@ async fn handle_refs(mut cmd: RefsCommand, _disable_telemetry: bool) -> Result<(
                     let caller_edges = graphs.call_graph.caller_edges_for(&summary.symbol);
                     for edge in caller_edges {
                         let abs_path = root.join(&edge.file);
-                        let snippet =
-                            std::fs::read_to_string(&abs_path).ok().and_then(|content| {
-                                content
-                                    .lines()
-                                    .nth(edge.line.saturating_sub(1))
-                                    .map(|s| s.trim().to_string())
-                            });
+                        let snippet = std::fs::read_to_string(&abs_path).ok().and_then(|content| {
+                            content
+                                .lines()
+                                .nth(edge.line.saturating_sub(1))
+                                .map(|s| s.trim().to_string())
+                        });
 
                         caller_hits.push(CallerRef {
                             file: edge.file.clone(),
@@ -2214,13 +2495,12 @@ async fn handle_refs(mut cmd: RefsCommand, _disable_telemetry: bool) -> Result<(
                         }
 
                         let abs_path = root.join(&edge.file);
-                        let snippet =
-                            std::fs::read_to_string(&abs_path).ok().and_then(|content| {
-                                content
-                                    .lines()
-                                    .nth(edge.line.saturating_sub(1))
-                                    .map(|s| s.trim().to_string())
-                            });
+                        let snippet = std::fs::read_to_string(&abs_path).ok().and_then(|content| {
+                            content
+                                .lines()
+                                .nth(edge.line.saturating_sub(1))
+                                .map(|s| s.trim().to_string())
+                        });
 
                         callee_hits.push(CalleeRef {
                             symbol: edge.callee.clone(),
@@ -3216,6 +3496,29 @@ mod tests {
         assert_eq!(
             symbols,
             vec!["Alpha".to_string(), "Beta".to_string(), "Gamma".to_string()]
+        );
+    }
+
+    #[test]
+    fn parses_simple_symbols_batch_by_comma() {
+        let parsed = parse_simple_symbols("Foo, Bar, Foo", true);
+        assert_eq!(parsed, vec!["Foo".to_string(), "Bar".to_string()]);
+    }
+
+    #[test]
+    fn does_not_split_simple_symbols_when_disabled() {
+        let parsed = parse_simple_symbols("foo,bar", false);
+        assert_eq!(parsed, vec!["foo,bar".to_string()]);
+    }
+
+    #[test]
+    fn suggests_flags_across_subcommands() {
+        let suggestions = suggest_flags("--caller", 5);
+        assert!(
+            suggestions
+                .iter()
+                .any(|s| s.flag == "--callers" && s.command_path == vec!["refs".to_string()]),
+            "expected --callers (refs) in {suggestions:?}"
         );
     }
 }
