@@ -383,6 +383,7 @@ async fn handle_simple_search(
         timeout_secs: 10,
         ignore_case: cli.ignore_case,
         regex: cli.regex,
+        text: cli.text,
         git_modified: cli.git_modified,
         git_since: cli.git_since.clone(),
         path_glob,
@@ -3175,6 +3176,7 @@ mod tests {
             git_modified: false,
             git_since: None,
             git_info: false,
+            tracked_only: false,
             index_dir: None,
             cache_dir: None,
             log_dir: None,
@@ -3207,6 +3209,7 @@ mod tests {
             open: false,
             open_command: None,
             assert_absent: false,
+            files_only: false,
         };
 
         let symbols = collect_symbols(&cmd).expect("expected symbols to be collected");

@@ -57,6 +57,7 @@ fn base_args(symbol: &str, path: PathBuf, language: Option<&str>) -> SearchArgs 
         git_modified: false,
         git_since: None,
         git_info: false,
+        tracked_only: false,
         index_dir: None,
         cache_dir: None,
         log_dir: None,

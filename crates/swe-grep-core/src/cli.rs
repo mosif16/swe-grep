@@ -13,6 +13,9 @@ use clap::{ArgAction, Parser, Subcommand, ValueEnum};
     # Basic symbol search
     swe-grep Foo .
 
+    # Literal text search (not just symbols)
+    swe-grep "TODO:" . --text
+
     # Search with context lines
     swe-grep Foo . -C 3
 
@@ -139,6 +142,10 @@ pub struct Cli {
     /// Suppress the agent system prompt on stderr.
     #[arg(long = "quiet-hint", short = 'q', global = true, action = ArgAction::SetTrue)]
     pub quiet_hint: bool,
+
+    /// Search for literal/raw text (no query expansion; disables AST disambiguation).
+    #[arg(long, action = ArgAction::SetTrue)]
+    pub text: bool,
 }
 
 /// Positional shorthand for the common “symbol + optional language/path” pattern.
