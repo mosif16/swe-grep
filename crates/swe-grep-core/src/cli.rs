@@ -149,8 +149,14 @@ pub struct Cli {
     #[arg(long = "agent-hint", value_name = "FORMAT")]
     pub agent_hint: Option<String>,
 
-    /// Suppress the agent system prompt on stderr.
-    #[arg(long = "quiet-hint", short = 'q', global = true, action = ArgAction::SetTrue)]
+    /// Suppress the agent system prompt on stderr (alias: --no-banner).
+    #[arg(
+        long = "quiet-hint",
+        short = 'q',
+        global = true,
+        action = ArgAction::SetTrue,
+        alias = "no-banner"
+    )]
     pub quiet_hint: bool,
 
     /// Search for literal/raw text (no query expansion; disables AST disambiguation).

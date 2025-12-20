@@ -89,6 +89,23 @@ Key fields in `--explain` mode:
 - `methods`: Array of `"name(params)"` signatures
 - `complexity`: `{ fields, methods, loc }` counts
 
+### Concise context (`--concise`)
+
+`--concise` returns a minimal, token-friendly payload:
+
+```json
+{
+  "symbol": "SearchEngine",
+  "def": "pub(crate) struct SearchEngine {",
+  "def_location": "src/search/engine.rs:65",
+  "callers": ["src/search/mod.rs:32"],
+  "callees": ["SearchEngine::verify", "SearchEngine::run_cycle"],
+  "tests": ["tests/search_engine.rs"]
+}
+```
+
+- `def_location` is `file:line` when available (or omitted when unknown).
+
 ## Grouped output (`--grouped`)
 
 Grouped output reduces repeated context by emitting a per-symbol object that buckets hits into: `definition`, `implementations`, `usages_by_file`, and `test_coverage`.

@@ -447,7 +447,10 @@ async fn run(cli: Cli) -> Result<(), AppError> {
     }
 
     // Emit compact agent hint to stderr (agents will see this) unless suppressed
-    if !cli.quiet_hint {
+    let quiet_hint = cli.quiet_hint
+        || env_flag_enabled("SWE_GREP_QUIET_HINT")
+        || env_flag_enabled("SWE_GREP_NO_BANNER");
+    if !quiet_hint {
         emit_agent_system_prompt();
     }
 
@@ -623,6 +626,27 @@ async fn handle_simple_search(
 
     // JSON output mode
     if cli.json_only {
+        if cli.files_only {
+            let mut seen: HashSet<String> = HashSet::new();
+            let mut files: Vec<String> = Vec::new();
+            for symbol in &symbols {
+                let summary = run(symbol).await?;
+                for hit in &summary.top_hits {
+                    let file_path = Path::new(&hit.path);
+                    let display_path = file_path
+                        .strip_prefix(&display_root)
+                        .unwrap_or(file_path)
+                        .to_string_lossy()
+                        .to_string();
+                    if seen.insert(display_path.clone()) {
+                        files.push(display_path);
+                    }
+                }
+            }
+            println!("{}", serde_json::to_string(&files)?);
+            return Ok(());
+        }
+
         if symbols.len() == 1 {
             let summary = run(&symbols[0]).await?;
             let json = serde_json::to_string(&summary.top_hits)?;
@@ -659,6 +683,8 @@ async fn handle_simple_search(
         return Ok(());
     }
 
+    let wants_context = context_before > 0 || context_after > 0;
+
     for (index, symbol) in symbols.iter().enumerate() {
         let summary = run(symbol).await?;
         if symbols.len() > 1 {
@@ -678,9 +704,37 @@ async fn handle_simple_search(
                 // Strip root prefix for cleaner output
                 let file_path = Path::new(&hit.path);
                 let display_path = file_path.strip_prefix(&display_root).unwrap_or(file_path);
+                if wants_context {
+                    if let Some(expanded) = hit.expanded_snippet.as_deref() {
+                        for line in expanded.lines() {
+                            let mut parts = line.splitn(2, ' ');
+                            let line_no = parts.next().unwrap_or("").trim();
+                            let text = parts.next().unwrap_or("").trim_end();
+                            if line_no.is_empty() {
+                                continue;
+                            }
+                            let parsed_line = line_no.parse::<usize>().unwrap_or(hit.line);
+                            println!("{}:{} | {}", display_path.display(), parsed_line, text);
+                        }
+                        continue;
+                    }
+                }
+
                 let snippet = hit.snippet.as_deref().unwrap_or("");
                 let trimmed = snippet.trim();
                 println!("{}:{} | {}", display_path.display(), hit.line, trimmed);
+            }
+
+            if summary.deduped > summary.top_hits.len() {
+                let remaining = summary.deduped - summary.top_hits.len();
+                if summary.truncated {
+                    println!(
+                        "... {}+ more results not shown (use --limit N or swe-grep search --max-matches)",
+                        remaining
+                    );
+                } else {
+                    println!("... {} more results not shown (use --limit N)", remaining);
+                }
             }
         }
 
@@ -727,6 +781,16 @@ fn print_simple_no_hit_suggestions(summary: &search::SearchSummary) {
     } else if !summary.suggested_symbols.is_empty() {
         let suggestions: Vec<String> = summary.suggested_symbols.iter().take(3).cloned().collect();
         println!("Did you mean: {}", suggestions.join(", "));
+    }
+}
+
+fn env_flag_enabled(key: &str) -> bool {
+    match std::env::var(key) {
+        Ok(value) => {
+            let normalized = value.trim().to_ascii_lowercase();
+            matches!(normalized.as_str(), "1" | "true" | "yes" | "on")
+        }
+        Err(_) => false,
     }
 }
 
@@ -1526,6 +1590,8 @@ struct ConciseContextOutput {
     symbol: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     def: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    def_location: Option<String>,
     callers: Vec<String>,
     callees: Vec<String>,
     tests: Vec<String>,
@@ -1684,19 +1750,19 @@ fn apply_grouped_context_budget(grouped: &mut GroupedContextBuckets, budget_toke
 
 impl ConciseContextOutput {
     fn from_response(response: &ContextResponse) -> Self {
+        let def_location = response
+            .definition
+            .as_ref()
+            .and_then(|d| match (d.file.as_deref(), d.line) {
+                (Some(file), Some(line)) => Some(format!("{file}:{line}")),
+                (Some(file), None) => Some(file.to_string()),
+                _ => None,
+            });
         let def = response
             .definition
             .as_ref()
             .and_then(|d| d.signature.clone())
-            .or_else(|| {
-                response
-                    .definition
-                    .as_ref()
-                    .and_then(|d| match (d.file.as_deref(), d.line) {
-                        (Some(file), Some(line)) => Some(format!("{file}:{line}")),
-                        _ => None,
-                    })
-            });
+            .or_else(|| def_location.clone());
         let callers = response
             .callers
             .iter()
@@ -1715,6 +1781,7 @@ impl ConciseContextOutput {
         Self {
             symbol: response.symbol.clone(),
             def: def.as_deref().map(normalize_line_snippet),
+            def_location: def_location.as_deref().map(normalize_line_snippet),
             callers,
             callees,
             tests,

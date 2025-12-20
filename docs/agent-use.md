@@ -16,4 +16,6 @@ swe-grep refs AuthService . --callers
 swe-grep search --agent --symbols "Foo,Bar" --path . --stream
 ```
 
+Concise context output includes `def_location` (`file:line`) when available.
+
 Full schema and agent flags live in `docs/agent-mode.md`.

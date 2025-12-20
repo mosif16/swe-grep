@@ -11,10 +11,13 @@ swe-grep AuthService rust               # with language hint
 swe-grep AuthService src/               # in specific path
 swe-grep AuthService,UserStore .        # multi-symbol batch
 swe-grep AuthService . --count          # match count only
+swe-grep AuthService . -C 2             # include 2 lines of context
+swe-grep AuthService . --json-only      # JSON hits only
 
 # Output: file:line | code
 # src/auth.rs:42 | pub struct AuthService {
 # src/api.rs:89 | let auth = AuthService::new(config);
+# ... 12 more results not shown (use --limit N)
 ```
 
 ## Advanced Commands
@@ -93,6 +96,7 @@ concise = true
 - Localization-aware: `--include-strings` folds `xcstrings`/`strings`/`arb`/`json` resources into the search surface so string keys show up alongside code hits.
 - Path globs: `--path-glob "src/**/*.tsx"` narrows scope without forcing a language hint; accepts comma-separated patterns.
 - Output formats: `--format json|json-lines|table|compact|tree|edit|minimal|summary|markdown|csv` (agent mode).
+- Noise control: `--quiet-hint` / `--no-banner` suppress the agent system prompt on stderr; set `SWE_GREP_QUIET_HINT=1` or `SWE_GREP_NO_BANNER=1` to default this.
 - Shell completions: `swe-grep completions zsh` (or `bash`/`fish`) prints a completion script to stdout.
 - Usage graph: `swe-grep usages Foo .` emits a tree of references/types/imports; `--format json|compact` are available for automation.
 - Cross-reference: `swe-grep refs Foo . --callers|--callees` surfaces callers (best-effort static call graph; cached + incremental) and callees (extracted from the symbol definition body).
@@ -102,7 +106,7 @@ concise = true
 - Context bundles: `swe-grep context Foo .` assembles a single JSON response with the definition, callers/callees, type relationships, and related tests (best-effort).
   - **Presets**: `--preset refactor|debug|understand` selects common bundles; flags like `--tests` and `--body` can add more detail.
   - **Symbol intelligence**: `--explain` enriches the `definition` with kind/visibility/docs/fields/methods/complexity (not available in `--concise` mode).
-  - **Concise mode**: `--concise` returns a minimal object (`symbol/def/callers/callees/tests`) for token-sensitive prompts.
+- **Concise mode**: `--concise` returns a minimal object (`symbol/def/def_location/callers/callees/tests`) for token-sensitive prompts.
   - **Grouped mode**: `--grouped --budget 2000` groups output by file and truncates intelligently to reduce repeated context.
   - **Streaming**: `--stream` outputs NDJSON sections (`definition`, `callers`, `callees`, `types`, `imports`, `tests`, `summary`) for incremental UIs/pipelines.
 - Git metadata: add `--git-info` to search/usages/refs to append the last commit hash/date per hit.

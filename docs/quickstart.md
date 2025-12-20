@@ -41,6 +41,15 @@ Run a search against the fixtures to verify everything is wired correctly:
 RUST_LOG=error cargo run -- search login_user fixtures/multi_lang
 ```
 
+Simple mode ergonomics (context lines, JSON output, and banner control):
+
+```bash
+cargo run -p swe-grep -- login_user fixtures/multi_lang -C 2
+cargo run -p swe-grep -- login_user fixtures/multi_lang --json-only
+cargo run -p swe-grep -- login_user fixtures/multi_lang --no-banner
+SWE_GREP_QUIET_HINT=1 cargo run -p swe-grep -- login_user fixtures/multi_lang
+```
+
 Agent-friendly grouped output (definition/impl/usages/tests) for token-sensitive workflows:
 
 ```bash
