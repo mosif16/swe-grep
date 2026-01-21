@@ -5,3 +5,11 @@ members = [
     "crates/swe-grep-desktop",
 ]
 resolver = "2"
+
+[workspace.package]
+license = "MIT OR Apache-2.0 OR Commercial"
+license-file = "LICENSE"
+homepage = "https://recordandlearn.info"
+repository = "https://github.com/recordandlearn/swe-grep"
+authors = ["Record & Learn LLC <msayf@recordandlearn.info>"]
+description = "Instant code understanding in a single call - Dual licensed: Open source for individual use, commercial license for business"

@@ -2,6 +2,22 @@
 
 **Instant code understanding in a single call.** Supports Rust, Swift, TypeScript, JavaScript, Go, and Python.
 
+## ℹ️ Licensing & Commercial Use
+
+**Individual/Hobbyist Use**: SWE-Grep is free under the MIT License.
+
+**Commercial Use** 📊💰:
+- If your business, organization, or commercial project earns money using SWE-Grep, you need a commercial license.
+- **Licensing fee: $499/year + 10% revenue sharing** of commercial revenue generated
+- Includes premium support, priority features, and direct access to the developer
+- **Contact**: msayf@recordandlearn.info for commercial licensing
+
+**Examples requiring commercial license:**
+- Building commercial SaaS products
+- Consulting or development services using SWE-Grep
+- Teaching/training others professionally
+- Any business activity generating revenue
+
 ## Quick Start
 
 ```bash
