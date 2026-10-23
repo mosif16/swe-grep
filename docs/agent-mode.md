@@ -1,177 +1,89 @@
-# Agent Mode (`--agent`)
+# JSON output for agents
 
-Agent mode shapes CLI output for programmatic consumption and bundles sensible defaults.
+[Documentation home](<../README.md>) · [Agent workflow](<agent-use.md>) · [Integration](<integration.md>)
 
-- Defaults: telemetry off, bodies fetched (first 50 lines by default), compact context, deterministic sorting.
-- Exit codes: `0` success (hits or none), `1` usage/argument error, `2` runtime error.
-- Noise control: data on stdout only; logs on stderr; `--quiet` silences logs entirely (tracing subscriber disabled in agent/quiet mode). Optional tools (`fd`, `ast-grep`) auto-disable after a single “command not found” and stop emitting user-facing warnings; real runtime errors still appear in `warnings`.
-- Convenience: `--json-only` implies `--agent --format json --quiet` for pipeline-safe output; `--concise` drops context/origin/score/body; `--grouped` buckets results to reduce redundant context; `--budget N` truncates grouped output to an approximate token budget; `--fuzzy N` (0.0-1.0) enables fuzzy matching with did-you-mean suggestions; `--explain` enriches context definitions with fields/methods/complexity; `--json-pretty` formats JSON; `--trim-body N` overrides the 50-line default; `--full-body` disables body trimming; `--body-limit BYTES` / `--no-truncate` control max body bytes; `--progress` emits `[idx/total] Searching <symbol>...` on stderr.
-- Strings/paths: `--text` treats `--symbol` as raw literal text (no rewrites/AST); `--string` generates quoted variants for literal string lookups; `--path-glob "src/**/*.tsx"` narrows scope without forcing a language hint.
+Search, context, and refs have different JSON shapes. Do not apply the search envelope schema to context or refs. The examples below were captured from the release executable on this checkout's fixtures; absolute root and latency values are normalized. Optional fields depend on flags, results, and analysis state.
 
-## Schema (version 1)
+## Search envelope
+
+Run from the repository root:
+
+```sh
+./target/release/swe-grep --no-config --disable-telemetry search login_user fixtures/multi_lang --json-only --concise --disable-fd --disable-ast-grep --top-hits 2 --quiet-hint
+```
 
 ```json
 {
   "version": 1,
   "cli_version": "0.1.0",
-  "query": {"symbols": ["X"], "path": "/abs/repo"},
+  "query": {"symbols": ["login_user"], "path": "/absolute/checkout/fixtures/multi_lang"},
   "hits": [
-    {
-      "symbol": "X",
-      "file": "src/lib.rs",
-      "line": 42,
-      "def": "fn X()",
-      "snippet": "...",
-      "context": "...",
-      "body": "...",
-      "body_truncated": false,
-      "body_retrieved": true,
-      "origin": "rg-scoped [rs]",
-      "score": 1.2
-    }
+    {"symbol": "login_user", "file": "src/lib.rs", "line": 1, "snippet": "pub fn login_user(username: &str, password: &str) -> Option<String> {"},
+    {"symbol": "login_user", "file": "src/lib.rs", "line": 18, "snippet": "fn login_user_allows_admin() {"}
   ],
-  "summary": {"count": 5, "latency_ms": 12},
+  "summary": {"count": 2, "latency_ms": 0},
   "errors": [],
-  "warnings": [],
-  "related_symbols": [],
-  "suggested_symbols": [],
-  "fuzzy_matches": [{"symbol": "AuthService", "score": 0.95, "file": "src/auth.rs:42"}],
-  "did_you_mean": "AuthService (exact match available)",
-  "related_paths": [],
-  "notes": [],
-  "fd_candidates": [],
-  "ast_fallback": false,
   "truncated": false
 }
 ```
 
-- `truncated` is `true` when hits reach `--max-matches`.
-- `errors` carries per-symbol failures; `warnings` surfaces tool degradations.
-- `cli_version` pins the emitting binary version.
-- Bodies default to the first 50 lines in agent/streaming mode; override via `--trim-body` or drop them entirely with `--concise`.
-- When there are **zero hits**, swe-grep populates `fuzzy_matches` + `did_you_mean` to help agents recover from casing/qualification mismatches (e.g. `authservice` → `AuthService`, `::new` → `Foo::new`). Control the threshold with `--fuzzy 0.0..=1.0` (default `0.7`).
+version identifies this search envelope; cli_version is the package version, not an exact source revision. hits use file/line/snippet, not the non-agent summary's top_hits structure. summary.count describes surfaced hits, not a guaranteed exhaustive repository count. In this example, the query also matches a longer identifier. A false truncated flag does not prove every possible rewrite or repository match was returned.
 
-## Context output (`swe-grep context <SYMBOL> <PATH> --explain`)
+--json-only enables agent JSON output; --concise omits rich context/body/origin/score fields. Non-concise payloads may include warnings, suggestions, notes, and body metadata. Treat omitted fields as optional and check errors/warnings where present. --quiet-hint suppresses the instructional stderr banner; stdout and stderr are separate streams.
 
-The `context` command with `--explain` returns symbol intelligence:
+## Concise context
+
+```sh
+./target/release/swe-grep --no-config --disable-telemetry context login_user fixtures/multi_lang --concise --callers --callees --quiet-hint
+```
 
 ```json
 {
-  "symbol": "SearchEngine",
-  "definition": {
-    "file": "src/search/engine.rs",
-    "line": 65,
-    "kind": "struct",
-    "visibility": "pub(crate)",
-    "signature": "pub(crate) struct SearchEngine {",
-    "fields": ["config: SearchConfig", "rg_tool: RipgrepTool"],
-    "methods": ["new(config)", "run_cycle(self)", "verify(self, hits)"],
-    "complexity": { "fields": 19, "methods": 37, "loc": 1772 }
-  },
+  "symbol": "login_user",
+  "def": "pub fn login_user(username: &str, password: &str) -> Option<String> {",
+  "def_location": "src/lib.rs:1",
+  "callers": ["src/lib.rs:19"],
+  "callees": ["Some", "to_string"],
+  "tests": []
+}
+```
+
+Without --callers/--callees those arrays can be empty because the sections were not requested. Concise caller locations and callee names are strings, unlike refs objects. Definition absence can omit def and def_location; clients should accept missing/null definition fields. Full context uses a definition object and richer sections; --body and --explain request additional definition detail. Do not assume a fixed rich-object field set from this concise example.
+
+The harness context tool defaults to concise output and exposes no relationship flags. Use swe_refs for graph queries. Fact-extraction errors are command failures with no success JSON, not an empty valid context object.
+
+## References
+
+```sh
+./target/release/swe-grep --no-config --disable-telemetry refs login_user fixtures/multi_lang --callers --callees --quiet-hint
+```
+
+```json
+{
+  "symbol": "login_user",
   "callers": [
-    {
-      "symbol": "execute",
-      "signature": "pub async fn execute(&self, request: SearchInput) -> Result<SearchSummary>",
-      "call_context": "engine.run_cycle().await",
-      "file": "src/search/mod.rs",
-      "line": 32
-    }
+    {"file": "src/lib.rs", "line": 19, "snippet": "assert_eq!(login_user(\"admin\", \"swe\"), Some(\"token-admin\".to_string()));", "origin": "callgraph"}
   ],
-  "callees": [...],
-  "summary": { "callers": 10, "callees": 5, "tests": 2 }
-}
-```
-
-Key fields in `--explain` mode:
-- `kind`: `struct`, `fn`, `class`, `trait`, `enum`, `interface`, `type`
-- `visibility`: `pub`, `pub(crate)`, `private`, `internal`, `protected`
-- `fields`: Array of `"name: Type"` strings for structs/classes
-- `methods`: Array of `"name(params)"` signatures
-- `complexity`: `{ fields, methods, loc }` counts
-
-### Concise context (`--concise`)
-
-`--concise` returns a minimal, token-friendly payload:
-
-```json
-{
-  "symbol": "SearchEngine",
-  "def": "pub(crate) struct SearchEngine {",
-  "def_location": "src/search/engine.rs:65",
-  "callers": ["src/search/mod.rs:32"],
-  "callees": ["SearchEngine::verify", "SearchEngine::run_cycle"],
-  "tests": ["tests/search_engine.rs"]
-}
-```
-
-- `def_location` is `file:line` when available (or omitted when unknown).
-
-## Grouped output (`--grouped`)
-
-Grouped output reduces repeated context by emitting a per-symbol object that buckets hits into: `definition`, `implementations`, `usages_by_file`, and `test_coverage`.
-
-- `--grouped` currently supports `--format json` only.
-- `--budget N` is an approximate token budget (based on JSON size) and truncates usages/impls/tests when exceeded.
-
-```json
-{
-  "version": 1,
-  "cli_version": "0.1.0",
-  "query": {"symbols": ["AuthService"], "path": "/abs/repo"},
-  "results": [
-    {
-      "symbol": "AuthService",
-      "grouped": {
-        "definition": {"file": "src/auth.rs:42", "signature": "pub struct AuthService"},
-        "implementations": [{"file": "src/auth.rs:89", "trait": "Service", "methods": ["handle"]}],
-        "usages_by_file": {"src/main.rs": [{"line": 8, "context": "import"}]},
-        "test_coverage": ["tests/auth_test.rs"]
-      },
-      "summary": {"definition": 1, "impls": 1, "usages": 1, "tests": 1},
-      "truncated": false
-    }
+  "callees": [
+    {"symbol": "to_string", "file": "src/lib.rs", "line": 3, "snippet": "Some(\"token-admin\".to_string())"}
   ],
-  "summary": {"count": 1, "latency_ms": 12},
-  "errors": [],
-  "warnings": [],
-  "related_symbols": [],
-  "suggested_symbols": [],
-  "related_paths": [],
-  "notes": [],
-  "fd_candidates": [],
-  "concept": null,
-  "concept_expansion": null,
-  "ast_fallback": false,
-  "truncated": false
+  "notes": ["call graph: 1 callers, 1 callees (updated 6 / scanned 6)"]
 }
 ```
 
-## Batch inputs and streaming
+Graph-cache counters in notes vary between runs; do not parse prose as a stable metrics API. Warnings may indicate incomplete graph extraction. Optional imports/importers and other fields depend on CLI flags and findings. Constructor/variant filtering differs from context: refs omits Rust Some/Ok-style constructors unless --include-constructors is requested.
 
-```bash
-# Inline comma-separated
-swe-grep search --agent --symbols Foo,Bar --path .
+## Batch, streaming, and grouped CLI output
 
-# File input (one symbol per line)
-swe-grep search --agent --symbols-file queries.txt --path .
+These are CLI options, not model-facing tool arguments:
 
-# Stdin
-printf "Foo\nBar\n" | swe-grep search --agent --stdin-symbols --path .
-
-# NDJSON streaming (one object per symbol, last has done=true)
-swe-grep search --agent --symbols Foo,Bar --stream --path .
-# Add --progress to log batch status to stderr
-swe-grep search --agent --symbols Foo,Bar --stream --progress --path .
-
-# NDJSON streaming (grouped per symbol)
-swe-grep search --agent --symbols Foo,Bar --stream --grouped --budget 2000 --path .
+```sh
+./target/release/swe-grep search --agent --symbols login_user,fetchUser --path fixtures/multi_lang --stream --quiet-hint
+./target/release/swe-grep search login_user fixtures/multi_lang --agent --grouped --budget 2000 --quiet-hint
 ```
 
-## Output formatting and body control
+Streaming output is NDJSON, not a single JSON document. Grouped output is not the flat hits schema above; budgets are approximate, not tokenizer guarantees. Check search --help and context --help for available formats and section controls before selecting a parser.
 
-- `--format json|json-lines|table|compact|tree|edit|minimal|summary|markdown|csv` (streaming is always JSON).
-- `--json-pretty` switches agent JSON to pretty-printing (non-streaming).
-- `--concise` omits body/context/origin/score to keep payloads minimal.
-- `--trim-body N` trims fetched bodies to the first N lines (defaults to 50 in agent/streaming mode).
-- `--definitions` adds best-effort definition labels from context hints.
-- `--context-before/--context-after` override the default 2/2 context; set both to 0 for no context.
+## Failure handling
+
+Check process status before accepting stdout. Search envelopes can also carry per-symbol errors. Context extraction failures must not be interpreted as absence; refs warnings can mean partial analysis. The backend rejects truncated/incomplete JSON and nonzero CLI status, and the MCP transport maps execution failures to isError. Do not depend on a single exit-code table across every CLI subcommand and validation path.

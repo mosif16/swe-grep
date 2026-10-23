@@ -26,10 +26,9 @@ pub fn search_embedded(
         return Ok(Vec::new());
     }
 
-    let pattern = patterns.join("|");
     let matcher = RegexMatcherBuilder::new()
         .case_smart(true)
-        .build(&pattern)
+        .build_many(patterns)
         .context("failed to build embedded regex matcher")?;
 
     let mut searcher = SearcherBuilder::new().line_number(true).build();
@@ -106,7 +105,7 @@ pub fn search_embedded(
             })
         };
 
-        if let Err(err) = searcher.search_path(&matcher, &path, &mut sink) {
+        if let Err(err) = searcher.search_slice(&matcher, &file_bytes, &mut sink) {
             tracing::debug!(error = %err, path = %path.display(), "embedded search failed");
         }
     }
@@ -123,4 +122,29 @@ fn compute_line_offsets(bytes: &[u8]) -> Vec<u64> {
         }
     }
     offsets
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn independent_patterns_cannot_escape_their_alternative() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("input.txt");
+        fs::write(&path, "x\nX\n").unwrap();
+        let matches = search_embedded(&path, &["(?i)nomatch".into(), "X".into()], 10).unwrap();
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].line_number, 2);
+    }
+
+    #[test]
+    fn offsets_are_bytes_and_limit_is_global() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("input.txt");
+        fs::write(&path, "é\nλ target\nnext target\n").unwrap();
+        let matches = search_embedded(&path, &["target".into()], 1).unwrap();
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].line_number, 2);
+        assert_eq!(matches[0].absolute_offset, 6);
+    }
 }

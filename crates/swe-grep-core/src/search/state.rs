@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::{BufWriter, Write};
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
@@ -77,38 +77,47 @@ impl PersistentState {
             .into_iter()
             .flat_map(|paths| paths.iter())
             .filter_map(|text| {
-                let relative = PathBuf::from(text);
-                let absolute = self.root.join(&relative);
-                if absolute.exists()
-                    && absolute
-                        .file_name()
-                        .and_then(|n| n.to_str())
-                        .map(|name| !name.starts_with('.'))
-                        .unwrap_or(true)
-                {
-                    Some(relative)
-                } else {
-                    None
-                }
+                let relative = self.safe_cached_path(text)?;
+                self.root.join(&relative).is_file().then_some(relative)
             })
             .collect()
     }
 
     pub(crate) fn top_directories(&self, limit: usize) -> Vec<PathBuf> {
         let mut dirs: Vec<_> = self.data.directory_scores.iter().collect();
-        dirs.sort_by(|a, b| b.1.cmp(a.1));
+        dirs.sort_by(|a, b| b.1.cmp(a.1).then_with(|| a.0.cmp(b.0)));
         dirs.into_iter()
-            .take(limit)
             .filter_map(|(dir, _)| {
-                let path = PathBuf::from(dir);
-                let absolute = self.root.join(&path);
-                if absolute.is_dir() { Some(path) } else { None }
+                let path = self.safe_cached_path(dir)?;
+                self.root.join(&path).is_dir().then_some(path)
             })
+            .take(limit)
             .collect()
     }
 
+    // Cache files are hints, not authority to search outside the selected root.
+    fn safe_cached_path(&self, text: &str) -> Option<PathBuf> {
+        let path = Path::new(text);
+        if path.is_absolute()
+            || path.components().any(|component| match component {
+                Component::Normal(name) => name.to_string_lossy().starts_with('.'),
+                Component::CurDir => false,
+                _ => true,
+            })
+        {
+            return None;
+        }
+        let canonical = self.root.join(path).canonicalize().ok()?;
+        canonical
+            .strip_prefix(&self.root)
+            .ok()
+            .map(Path::to_path_buf)
+    }
+
     pub(crate) fn known_symbols(&self) -> Vec<String> {
-        self.data.symbol_hits.keys().cloned().collect()
+        let mut symbols: Vec<_> = self.data.symbol_hits.keys().cloned().collect();
+        symbols.sort();
+        symbols
     }
 
     const MAX_SYMBOLS: usize = 500;
@@ -173,7 +182,7 @@ impl PersistentState {
                 .iter()
                 .map(|(k, v)| (k.clone(), *v))
                 .collect();
-            dirs.sort_by(|a, b| b.1.cmp(&a.1));
+            dirs.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
             let to_keep: HashSet<String> = dirs
                 .into_iter()
                 .take(Self::MAX_DIRECTORIES)
@@ -211,52 +220,112 @@ impl PersistentState {
                 return Ok(());
             }
         }
-        let tmp_path = self.file_path.with_extension("json.tmp");
-        match fs::File::create(&tmp_path) {
-            Ok(file) => {
-                let mut writer = BufWriter::new(file);
-                if let Err(err) = serde_json::to_writer_pretty(&mut writer, &self.data) {
-                    tracing::debug!(
-                        error = %err,
-                        "failed to serialize persistent state; disabling persistence"
-                    );
-                    self.enabled = false;
-                    self.dirty = false;
-                    return Ok(());
-                }
-                if let Err(err) = writer.flush() {
-                    tracing::debug!(
-                        error = %err,
-                        "failed to flush persistent state; disabling persistence"
-                    );
-                    self.enabled = false;
-                    self.dirty = false;
-                    return Ok(());
-                }
+        // A unique same-directory temporary file prevents concurrent searches
+        // from truncating or renaming each other's in-progress state.
+        let result = (|| -> Result<()> {
+            let parent = self.file_path.parent().expect("state file has a parent");
+            let mut temporary = tempfile::NamedTempFile::new_in(parent)?;
+            {
+                let mut writer = BufWriter::new(temporary.as_file_mut());
+                serde_json::to_writer_pretty(&mut writer, &self.data)?;
+                writer.flush()?;
             }
-            Err(err) => {
-                tracing::debug!(
-                    path = %tmp_path.display(),
-                    error = %err,
-                    "failed to create temporary state file; disabling persistence"
-                );
-                self.enabled = false;
-                self.dirty = false;
-                return Ok(());
-            }
-        }
-        if let Err(err) = fs::rename(&tmp_path, &self.file_path) {
-            tracing::debug!(
-                from = %tmp_path.display(),
-                to = %self.file_path.display(),
-                error = %err,
-                "failed to move persistent state into place; disabling persistence"
-            );
+            temporary.persist(&self.file_path)?;
+            Ok(())
+        })();
+        if let Err(err) = result {
+            tracing::debug!(error = %err, "failed to save persistent state; disabling persistence");
             self.enabled = false;
-            self.dirty = false;
-            return Ok(());
         }
         self.dirty = false;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::{Arc, Barrier};
+    use tempfile::tempdir;
+
+    #[test]
+    fn cached_paths_cannot_escape_root() {
+        let temp = tempdir().unwrap();
+        let root = temp.path().join("repo");
+        fs::create_dir(&root).unwrap();
+        fs::write(root.join("valid.rs"), "fn target() {}").unwrap();
+        fs::write(temp.path().join("outside.rs"), "secret").unwrap();
+        fs::create_dir(root.join(".hidden")).unwrap();
+        fs::write(root.join(".hidden/hidden.rs"), "secret").unwrap();
+        let root = root.canonicalize().unwrap();
+        let mut state = PersistentState::load(&root, &temp.path().join("cache")).unwrap();
+        state.data.symbol_hits.insert(
+            "target".into(),
+            vec![
+                "valid.rs".into(),
+                "../outside.rs".into(),
+                temp.path()
+                    .join("outside.rs")
+                    .to_string_lossy()
+                    .into_owned(),
+                ".hidden/hidden.rs".into(),
+            ],
+        );
+        assert_eq!(
+            state.hints_for_symbol("target"),
+            vec![PathBuf::from("valid.rs")]
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn cached_symlink_cannot_escape_root() {
+        let temp = tempdir().unwrap();
+        let root = temp.path().join("repo");
+        fs::create_dir(&root).unwrap();
+        fs::write(temp.path().join("outside.rs"), "secret").unwrap();
+        std::os::unix::fs::symlink(temp.path().join("outside.rs"), root.join("link.rs")).unwrap();
+        let root = root.canonicalize().unwrap();
+        let mut state = PersistentState::load(&root, &temp.path().join("cache")).unwrap();
+        state
+            .data
+            .symbol_hits
+            .insert("target".into(), vec!["link.rs".into()]);
+        assert!(state.hints_for_symbol("target").is_empty());
+    }
+
+    #[test]
+    fn concurrent_saves_do_not_share_temporary_files() {
+        let temp = tempdir().unwrap();
+        let root = temp.path().canonicalize().unwrap();
+        let cache = root.join("cache");
+        let barrier = Arc::new(Barrier::new(8));
+        std::thread::scope(|scope| {
+            for index in 0..8 {
+                let barrier = Arc::clone(&barrier);
+                let root = &root;
+                let cache = &cache;
+                scope.spawn(move || {
+                    let mut state = PersistentState::load(root, cache).unwrap();
+                    state
+                        .data
+                        .symbol_hits
+                        .insert(format!("symbol{index}"), vec!["file.rs".into()]);
+                    for _ in 0..10 {
+                        barrier.wait();
+                        state.dirty = true;
+                        state.save().unwrap();
+                        assert!(
+                            state.enabled,
+                            "a concurrent writer must not disable persistence"
+                        );
+                    }
+                });
+            }
+        });
+        let saved: PersistentStateData =
+            serde_json::from_slice(&fs::read(cache.join("state.json")).unwrap()).unwrap();
+        assert_eq!(saved.symbol_hits.len(), 1); // Last writer wins; snapshots are never interleaved.
+        assert_eq!(fs::read_dir(cache).unwrap().count(), 1);
     }
 }

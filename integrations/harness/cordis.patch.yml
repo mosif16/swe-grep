@@ -1,0 +1,9 @@
+# Applied by DSH's plugin manager via package.json dsh.bundle.patch.
+- insert:
+    - id: swe-grep-tools
+      name: '@recordandlearn/swe-grep-harness/dsh'
+      config:
+        timeoutMs: 30000
+        maxOutputBytes: 2097152
+        # binary: /absolute/execution-world/path/to/swe-grep
+        # root: /absolute/execution-world/path/to/repository

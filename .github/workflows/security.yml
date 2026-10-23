@@ -1,0 +1,24 @@
+name: Dependency security audit
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "23 7 * * 1"
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install reproducible audit tool
+        run: cargo install cargo-audit --version 0.22.2 --locked
+      # Deliberately blocking: do not hide known advisory failures with an ignore list.
+      - name: Audit every locked workspace dependency
+        run: cargo audit

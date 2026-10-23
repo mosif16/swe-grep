@@ -1,72 +1,26 @@
-# SWE-GREP DUAL LICENSING
+SWE-Grep Proprietary License
 
-Copyright (c) 2025 Record & Learn LLC. All Rights Reserved.
-Created by Mohammed Sayf.
+Copyright (c) 2026 Record and Learn LLC. All Rights Reserved.
 
-## Licensing Options
+This notice applies to SWE-Grep and its associated source code, binaries,
+documentation, and adapters (the "Software"), except for third-party materials
+that are subject to their own licenses.
 
-This software is available under a dual licensing model:
+The Software is proprietary. No permission is granted to use, copy, modify,
+distribute, sublicense, or commercially exploit the Software without a prior
+written agreement with Record and Learn LLC, except as permitted by applicable
+law or a separate written agreement. All rights not expressly granted are
+reserved.
 
-### 1. Individual/Non-Commercial Use License
+This notice applies to the current distribution and does not alter rights
+already granted under earlier licenses, including earlier open-source licenses.
 
-SWE-Grep is free to use for individual developers, hobbyists, and non-commercial purposes under the MIT License:
+Third-party materials remain subject to their respective licenses. This notice
+does not replace or modify those licenses or any notices required by them.
 
-```
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
-```
-
-### 2. Commercial Use License Required
-
-If you are using SWE-Grep for any **commercial purpose**, you MUST obtain a commercial license. Commercial use includes but is not limited to:
-
-- Building commercial software or services
-- Using SWE-Grep in business operations
-- Offering SWE-Grep-derived services to customers
-- Teaching or training others for a fee
-- Any other revenue-generating activity
-
-#### Commercial Licensing Terms:
-- **Base Fee**: $499/year per individual developer, $1,999/year per organization
-- **Revenue Sharing**: 10% of all revenue generated from commercial activities using SWE-Grep
-- **Support**: Premium support and feature priority included
-- **Updates**: Access to all updates and new features
-
-#### Contact Information:
-Record & Learn LLC
-Mohammed Sayf, Owner
-Email: msayf@recordandlearn.info
-Website: recordandlearn.info
-
-For commercial licensing inquiries: msayf@recordandlearn.info
-
-### Commercial Use Agreement Highlights:
-
-1. **License Scope**: Limited commercial rights for revenue-sharing licensees
-2. **Reporting**: Quarterly revenue reports required within 30 days of quarter end
-3. **Audit Rights**: Licensor may audit usage and revenue records
-4. **Intellectual Property**: All SWE-Grep IP remains exclusively with Record & Learn LLC
-5. **Term**: Annual licensing with automatic renewal (unless terminated)
-
----
-
-BY ACCESSING, DOWNLOADING, OR USING THE SOFTWARE, YOU ACKNOWLEDGE THAT YOU
-HAVE READ THIS LICENSE, UNDERSTAND IT, AND AGREE TO COMPLY WITH ITS TERMS.
-
-IF YOU DO NOT AGREE TO THE TERMS OF THIS LICENSE, DO NOT ACCESS, DOWNLOAD,
-OR USE THE SOFTWARE.
+TO THE MAXIMUM EXTENT PERMITTED BY APPLICABLE LAW, THE SOFTWARE IS PROVIDED
+"AS IS", WITHOUT WARRANTIES OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING
+MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE, AND NONINFRINGEMENT.
+TO THE MAXIMUM EXTENT PERMITTED BY APPLICABLE LAW, Record and Learn LLC SHALL
+NOT BE LIABLE FOR ANY CLAIM, DAMAGES, OR OTHER LIABILITY, WHETHER IN CONTRACT,
+TORT, OR OTHERWISE, ARISING FROM OR IN CONNECTION WITH THE SOFTWARE OR ITS USE.

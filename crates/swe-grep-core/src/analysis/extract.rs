@@ -1,15 +1,15 @@
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::time::UNIX_EPOCH;
 
 use anyhow::{Context, Result};
 use ignore::WalkBuilder;
 use rayon::prelude::*;
 
+use crate::file_identity::{FileIdentity, read_snapshot};
 use crate::language::detect_language_from_path;
 use crate::search::passes_extension_filter;
 
-use super::cache::{AnalysisCache, CacheStats};
+use super::cache::{AnalysisCache, CacheStats, content_hash64};
 use super::facts::{FACTS_SCHEMA_VERSION, FactBundle, FileFacts};
 
 #[derive(Debug, Clone)]
@@ -62,22 +62,37 @@ pub fn extract_repo_facts(
             }
 
             let rel_path = rel_path_str(root, abs_path);
-            let meta = fs::metadata(abs_path)
-                .with_context(|| format!("failed to stat {}", abs_path.display()))?;
-            let size = meta.len();
-            let mtime = meta
-                .modified()
-                .ok()
-                .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
-                .map(|dur| dur.as_secs())
-                .unwrap_or(0);
-
-            if let Some(cached) = cache.load(&rel_path, mtime, size)? {
-                return Ok(Some((true, cached)));
+            let meta = match fs::metadata(abs_path) {
+                Ok(meta) => meta,
+                Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+                Err(err) => {
+                    return Err(err)
+                        .with_context(|| format!("failed to stat {}", abs_path.display()));
+                }
+            };
+            let identity = FileIdentity::from_metadata(&meta);
+            let mtime = identity.mtime_seconds();
+            let size = identity.size;
+            let cached = cache.load(&rel_path)?;
+            if cached
+                .as_ref()
+                .is_some_and(|entry| entry.reusable_with(&identity))
+            {
+                return Ok(Some((true, cached.unwrap().facts)));
             }
-
-            let source = fs::read_to_string(abs_path)
+            let (bytes, stable_identity) = read_snapshot(abs_path, identity)
                 .with_context(|| format!("failed to read {}", abs_path.display()))?;
+            let content_hash = content_hash64(&bytes);
+            if let Some(mut cached) = cached.filter(|entry| entry.content_hash == content_hash) {
+                cached.facts.mtime = mtime;
+                cached.facts.size = size;
+                if let Some(identity) = stable_identity {
+                    cache.store(&cached.facts, identity, content_hash)?;
+                }
+                return Ok(Some((true, cached.facts)));
+            }
+            let source = String::from_utf8(bytes)
+                .with_context(|| format!("failed to decode {}", abs_path.display()))?;
             let facts = match extract_file_facts(language, &rel_path, &source) {
                 Ok(facts) => facts,
                 Err(_) => {
@@ -95,7 +110,9 @@ pub fn extract_repo_facts(
                 language: language.to_string(),
                 facts,
             };
-            cache.store(&record)?;
+            if let Some(identity) = stable_identity {
+                cache.store(&record, identity, content_hash)?;
+            }
             Ok(Some((false, record)))
         })
         .collect();

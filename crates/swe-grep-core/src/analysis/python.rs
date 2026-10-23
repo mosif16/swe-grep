@@ -158,8 +158,8 @@ fn traverse(
                             kind: "class".to_string(),
                             line: name_node.start_position().row as usize + 1,
                             span: Some((
-                                name_node.start_position().row as usize + 1,
-                                name_node.end_position().row as usize + 1,
+                                node.start_position().row + 1,
+                                node.end_position().row + 1,
                             )),
                             visibility: None,
                             doc: None,
@@ -212,8 +212,8 @@ fn traverse(
                             kind: kind.to_string(),
                             line: name_node.start_position().row as usize + 1,
                             span: Some((
-                                name_node.start_position().row as usize + 1,
-                                name_node.end_position().row as usize + 1,
+                                node.start_position().row + 1,
+                                node.end_position().row + 1,
                             )),
                             visibility: None,
                             doc: None,

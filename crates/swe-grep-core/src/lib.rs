@@ -5,6 +5,7 @@ pub mod cli;
 pub mod context;
 pub mod feedback;
 pub mod file_cache;
+pub mod file_identity;
 pub mod language;
 pub mod search;
 pub mod service;

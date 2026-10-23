@@ -153,6 +153,11 @@ impl SearchConfig {
             );
         }
 
+        if regex_mode {
+            regex::Regex::new(&symbol)
+                .with_context(|| format!("invalid regular expression: {symbol}"))?;
+        }
+
         if args.definitions_only && args.usages_only {
             anyhow::bail!("--definitions-only and --usages-only cannot be combined");
         }
@@ -166,7 +171,7 @@ impl SearchConfig {
         let mut scope_file = args.scope_file.clone();
         if let Some(raw_path) = path.clone() {
             let raw_str = raw_path.to_string_lossy();
-            if has_glob_chars(&raw_str) {
+            if !raw_path.exists() && has_glob_chars(&raw_str) {
                 path_glob_patterns.push(raw_str.to_string());
                 path = None;
             }
@@ -175,6 +180,11 @@ impl SearchConfig {
         let base =
             path.unwrap_or(std::env::current_dir().context("failed to resolve current directory")?);
         let (root, inferred_scope) = if base.is_file() {
+            // Resolve an inferred file before changing its root. Otherwise a relative
+            // path such as src/lib.rs would become <root>/src/src/lib.rs below.
+            let base = base
+                .canonicalize()
+                .with_context(|| format!("cannot access file: {}", base.display()))?;
             let parent = base
                 .parent()
                 .map(|p| p.to_path_buf())
@@ -295,14 +305,25 @@ impl SearchConfig {
         };
         let top_hits = usize::max(1, args.top_hits);
 
-        let scope_file = scope_file.map(|file| {
-            let absolute = if file.is_absolute() {
-                file
-            } else {
-                root.join(file)
-            };
-            normalize_path(&root, &absolute).unwrap_or(absolute)
-        });
+        let scope_file = scope_file
+            .map(|file| {
+                let absolute = if file.is_absolute() {
+                    file
+                } else {
+                    root.join(file)
+                };
+                let canonical = absolute
+                    .canonicalize()
+                    .with_context(|| format!("cannot access scope file: {}", absolute.display()))?;
+                if !canonical.starts_with(&root) {
+                    anyhow::bail!("scope file is outside search root: {}", canonical.display());
+                }
+                if !canonical.is_file() {
+                    anyhow::bail!("scope file is not a regular file: {}", canonical.display());
+                }
+                normalize_path(&root, &canonical)
+            })
+            .transpose()?;
 
         Ok(Self {
             root,

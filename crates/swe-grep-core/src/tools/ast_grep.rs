@@ -105,10 +105,10 @@ impl AstGrepTool {
             }
         }
         cmd.current_dir(root);
+        cmd.kill_on_drop(true);
 
         let collect = async {
-            let output = cmd
-                .output()
+            let output = super::common::bounded_output(&mut cmd)
                 .await
                 .with_context(|| "failed to spawn ast-grep; is it installed and on PATH?")?;
 
@@ -185,6 +185,7 @@ impl AstGrepTool {
 
 #[derive(Debug, Deserialize)]
 struct AstGrepMessage {
+    #[serde(alias = "file")]
     path: String,
     range: AstGrepRange,
 }

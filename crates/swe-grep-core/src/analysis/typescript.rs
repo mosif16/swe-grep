@@ -939,6 +939,44 @@ fn extract_ts_visibility(signature: Option<&str>) -> Option<String> {
     None
 }
 
+#[cfg(test)]
+mod documentation_tests {
+    use super::extract_jsdoc_before;
+
+    #[test]
+    fn one_line_jsdoc_does_not_absorb_previous_code() {
+        let lines = [
+            "const previous = 1;",
+            "/** Target documentation. */",
+            "function target() {}",
+        ];
+        assert_eq!(
+            extract_jsdoc_before(&lines, 2).as_deref(),
+            Some("Target documentation.")
+        );
+    }
+
+    #[test]
+    fn multiline_and_triple_slash_docs_keep_their_order() {
+        let block = [
+            "/**",
+            " * First.",
+            " * Second.",
+            " */",
+            "function target() {}",
+        ];
+        assert_eq!(
+            extract_jsdoc_before(&block, 4).as_deref(),
+            Some("First.\nSecond.")
+        );
+        let triple = ["/// First.", "/// Second.", "function target() {}"];
+        assert_eq!(
+            extract_jsdoc_before(&triple, 2).as_deref(),
+            Some("First.\nSecond.")
+        );
+    }
+}
+
 fn extract_jsdoc_before(lines: &[&str], start_row: usize) -> Option<String> {
     if start_row == 0 || lines.is_empty() {
         return None;
@@ -946,53 +984,53 @@ fn extract_jsdoc_before(lines: &[&str], start_row: usize) -> Option<String> {
 
     let mut idx = start_row.saturating_sub(1);
     let mut budget = 60usize;
-    while budget > 0 {
-        let line = lines.get(idx).copied().unwrap_or_default();
-        let trimmed = line.trim();
-        if trimmed.is_empty() {
-            break;
-        }
-        if trimmed.starts_with("///") {
-            let mut collected = Vec::new();
-            while budget > 0 {
-                let current = lines.get(idx).copied().unwrap_or_default().trim();
-                if !current.starts_with("///") {
-                    break;
-                }
-                collected.push(current.to_string());
-                budget -= 1;
-                if idx == 0 {
-                    break;
-                }
-                idx -= 1;
+    let line = lines.get(idx).copied().unwrap_or_default();
+    let trimmed = line.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    if trimmed.starts_with("///") {
+        let mut collected = Vec::new();
+        while budget > 0 {
+            let current = lines.get(idx).copied().unwrap_or_default().trim();
+            if !current.starts_with("///") {
+                break;
             }
-            collected.reverse();
-            return clean_doc_lines(&collected);
-        }
-        if trimmed.ends_with("*/") {
-            let mut block = vec![trimmed.to_string()];
+            collected.push(current.to_string());
             budget -= 1;
-            while budget > 0 && idx > 0 {
-                idx -= 1;
-                let prev = lines
-                    .get(idx)
-                    .copied()
-                    .unwrap_or_default()
-                    .trim()
-                    .to_string();
-                if prev.is_empty() {
-                    break;
-                }
-                block.push(prev.clone());
-                budget -= 1;
-                if prev.contains("/**") {
-                    break;
-                }
+            if idx == 0 {
+                break;
             }
-            block.reverse();
+            idx -= 1;
+        }
+        collected.reverse();
+        return clean_doc_lines(&collected);
+    }
+    if trimmed.ends_with("*/") {
+        let mut block = vec![trimmed.to_string()];
+        if trimmed.contains("/**") {
             return clean_doc_lines(&block);
         }
-        break;
+        budget -= 1;
+        while budget > 0 && idx > 0 {
+            idx -= 1;
+            let prev = lines
+                .get(idx)
+                .copied()
+                .unwrap_or_default()
+                .trim()
+                .to_string();
+            if prev.is_empty() {
+                break;
+            }
+            block.push(prev.clone());
+            budget -= 1;
+            if prev.contains("/**") {
+                break;
+            }
+        }
+        block.reverse();
+        return clean_doc_lines(&block);
     }
     None
 }

@@ -1,70 +1,34 @@
-# Recent Changes (last 10 commits)
+# Current changes and migration notes
 
-Latest-first snapshot of the recent work so docs stay in sync with code:
+[Documentation home](<../README.md>) · [Quickstart](<quickstart.md>)
 
-- `HEAD` — **Simple Mode + Agent Search Supremacy**
-  - **Simple mode**: `swe-grep <symbol> [language|path]` - instant search with `file:line | code` output
-  - No subcommand needed: `swe-grep AuthService rust` just works
+This is a behavior-oriented summary of the current working revision, not a tagged release history. Consult git log for historical commits; previous HEAD/prev labels and promotional release claims are no longer used as version identifiers.
 
-- `prev` — **Agent Search Supremacy: Symbol Intelligence + Semantic Grouping**
-  - **Symbol Intelligence (`--explain`)**: Enriches definitions with kind, visibility, fields, methods, doc comments, and complexity metrics
-  - **Signature-rich references**: Callers/callees now include full signatures and call context lines
-  - **Semantic grouping (`--grouped`)**: Groups results into definition → implementations → usages_by_file → test_coverage
-  - **Token budget (`--budget N`)**: Intelligently truncates grouped output to approximate token budget
-  - **Fuzzy resolution (`--fuzzy N`)**: Auto-suggests symbols when exact match fails (e.g., `authservice` → `AuthService`)
-  - **Did-you-mean**: Returns `fuzzy_matches` array with scores + `did_you_mean` string for agent recovery
-  - **Usage context classification**: Usages labeled as `import`, `type_reference`, `method_call`, `construction`, etc.
-  - **Bug fixes**: Fixed slice bounds panic in grouped output method extraction
+## Integration
 
-- `ea01d29` — **Context Retrieval: The #1 Agent Search Tool**
-  - **New `swe-grep context` command**: One call returns everything an agent needs
-    - Definition with signature and docstring
-    - Callers (with their signatures and call_context)
-    - Callees (what the symbol calls)
-    - Type relationships (implements, extends, contains)
-    - Import chain (who imports this, what it imports)
-    - Related test files (auto-discovered)
-  - **Presets**: `--preset refactor|debug|understand` for common workflows
-  - **Symbol intelligence**: `context --explain` enriches the definition with kind/visibility/docs/fields/methods/complexity
-  - **Concise mode**: `--concise` returns minimal `file:line` format for token efficiency
-  - **Streaming**: `--stream` outputs NDJSON sections as computed
-  - **Import Graph**: Full import/export tracking
-    - `refs --imports` shows what a file/symbol imports
-    - `refs --importers` shows what imports a file/symbol
-    - `refs --import-depth N` for transitive traversal
-    - Cache with hit rate tracking
-  - **Language Expansion**:
-    - Go: functions, methods, structs, interfaces, imports, calls, implicit implements
-    - Python: def, async def, classes, decorators, imports, calls, Protocol support
-  - **Cross-language call graph**: Finds callers across Rust/Swift/TS/Go/Python
-  - **Type graph expansion**: Tracks inheritance across all 5 languages
-  - **New test suites**: imports.rs, context_cli.rs, language fact extraction
+- Native DSH tools, an official-SDK MCP stdio server, and a reusable backend share the Rust CLI engine.
+- Native DSH is tested at 0.2.1-rc.2; MCP SDK is 1.32.1; integration requires Node.js 22+.
+- Build the backend binary from this revision. Calls use global --no-config to avoid ambient user configuration; an older executable may reject the flag.
+- Tool contracts reject unknown arguments, confine requested paths to their configured root, and expose no arbitrary environment/argument passthrough. Context tool paths must be directories.
 
-- `e7b30ff` — **Call Graph & Type Graph Analysis**
-  - Added CallGraph with qualified name preservation (`Foo::new` matches only `Foo::new`, not all `new()`)
-  - Dual indexing: supports both qualified (`Type::method`) and simple (`method`) lookups
-  - TypeGraph for tracking type relationships (conformance, inheritance, implementation)
-  - Integrated call graph into `refs --callers` command (best-effort; falls back with warnings on analysis failures)
-  - Tree-sitter parsing for Rust, Swift, TypeScript, Go, and Python
-  - Parallel facts extraction (rayon) + per-file fact caching (`facts/*.json`)
-  - Persisted + incremental analysis graph cache (bincode, `graphs/analysis_graphs_v1.bin`, content-hash invalidation)
-  - Fixed tree-sitter ABI version (upgraded to 0.25 for version 15 compatibility)
+## Search declarations and references
 
-- `f7e1c0f` — Add automated feedback processing workflow and related scripts.
-- `19363a6` — Add feedback collection feature for shell command tool.
-- `c3222f0` — Add support for attribute searches and enhance search configuration options.
-- `853d3fc` — Add advanced search features and marketing docs.
-- `d05840d` — Add code-only and exclude filters, concept expansion, and result ranking.
-- `174299a` — Add advanced search filters and output formats.
-- `1ff1c9f` — Add string and path glob search support.
-- `683babb` — Add discovery and refactor helpers to swe-grep.
-- `ee681f0` — Add agent mode with structured output and batch search.
-- `cc6d745` — Refactor search tool configuration and add language utilities.
-- `d801031` — Add file cache and embedded ripgrep search.
-- `375badd` — Misc fixes and cleanup.
-- `549f925` — Add warnings field to `SearchSummary`/`SearchEngine` for error tracking.
-- `4e46ebf` — Remove outdated agent integration guide from agents.md.
-- `7374171` — Enhance agent integration guide and usage documentation.
-- `4d06d8d` — Remove outdated agent checklist sections from agents.md.
+Declaration/usage classification is language-aware and refreshed after edits. --definitions-only and --usages-only partition matching declaration/use locations; --kind selects declaration kinds. This is still search: a query can match a longer identifier.
 
-For a deeper history, run `git log` or browse the repo history.
+**Migration:** refs rejects --definitions-only and --kind with an error explaining that refs reports usage edges. Use search for declarations, context for a definition, or refs for callers/callees. --usages-only remains accepted for refs.
+
+Semantic reference filtering now keeps allowed call/import graph data while excluding disallowed origins/endpoints. Callees come from matching function/method scopes rather than unrelated functions in a matching file. Filtered queries should not fall back to invented file-wide dependencies.
+
+## Context errors
+
+**Migration:** context no longer disguises fact-extraction/cache I/O failures as an absent symbol. Invalid UTF-8 or other extraction failures cause a nonzero exit with a diagnostic and no success payload, including concise, grouped, and streaming modes. Handle this separately from successful absence (missing/null definition fields).
+
+Request --callers/--callees or an appropriate preset when you need context relationships; empty unrequested sections are not exhaustive graph answers. The harness context contract intentionally exposes fewer options; use swe_refs for graph queries.
+
+## Caches and index
+
+Metadata-first reuse includes reliable Unix ctime identity, not seconds-only mtime. Non-Unix or unreliable metadata falls back to hashing. Optional Tantivy refresh is incremental for added, changed, and deleted files; unchanged reliable warm opens need no writer/commit. These are implementation properties covered by tests, not benchmark promises.
+
+## Licensing
+
+Current licensing is proprietary, owned by Record and Learn LLC. The root [LICENSE](<../LICENSE>) governs use. Contact [msayf@recordandlearn.info](mailto:msayf@recordandlearn.info) for licensing inquiries.

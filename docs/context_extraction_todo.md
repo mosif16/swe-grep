@@ -1,45 +1,33 @@
-# Context Extraction Enhancements
+# Context capabilities and limits
 
-This document tracks the remaining work to ship snippet expansion and context extraction
-so downstream agents can rely on richer snippets and whole-file retrieval.
+[Documentation home](<../README.md>) · [JSON output](<agent-mode.md>) · [Migration notes](<changelog.md>)
 
-## Snippet payloads
+This page replaces the former context-extraction task checklist. It describes implemented behavior, not promised roadmap work; the filename is retained for existing links.
 
-- [x] Extend `RipgrepMatch` in `crates/swe-grep-core/src/tools/rg.rs` to retain the raw `rg --json`
-      payload (store it on `ripgrep::Match` and propagate through `SearchHit`) so
-      `top_hits[].raw_snippet` can serialize the exact event.
-- [x] Detect truncation introduced by `--max-columns 200` and surface
-      `raw_snippet_truncated` plus `snippet_length` on `TopHit` (compare the byte
-      length from the JSON event against the emitted text).
-- [x] Add `expanded_snippet`, `context_start`, and `context_end` fields to `TopHit`
-      by reading neighbouring lines from disk, formatting them with zero-padded line
-      numbers, and binding the range metadata.
-- [x] Plumb `--context-before` / `--context-after` through `SearchArgs` and the `rg`
-      invocation while maintaining the current default of zero for backwards compatibility.
+## Search snippets versus symbol context
 
-## Whole-body retrieval
+Search returns matching locations and snippets. CLI options --context-before/--context-after expand nearby lines; --body requests file bodies and --body-limit limits bytes. Agent output may trim bodies, and --concise omits rich fields. A search body is not necessarily a symbol's definition body.
 
-- [x] Introduce a `--body` CLI flag (and proto toggle) that requests full-file payloads per hit.
-- [x] Stream UTF-8 files when the flag is set, surface them via `body`, and emit a
-      `body_retrieved` boolean to differentiate missing files from intentional skips.
-- [x] Add size and timeout guardrails so large files cannot stall the search loop.
+Context uses repository facts to select a definition and can attach its body, caller/callee information, type/import relationships, and related tests when requested. --explain adds available definition metadata; --concise deliberately omits richer detail. --grouped/--budget and --max-lines are output controls, not guarantees of complete analysis or exact tokenizer budgets. See context --help for available presets and section flags.
 
-## AST warnings and fallbacks
+## Language coverage
 
-- [ ] Capture parser diagnostics from `ast-grep` and expose them as `ast_warnings` in the summary.
-- [ ] Increment `swegrep_fallback_total{kind="ast_literal"}` whenever we recover via a literal probe.
-- [ ] Record parser errors as `swegrep_fallback_total{kind="ast_error"}` and convert the literal hits
-      into `AstGrepMatch` entries to keep downstream scoring consistent.
+The fact-extraction code covers Rust, Swift, TypeScript/TSX, JavaScript/JSX, Go, and Python. Text search can find content beyond those languages; that does not imply semantic graph support for every file type. Language syntax, dynamic dispatch, aliases, generated code, macros, imports, and ambiguous short names can limit results. Static analysis is not compiler type resolution, a cross-language linker, or runtime tracing.
 
-## Telemetry
+Definition selection and declaration filters are best-effort. Literal queries can match longer names. Graph relationships and inferred test associations must be checked against source; an empty result is not proof of absence outside the selected scope.
 
-- [ ] Measure snippet expansion overhead with a `swegrep_snippet_expansion_ms` histogram.
-- [ ] Track whole-body fetch outcomes with `swegrep_body_retrieval_total{status="success"|"failure"}`.
-- [ ] Ensure latency, reward, and fallback counters remain in the cycle-level telemetry payload.
+## Semantic references
 
-## Regression coverage
+refs derives callees from calls inside the matching function/method scope, not from every function in a matching file. Caller declarations are not call sites. Rust constructor/variant calls such as Some and Ok are omitted from refs callee output unless --include-constructors is requested. Context and refs may format or select information differently; they are not interchangeable schemas.
 
-- [ ] Add async integration coverage for context expansion plus body retrieval using the
-      `calculateBudgetRemaining` fixture.
-- [ ] Cover AST literal fallback on generic symbols (`FetchDescriptor<Bill>`).
-- [ ] Validate quoted symbol recovery paths (e.g. `"struct AppConfig"`).
+Scope-file, path-glob, excludes, language, test exclusions, and Git scopes constrain graph results while retaining allowed semantic edges. Cached unfiltered graphs must not leak excluded callers. --definitions-only and --kind are invalid for refs because refs reports usage edges; --usages-only is accepted.
+
+## Failure and cache behavior
+
+Context fact-extraction errors, including invalid UTF-8 in an analyzed source file or cache I/O failures, produce a nonzero exit and no success JSON, including concise/grouped/stream modes. A genuinely absent symbol can still return a successful object without a def field. refs can report incomplete graph analysis in warnings instead of claiming complete results.
+
+Metadata-first warm reuse avoids rereading unchanged source only where file identity is considered reliable. Unix identity includes size, nanosecond mtime, ctime, device, and inode. Unsupported/coarse identities and non-Unix systems use conservative content hashing. This trusts filesystem metadata, not adversarially forged identities; it is not an integrity guarantee. See [cache guidance](<performance-tuning.md>).
+
+## Regression evidence
+
+Current tests cover [context failures and filtered graphs](<../crates/swe-grep-core/tests/pipeline_context.rs>), [declaration classification](<../crates/swe-grep-core/tests/pipeline_definitions.rs>), and [scoped semantic references](<../crates/swe-grep-core/tests/semantic_refs.rs>). Test coverage documents specific cases, not universal semantic correctness.

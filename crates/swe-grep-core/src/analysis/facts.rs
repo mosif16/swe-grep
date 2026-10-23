@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-pub const FACTS_SCHEMA_VERSION: u32 = 4;
+pub const FACTS_SCHEMA_VERSION: u32 = 5;
 
 use super::imports::{ExportFact, ImportFact};
 

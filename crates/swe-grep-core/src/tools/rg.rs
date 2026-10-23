@@ -17,12 +17,12 @@ use lru::LruCache;
 use rayon::ThreadPoolBuilder;
 use rayon::prelude::*;
 use serde_json::json;
-use tokio::io::{AsyncBufReadExt, BufReader};
+use tokio::io::BufReader;
 use tokio::process::Command;
 use tokio::task;
 use tokio::time::timeout;
 
-use super::common::{ChildGuard, RgMessage};
+use super::common::{ChildGuard, RgMessage, drain_stderr, next_json_line};
 use crate::search::passes_extension_filter;
 
 const MATCHER_CACHE_CAPACITY: usize = 64;
@@ -36,7 +36,7 @@ pub struct RipgrepTool {
     max_columns: usize,
     threads: usize,
     ignore_case: bool,
-    matcher_cache: Arc<Mutex<LruCache<String, RegexMatcher>>>,
+    matcher_cache: Arc<Mutex<LruCache<Vec<String>, RegexMatcher>>>,
 }
 
 impl RipgrepTool {
@@ -71,7 +71,7 @@ impl RipgrepTool {
         excludes: Option<&GlobSet>,
         extensions: Option<&[String]>,
     ) -> Result<Vec<RipgrepMatch>> {
-        if queries.is_empty() {
+        if queries.is_empty() || self.max_matches == 0 {
             return Ok(Vec::new());
         }
 
@@ -156,7 +156,7 @@ impl RipgrepTool {
     fn compile_matcher(&self, queries: &[String]) -> Result<RegexMatcher> {
         let mut normalized: Vec<String> = queries.to_vec();
         normalized.sort();
-        let key = normalized.join("\u{1f}");
+        let key = normalized.clone();
 
         if let Some(cached) = self.matcher_cache.lock().unwrap().get(&key) {
             return Ok(cached.clone());
@@ -280,6 +280,7 @@ impl RipgrepTool {
             cmd.arg("-e").arg(query);
         }
 
+        cmd.arg("--");
         if paths.is_empty() {
             cmd.arg(".");
         } else {
@@ -298,6 +299,7 @@ impl RipgrepTool {
         }
 
         cmd.current_dir(root);
+        cmd.kill_on_drop(true);
         cmd.stdout(std::process::Stdio::piped());
         cmd.stderr(std::process::Stdio::piped());
 
@@ -317,66 +319,67 @@ impl RipgrepTool {
             .take()
             .context("ripgrep did not produce stderr pipe")?;
 
-        let mut reader = BufReader::new(stdout).lines();
+        let mut reader = BufReader::new(stdout);
         let mut matches = Vec::new();
         let max_matches = self.max_matches;
 
         let collect = async {
-            while let Some(line) = reader.next_line().await? {
-                if matches.len() >= max_matches {
-                    break;
-                }
-                let mut line_bytes = line.as_bytes().to_vec();
-                let parsed: RgMessage = match simd_json::from_slice(&mut line_bytes) {
-                    Ok(msg) => msg,
-                    Err(err) => {
-                        tracing::warn!(error = %err, "failed to parse ripgrep json line");
-                        continue;
-                    }
-                };
-                if let RgMessage::Match { data } = parsed {
-                    let path = PathBuf::from(data.path.text);
-                    matches.push(RipgrepMatch {
-                        path,
-                        line_number: data.line_number,
-                        lines: data.lines.text,
-                        raw_json: line.clone(),
-                    });
-                }
-            }
-
-            let mut child = guard.take().context("child process already taken")?;
-            let status = child.wait().await?;
-
-            if !status.success() && status.code() != Some(1) {
-                let mut stderr_reader = BufReader::new(stderr).lines();
-                let mut stderr_output = String::new();
-                while let Ok(Some(line)) = stderr_reader.next_line().await {
-                    if !stderr_output.is_empty() {
-                        stderr_output.push('\n');
-                    }
-                    stderr_output.push_str(&line);
-                    if stderr_output.len() > 1024 {
-                        stderr_output.push_str("\n... (truncated)");
+            let result = async {
+                while matches.len() < max_matches {
+                    let Some(line) = next_json_line(&mut reader).await? else {
                         break;
+                    };
+                    let mut line_bytes = line.as_bytes().to_vec();
+                    let parsed: RgMessage = match simd_json::from_slice(&mut line_bytes) {
+                        Ok(msg) => msg,
+                        Err(err) => {
+                            tracing::warn!(error = %err, "failed to parse ripgrep json line");
+                            continue;
+                        }
+                    };
+                    if let RgMessage::Match { data } = parsed {
+                        let path = PathBuf::from(data.path.text);
+                        matches.push(RipgrepMatch {
+                            path,
+                            line_number: data.line_number,
+                            lines: data.lines.text,
+                            raw_json: line.clone(),
+                        });
                     }
                 }
-                if stderr_output.is_empty() {
+
+                if matches.len() >= max_matches {
+                    let child = guard.as_mut().context("child process unavailable")?;
+                    let _ = child.start_kill();
+                    child.wait().await?;
+                    return Ok(matches);
+                }
+                let status = guard
+                    .as_mut()
+                    .context("child process unavailable")?
+                    .wait()
+                    .await?;
+                if !status.success() && status.code() != Some(1) {
                     anyhow::bail!("ripgrep exited with status {}", status);
-                } else {
-                    anyhow::bail!(
-                        "ripgrep exited with status {}: {}",
-                        status,
-                        stderr_output.trim()
-                    );
+                }
+                Result::<Vec<RipgrepMatch>>::Ok(matches)
+            }
+            .await;
+            if result.is_err() {
+                if let Some(child) = guard.as_mut() {
+                    let _ = child.start_kill();
+                    let _ = child.wait().await;
                 }
             }
-            Result::<Vec<RipgrepMatch>>::Ok(matches)
+            result
         };
 
-        timeout(self.timeout, collect)
-            .await
-            .with_context(|| "ripgrep invocation timed out")?
+        timeout(self.timeout, async {
+            let (result, diagnostics) = tokio::join!(collect, drain_stderr(stderr));
+            result.with_context(|| diagnostics.unwrap_or_default())
+        })
+        .await
+        .with_context(|| "ripgrep invocation timed out")?
     }
 }
 
@@ -731,5 +734,37 @@ impl<R: Read> Read for DeadlineReader<R> {
             ));
         }
         self.inner.read(buf)
+    }
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use grep_matcher::Matcher;
+
+    #[test]
+    fn matcher_cache_preserves_pattern_boundaries() {
+        let tool = RipgrepTool::new(Duration::from_secs(2), 10, 0, 0, 100, 1, false);
+        let union = tool.compile_matcher(&["foo".into(), "bar".into()]).unwrap();
+        assert!(union.is_match(b"foo").unwrap());
+        let single = tool.compile_matcher(&["bar\u{1f}foo".into()]).unwrap();
+        assert!(!single.is_match(b"foo").unwrap());
+        assert!(single.is_match(b"bar\x1ffoo").unwrap());
+    }
+
+    #[test]
+    fn truncation_counts_unicode_characters() {
+        assert_eq!(format_line("é🦀x\n".as_bytes(), 2), "é🦀");
+        assert_eq!(format_line("é🦀x\n".as_bytes(), 0), "é🦀x\n");
+    }
+
+    #[tokio::test]
+    async fn zero_limit_does_not_walk_or_spawn() {
+        let tool = RipgrepTool::new(Duration::ZERO, 0, 0, 0, 100, 1, false);
+        assert!(
+            tool.search_union(Path::new("missing"), &["[".into()], &[], None, None)
+                .await
+                .unwrap()
+                .is_empty()
+        );
     }
 }

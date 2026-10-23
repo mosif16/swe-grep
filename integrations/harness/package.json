@@ -1,0 +1,86 @@
+{
+  "name": "@recordandlearn/swe-grep-harness",
+  "version": "0.1.1",
+  "description": "Native DeepSeek Harness tools and portable MCP integration for SWE-Grep",
+  "type": "module",
+  "main": "./src/backend.js",
+  "exports": {
+    ".": "./src/backend.js",
+    "./dsh": "./src/dsh.js",
+    "./backend": "./src/backend.js",
+    "./contracts": "./src/contracts.js",
+    "./mcp": "./src/mcp.js",
+    "./cordis.patch.yml": "./cordis.patch.yml",
+    "./package.json": "./package.json",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg",
+    "./dsh/locale/*.json": "./locale/*.json",
+    "./dsh/icon": "./icon.svg"
+  },
+  "bin": {
+    "swe-grep-mcp": "./src/mcp.js"
+  },
+  "files": [
+    "src/",
+    "cordis.patch.yml",
+    "README.md",
+    "LICENSE",
+    "locale/",
+    "icon.svg"
+  ],
+  "engines": {
+    "node": ">=22.0.0",
+    "dsh": "0.2.1-rc.2"
+  },
+  "license": "SEE LICENSE IN LICENSE",
+  "author": "Record and Learn LLC",
+  "copyright": "Copyright (c) 2026 Record and Learn LLC. All Rights Reserved.",
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "scripts": {
+    "test": "node --test tests/*.test.js",
+    "check": "node --check src/backend.js && node --check src/contracts.js && node --check src/dsh.js && node --check src/mcp.js"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "1.32.1"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "~4.0.5",
+    "@deepseek-ai/schemastery": "~3.18.5",
+    "@deepseek-ai/dsh-tools": "0.2.1-rc.2",
+    "@deepseek-ai/dsh-subprocess": "0.2.1-rc.2",
+    "@deepseek-ai/dsh-working-directory": "0.2.1-rc.2",
+    "@deepseek-ai/dsh-fs": "0.2.1-rc.2"
+  },
+  "peerDependenciesMeta": {
+    "@deepseek-ai/cordis": {
+      "optional": true
+    },
+    "@deepseek-ai/schemastery": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-tools": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-subprocess": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-working-directory": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-fs": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@deepseek-ai/cordis": "4.0.5",
+    "@deepseek-ai/schemastery": "3.18.5",
+    "@deepseek-ai/dsh-tools": "0.2.1-rc.2",
+    "@deepseek-ai/dsh-subprocess": "0.2.1-rc.2",
+    "@deepseek-ai/dsh-working-directory": "0.2.1-rc.2",
+    "@deepseek-ai/dsh-fs": "0.2.1-rc.2"
+  }
+}

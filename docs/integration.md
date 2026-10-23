@@ -1,93 +1,38 @@
-# Integration Guide
+# Integration and trust boundaries
 
-This document summarises how upstream coding agents can interact with
-`swe-grep` programmatically and how to consume the structured telemetry
-produced by the search cycle.
+[Documentation home](<../README.md>) · [Plugin installation](<../integrations/harness/README.md>) · [JSON output](<agent-mode.md>)
 
-## HTTP workflow
+## Supported integration paths
 
-`POST /search` accepts a JSON body mirroring the CLI flags. Minimal example:
+| Entry point | Role |
+| --- | --- |
+| Native DSH plugin | Registers swe_search, swe_context, and swe_refs with DSH's tools service; uses managed subprocess and filesystem services. Tested against 0.2.1-rc.2. |
+| MCP stdio server | Exposes the same contracts using official MCP SDK 1.32.1. Requires Node.js 22+. No HTTP listener is needed. |
+| Reusable adapter | SweGrepBackend plus shared contracts; other hosts supply their own registry and, for remote/sandboxed execution, runner and filesystem services. |
+| CLI | Direct access to the Rust engine, including options intentionally omitted from tool contracts. |
 
-```bash
-curl -s http://localhost:8080/search \
-  -H 'content-type: application/json' \
-  -d '{
-        "symbol": "login_user",
-        "root": "fixtures/multi_lang",
-        "timeout_secs": 4,
-        "context_before": 2,
-        "context_after": 2,
-        "body": true,
-        "tool_flags": {"fd": true, "ast-grep": true}
-      }'
-```
+The JavaScript package does not implement a second search engine. All tool calls execute a Rust binary built from this revision. See [installation and host examples](<../integrations/harness/README.md>); do not assume native DSH modules load unchanged into another host.
 
-Key fields in the response:
+## Model-facing contracts
 
-- `top_hits` – sorted by score; each element now includes:
-  - `raw_snippet` (verbatim ripgrep payload)
-  - `snippet_length` and `raw_snippet_truncated` (honour `--max-columns`)
-  - `expanded_snippet`, `context_start`, `context_end` (line-window with zero padding)
-  - `body` and `body_retrieved` when `body: true` is requested (guarded at 512 KiB)
-- `next_actions` – pre-canned follow-up suggestions for the caller
-- `stage_stats` – latency and precision metrics per phase
-- `reward` – accumulated reinforcement score for the cycle
+All tools require query (1–256 UTF-8 bytes). path defaults to the configured root. Search accepts language, mode (literal|regex|text), limit (1–100), exclude/pathGlob arrays, definitionsOnly, and usagesOnly. Context accepts only query, directory path, and concise. References accept language, direction (callers|callees|both), exclude/pathGlob, excludeTests, and trackedOnly.
 
-The HTTP API surfaces health and metrics endpoints too:
+The authoritative [contracts](<../integrations/harness/src/contracts.js>) reject unknown properties and invalid combinations. Filter arrays allow at most 20 nonempty patterns of at most 512 UTF-8 bytes each. Root, executable, environment, cache paths, arbitrary arguments, and timeouts are not model-controlled.
 
-- `GET /healthz`
-- `GET /metrics` – Prometheus/OpenTelemetry counters
+## Execution boundary
 
-## gRPC workflow
+The backend resolves the configured root and target, checks containment, and rejects invalid or escaping paths. Local resolution uses real paths; native DSH resolution uses provider-owned filesystem identities. Context rejects file targets because CLI context can widen a file path to its parent directory. Search and refs can accept files.
 
-The protobuf definition lives at `proto/swegrep.proto`. Example request using
-`grpcurl`:
+Calls use argument arrays, not shell interpolation. They pass --no-config and --disable-telemetry, suppress the hint banner, and constrain output. Local execution keeps an allowlist of launch environment variables; native execution delegates to host policy. Git operations disable optional locks and fsmonitor hooks. This is not a claim that the standalone CLI is an OS sandbox or that a malicious repository is safe in every execution environment.
 
-```bash
-grpcurl -plaintext \
-  -d '{"symbol":"login_user","root":"fixtures/multi_lang"}' \
-  localhost:50051 swegrep.v1.SweGrepService/Search
-```
+Default backend limits are 30 seconds and 2 MiB stdout. Cancellation and output overflow terminate managed execution; incomplete JSON is an error, not a successful partial object. Cache writes can occur even though these tools do not edit source files. Choose a trusted binary and enforce the host's filesystem/process policy.
 
-The RPC returns the same `SearchSummary` structure as the CLI/HTTP path. Tool
-flags can be toggled via the `tool_flags` map (e.g. `{ "ast-grep": false }`), and
-context/body retrieval mirrors the CLI flags (`context_before`, `context_after`,
-`body`).
+## Results and failures
 
-## Structured JSON logs
+The reusable backend returns parsed CLI JSON; see [output shapes](<agent-mode.md>). The MCP server provides structuredContent plus JSON text content and reports execution failures with isError. Protocol parameter validation and native host errors are transport-specific. Clients should not parse stderr as search results.
 
-When `--log-dir` is specified, results are appended as JSON Lines to
-`search.log.jsonl`. Each entry contains:
+Reference filters preserve semantic graph analysis and constrain reported origins/endpoints. Failed graph extraction may yield warnings about incomplete refs; it must not invent dependencies from unrelated functions. Context extraction errors fail the command without a success payload. See [capabilities and limits](<context_extraction_todo.md>).
 
-- `timestamp`
-- tool configuration (`use_fd`, `use_ast_grep`, `use_index`, `use_rga`)
-- `latency_ms`
-- embedded `summary` payload identical to the API response
+## Other consumers
 
-This format is ingestion-ready for analytics platforms such as BigQuery or
-Splunk.
-
-## Telemetry metrics
-
-The `/metrics` endpoint exposes counters and histograms including:
-
-- `swegrep_tool_invocations_total{tool="rg"}`
-- `swegrep_tool_results_total{tool="fd"}`
-- `swegrep_cache_hits_total{cache="symbol_hints"}`
-- `swegrep_reward_score_bucket`
-- `swegrep_cycle_latency_ms_bucket`
-
-These metrics are generated via OpenTelemetry and can be scraped by Prometheus
-or bridged to OTLP exporters.
-
-## Feature toggles
-
-All entry points honour the following switches:
-
-- `--disable-fd` / `tool_flags: { "fd": false }`
-- `--disable-ast-grep` / `tool_flags: { "ast-grep": false }`
-- `--enable-rga` (requires the `rga` binary to be available on `PATH`)
-- `--enable-index` (requires the `indexing` cargo feature and Tantivy indices)
-
-Use these toggles to align the agent with resource-constrained environments or
-to degrade gracefully when external binaries are unavailable.
+The [desktop application](<../crates/swe-grep-desktop/Cargo.toml>) is optional and not required to run the plugin. The CLI still exposes serve; it is a separate HTTP/gRPC service, not the MCP transport and not covered by the adapter's root-confinement contract. Use its --help and review the [service implementation](<../crates/swe-grep-core/src/service/server.rs>) before deployment; this guide does not recommend exposing it to untrusted networks.

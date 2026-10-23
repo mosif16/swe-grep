@@ -435,6 +435,11 @@ fn traverse(
                 }
             }
             "mod_item" => {
+                if let Some(name) = node.child_by_field_name("name") {
+                    if let Some(symbol) = node_text(source, name) {
+                        push_definition_fact(lines, source, defs, symbol, "mod", node, name);
+                    }
+                }
                 if let Some(text) = node_text(source, node) {
                     let trimmed = text.trim();
                     if trimmed.ends_with(';') && !trimmed.contains('{') {
@@ -458,13 +463,17 @@ fn traverse(
                     }
                 }
             }
-            "struct_item" | "enum_item" | "trait_item" => {
+            "struct_item" | "enum_item" | "trait_item" | "const_item" | "static_item"
+            | "type_item" => {
                 if let Some(name) = node.child_by_field_name("name") {
                     if let Some(symbol) = node_text(source, name) {
                         let kind = match node.kind() {
                             "struct_item" => "struct",
                             "enum_item" => "enum",
                             "trait_item" => "trait",
+                            "const_item" => "const",
+                            "static_item" => "static",
+                            "type_item" => "type",
                             other => other,
                         };
                         push_definition_fact(lines, source, defs, symbol.clone(), kind, node, name);
@@ -582,7 +591,15 @@ fn is_definition_identifier(node: &Node<'_>) -> bool {
     };
     matches!(
         parent.kind(),
-        "function_item" | "struct_item" | "enum_item" | "trait_item" | "impl_item"
+        "function_item"
+            | "struct_item"
+            | "enum_item"
+            | "trait_item"
+            | "impl_item"
+            | "const_item"
+            | "static_item"
+            | "type_item"
+            | "mod_item"
     ) && parent
         .child_by_field_name("name")
         .map(|name| name.id() == node.id())

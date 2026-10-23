@@ -1,0 +1,53 @@
+name: Rust CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: rust-ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+      - name: Test core and optional index pipeline
+        run: |
+          cargo test --locked -p swe-grep --all-targets
+          cargo test --locked -p swe-grep --all-targets --features indexing
+          cargo test --locked -p swe-grep-indexer
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: integrations/harness/package-lock.json
+      - name: Test native harness plugin and official MCP transport
+        working-directory: integrations/harness
+        env:
+          SWE_GREP_BINARY: ${{ github.workspace }}/target/debug/swe-grep
+        run: |
+          npm ci --ignore-scripts
+          npm test
+          npm run check
+          npm audit --omit=dev
+          npm pack --dry-run
+      # Existing style warnings remain visible; correctness lints are blocking.
+      - name: Lint pipeline
+        run: cargo clippy --locked -p swe-grep -p swe-grep-indexer --all-targets --features swe-grep/indexing -- -D clippy::correctness

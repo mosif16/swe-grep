@@ -1,199 +1,57 @@
-# SWE-Grep: The #1 Agent Search Tool
+# SWE-Grep
 
-**Instant code understanding in a single call.** Supports Rust, Swift, TypeScript, JavaScript, Go, and Python.
+Code search and static symbol analysis for coding agents. SWE-Grep exposes the same Rust engine through a native DeepSeek Harness plugin, an MCP stdio server using the official SDK, a reusable adapter, and a CLI.
 
-## ℹ️ Licensing & Commercial Use
+## Start with the harness plugin
 
-**Individual/Hobbyist Use**: SWE-Grep is free under the MIT License.
+Prerequisites: **Node.js 22 or newer** for the integration, and a **current stable Rust toolchain supporting edition 2024** to build the engine. Native integration is tested against **DSH 0.2.1-rc.2**; the MCP integration uses **SDK 1.32.1**.
 
-**Commercial Use** 📊💰:
-- If your business, organization, or commercial project earns money using SWE-Grep, you need a commercial license.
-- **Licensing fee: $499/year + 10% revenue sharing** of commercial revenue generated
-- Includes premium support, priority features, and direct access to the developer
-- **Contact**: msayf@recordandlearn.info for commercial licensing
+From this checkout:
 
-**Examples requiring commercial license:**
-- Building commercial SaaS products
-- Consulting or development services using SWE-Grep
-- Teaching/training others professionally
-- Any business activity generating revenue
-
-## Quick Start
-
-```bash
-# Simple mode - just symbol and optional language/path
-swe-grep AuthService                    # search current dir
-swe-grep AuthService rust               # with language hint
-swe-grep AuthService src/               # in specific path
-swe-grep AuthService,UserStore .        # multi-symbol batch
-swe-grep AuthService . --count          # match count only
-swe-grep AuthService . -C 2             # include 2 lines of context
-swe-grep AuthService . --json-only      # JSON hits only
-
-# Output: file:line | code
-# src/auth.rs:42 | pub struct AuthService {
-# src/api.rs:89 | let auth = AuthService::new(config);
-# ... 12 more results not shown (use --limit N)
+```sh
+cargo build --release -p swe-grep
+npm ci --ignore-scripts --prefix integrations/harness
 ```
 
-## Advanced Commands
+Install the local package through DSH's **Plugins → Install** flow, then configure its binary as the absolute path to the release executable and its root as your project directory. **Build the binary from this revision**: the adapter requires current CLI behavior, including --no-config. No binary is downloaded automatically.
 
-```bash
-# Complete context in one call
-swe-grep context AuthService .
+Follow the [plugin installation guide](<integrations/harness/README.md>) for bundle activation, execution-world paths, MCP configuration, and adapter reuse. The package is local/unpublished; adding an npm dependency alone does not activate a DSH bundle.
 
-# Symbol intelligence: fields, methods, complexity
-swe-grep context AuthService . --explain
+| Tool | Use |
+| --- | --- |
+| swe_search | Find code locations; literal, regex, or raw-text mode; declaration/usage filters. |
+| swe_context | Retrieve a symbol definition in a directory; concise by default. |
+| swe_refs | Find semantic callers/callees with scope-aware filters. |
 
-# Semantic grouping with token budget
-swe-grep search Foo . --agent --grouped --budget 2000
+Model calls cannot supply arbitrary CLI arguments or environment variables. Requested paths are checked against the configured root; context rejects file paths. These controls complement, rather than replace, host execution policy. See [integration boundaries](<docs/integration.md>).
 
-# Fuzzy typo recovery
-swe-grep search authservice . --agent --fuzzy 0.5
+## Use the CLI
+
+The following examples run from the repository root:
+
+```sh
+./target/release/swe-grep login_user fixtures/multi_lang
+./target/release/swe-grep search login_user fixtures/multi_lang --json-only --concise
+./target/release/swe-grep context login_user fixtures/multi_lang --concise --callers --callees
+./target/release/swe-grep refs login_user fixtures/multi_lang --callers
 ```
 
-## Workspace Layout
+Search finds matching locations; it is not exact symbol identity resolution. Context and references use best-effort static analysis, not a compiler or runtime trace. See [quickstart](<docs/quickstart.md>) and [capabilities and limits](<docs/context_extraction_todo.md>).
 
-- `crates/swe-grep-core`: main binary crate that drives the SWE-grep search workflow (fd/rg/ast-grep, rga fallback, persistent hints, telemetry).
-- `crates/swe-grep-indexer`: optional Tantivy-powered indexer that can accelerate fallback discovery.
-- `Cargo.toml` (root): declares the workspace and lets you target each crate with standard `cargo` commands.
+## Architecture
 
-## Default Build
+- [Rust core](<crates/swe-grep-core/Cargo.toml>): search pipeline, CLI, context, reference graphs, and cache management. Embedded text search has an external rg fallback; fd, ast-grep, and rga are optional helpers.
+- [Harness integration](<integrations/harness/README.md>): native DSH tools, official-SDK MCP transport, and a reusable backend with injectable execution/filesystem services.
+- [Optional indexer](<crates/swe-grep-indexer/Cargo.toml>): incremental Tantivy indexing, enabled with the core's indexing feature and CLI --enable-index flag; not part of the default core build.
+- [Desktop consumer](<crates/swe-grep-desktop/Cargo.toml>): a separate application consuming the engine, not required for plugin or CLI use.
 
-```bash
-cargo check
-cargo run -p swe-grep -- search --symbol foo --timeout-secs 2
-```
+## Documentation
 
-- Disable telemetry if you are running in minimal environments: `cargo run -p swe-grep -- --disable-telemetry search --symbol foo`.
-- Config defaults: create `~/.swe-grep.toml` (or set `SWE_GREP_CONFIG=/path/to/file.toml`) to set defaults for common flags; CLI flags always win.
-- The default build does **not** pull in Tantivy, so compilation stays fast and dependency-light.
-- Persistent hints + analysis caches are stored under `$XDG_CACHE_HOME/swe-grep/<root-hash>/` (or `$HOME/.cache/swe-grep/<root-hash>/`); fallback is `<root>/.swe-grep-cache/<root-hash>/`.
-- Language-aware rewrites can now be pre-seeded from the CLI: pass `--language swift`, `--language tsx`, or multi-language presets such as `--language auto-swift-ts` to hydrate Swift/TypeScript heuristics simultaneously (snippets, AST-grep, cache hints).
+- [Quickstart](<docs/quickstart.md>) — build, run, filter.
+- [Agent workflow](<docs/agent-use.md>) and [JSON output](<docs/agent-mode.md>).
+- [Integration](<docs/integration.md>) and [troubleshooting](<docs/troubleshooting.md>).
+- [Cache and performance guidance](<docs/performance-tuning.md>), [measurement procedure](<docs/benchmark.md>), and [migration notes](<docs/changelog.md>).
 
-Example `~/.swe-grep.toml`:
+## License
 
-```toml
-disable_telemetry = true
-
-[search]
-language = "swift"
-max_matches = 50
-top_hits = 10
-
-[search.tools]
-use_fd = true
-use_ast_grep = true
-
-[agent]
-enabled = true
-format = "markdown"
-concise = true
-```
-
-## Agent Mode
-
-- `swe-grep search --agent --symbols Foo,Bar --path . --format json` — batch search with jq-ready output and schema versioning.
-- `swe-grep search --json-only --symbols Foo,Bar --path .` — shorthand for pipeline-safe JSON-only output (implies `--agent --format json --quiet`).
-- `swe-grep search --agent --symbols Foo,Bar --stream` — NDJSON per symbol (final line has `done=true`), exit code `2` on runtime errors, `1` on usage errors.
-- `swe-grep search Foo . --agent --grouped --budget 2000` — semantic grouping (definition/impl/usages/tests) with token-budget truncation to avoid re-sending redundant context.
-- Defaults: telemetry off, bodies fetched (first 50 lines by default), deterministic ordering; add `--definitions` for best-effort signatures, `--concise` to drop context/origin/score/body, and `--json-pretty`/`--progress`/`--trim-body N` to tune output.
-- See `docs/agent-mode.md` for the schema, exit codes, batch inputs (`--symbols/--symbols-file/--stdin-symbols`), and `--format json|table`.
-
-## Discovery Helpers
-
-- Concept/semantic search: `swe-grep search --concept "text to speech"` builds intent-driven rewrites that surface related symbols even when names do not match.
-- Literal text: `swe-grep search --text "Practice aloud" .` performs raw fixed-string searches without symbol rewrites or AST.
-- Regex/wildcard friendly: `--regex` accepts raw patterns (e.g. `speak|aloud`), `--wildcard` translates `*`/`?`; AST disambiguation is skipped automatically when patterns are non-literal.
-- Fuzzy no-hit guidance: when there are zero hits, swe-grep returns `fuzzy_matches` + `did_you_mean` (agent mode) to suggest symbols like `AuthService` for a query like `authservice`; tune with `--fuzzy 0.7` (0.0–1.0).
-- Single-file scope: `swe-grep search deckHeaderSection . --scope-file path/to/View.swift` restricts the search surface to a single file (useful for local/private symbols).
-- String literals: `--string` generates quoted/ci variants and disables AST so inline CSS vars or JSX strings are easy to surface.
-- CSS/SCSS aware: `--language css|scss` scopes discovery to stylesheets; extension filters include CSS/SCSS by default when selected.
-- Localization-aware: `--include-strings` folds `xcstrings`/`strings`/`arb`/`json` resources into the search surface so string keys show up alongside code hits.
-- Path globs: `--path-glob "src/**/*.tsx"` narrows scope without forcing a language hint; accepts comma-separated patterns.
-- Output formats: `--format json|json-lines|table|compact|tree|edit|minimal|summary|markdown|csv` (agent mode).
-- Noise control: `--quiet-hint` / `--no-banner` suppress the agent system prompt on stderr; set `SWE_GREP_QUIET_HINT=1` or `SWE_GREP_NO_BANNER=1` to default this.
-- Shell completions: `swe-grep completions zsh` (or `bash`/`fish`) prints a completion script to stdout.
-- Usage graph: `swe-grep usages Foo .` emits a tree of references/types/imports; `--format json|compact` are available for automation.
-- Cross-reference: `swe-grep refs Foo . --callers|--callees` surfaces callers (best-effort static call graph; cached + incremental) and callees (extracted from the symbol definition body).
-  - **Qualified name support**: `--symbol Foo::new` finds only `Foo::new()` callers, not all `new()` calls.
-  - **Import graph**: `--imports` / `--importers` plus `--import-depth N` for transitive traversal.
-  - **Output formats**: `--format json|tree|compact` for different use cases.
-- Context bundles: `swe-grep context Foo .` assembles a single JSON response with the definition, callers/callees, type relationships, and related tests (best-effort).
-  - **Presets**: `--preset refactor|debug|understand` selects common bundles; flags like `--tests` and `--body` can add more detail.
-  - **Symbol intelligence**: `--explain` enriches the `definition` with kind/visibility/docs/fields/methods/complexity (not available in `--concise` mode).
-- **Concise mode**: `--concise` returns a minimal object (`symbol/def/def_location/callers/callees/tests`) for token-sensitive prompts.
-  - **Grouped mode**: `--grouped --budget 2000` groups output by file and truncates intelligently to reduce repeated context.
-  - **Streaming**: `--stream` outputs NDJSON sections (`definition`, `callers`, `callees`, `types`, `imports`, `tests`, `summary`) for incremental UIs/pipelines.
-- Git metadata: add `--git-info` to search/usages/refs to append the last commit hash/date per hit.
-- Removal planning: `swe-grep remove Foo . --dry-run` lists files to modify/delete; add `--apply` to delete obvious symbol-owned files cautiously.
-- Cache hygiene: `--clear-cache` wipes the computed cache dir (including `facts/` + `graphs/`) plus legacy `.swe-grep-cache/` + `.swe-grep-index/` before executing the chosen subcommand.
-- Tool feedback: `swe-grep feedback shell --command "<cmd>" --prompt-only` prints a JSON-shaped prompt for collecting improvements to the `shell_command` tool; pipe the response back to persist under `<cwd>/Feedback` (when `--cwd` is provided).
-- Feedback autofix: drop records into `Feedback/inbox/` and run `./scripts/feedback/process_inbox.sh` (or enable `.github/workflows/feedback-autofix.yml`) to have Codex implement + verify changes on a branch/PR.
-- Batch everywhere: multiple symbols now work without `--agent` (default mode emits a JSON array); agent mode still supports streaming and table output.
-- No-hit guidance: empty searches now return related symbols/paths plus notes when the search was constrained (regex/wildcard/strings), making reruns faster.
-- Telemetry defaults: set `SWE_GREP_TELEMETRY=off` or add `disable_telemetry = true` to `~/.swe-grep.toml` to avoid passing `--disable-telemetry` every run.
-- Config defaults: `~/.swe-grep.toml` can also provide defaults for common search flags (e.g. language/timeout/max-matches/max-columns/context/body). CLI flags always win.
-
-## Optional Tantivy Indexing
-
-To enable the Tantivy indexer:
-
-```bash
-cargo run -p swe-grep --features indexing -- \
-  search --symbol foo --enable-index
-```
-
-- This builds `swe-grep-indexer`, which bundles Tantivy 0.18 with `lz4` + `mmap` support.
-- The index is stored in `.swe-grep-index/` within the repository root; it is created or refreshed automatically on first use.
-- Because indexing relies on additional native tooling (e.g. `mmap`), keep it optional in CI unless you explicitly need the speedup.
-
-## ripgrep-all Fallback
-
-```bash
-cargo run -p swe-grep -- search --symbol foo --enable-rga
-```
-
-- Falls back to `rga` when scoped `rg` searches miss.
-- Combine with the indexing feature if you want both doc/config coverage and Tantivy hints.
-
-## Testing Targets
-
-- `cargo check -p swe-grep` — compile just the core agent.
-- `cargo check -p swe-grep-indexer` — compile the indexer crate.
-- `cargo fmt` — format across the workspace.
-
-## Desktop App (GUI)
-
-- Dev: `cargo run -p swe-grep-desktop`
-- Release: `cargo build --release -p swe-grep-desktop` (binary at `target/release/swe-grep-desktop`)
-
-## Benchmarking
-
-- `cargo run -p swe-grep -- bench` — execute the default scenarios under `benchmarks/default.json`.
-- `cargo run -p swe-grep --features indexing -- bench --enable-index --enable-rga --output docs/benchmark-summary.jsonl` — run with indexing + rga enabled and append results to a log file.
-- All benchmark runs must also be summarised in `docs/benchmark.md` to track progress across phases.
-- `python scripts/bench_startup.py --repo <path> --symbol <name> [--language swift]` — measures cold/warm start, stage timings, and startup stats for a single query.
-- `python scripts/check_bench_regression.py --summary docs/benchmark-summary.jsonl --max-latency-ms 20 --min-success 0.99` — CI-friendly guard that fails if latency or success rate drifts beyond the stated thresholds.
-
-## Serving the API
-
-```bash
-cargo run -p swe-grep -- serve --http-addr 127.0.0.1:8080 --grpc-addr 127.0.0.1:50051
-```
-
-- Add `--path /absolute/repo/root` to pin the server to a repository from the CLI.
-- Combine with `--disable-telemetry` when exposing the service in environments without Prometheus/OpenTelemetry collectors.
-- HTTP endpoints: `/healthz`, `/search`, `/metrics`. gRPC exposes `swegrep.v1.SweGrepService` with the same search payloads (including startup/stage stats).
-
-## Notes
-
-- Persistent hints now degrade quietly when the cache directory is missing or unwritable; state is disabled without surfacing user-visible warnings.
-- fd/ast-grep are treated as optional: a single “command not found” disables the tool for the run with only debug logs; real runtime failures still surface in `warnings`.
-- The AST pattern emitted by `ast-grep` still prints a warning when no matches are found; it’s benign but worth revisiting while hardening the pattern.
-- Keep `.swe-grep-cache/` out of version control; it is safe to delete if you want a clean slate for heuristics.
-- Per-language telemetry (discover/probe/ast/verify counters + latency) is emitted with every cycle in `SearchSummary`; consume the `stage_stats.language_metrics` map to track Rust/Swift/TypeScript/Go/Python coverage in benchmarks and regression dashboards.
-
-## Changelog
-
-- Recent commits are summarized in `docs/changelog.md`; see that file for a latest-first snapshot or run `git log` for full history.
+SWE-Grep is proprietary software owned by **Record and Learn LLC**. See the root [LICENSE](<LICENSE>) for governing terms. Licensing inquiries: [msayf@recordandlearn.info](mailto:msayf@recordandlearn.info).

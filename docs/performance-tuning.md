@@ -1,43 +1,37 @@
-# Performance Tuning
+# Cache and performance guidance
 
-Guidelines for keeping swe-grep responsive while preserving rich context.
+[Documentation home](<../README.md>) · [Measurement procedure](<benchmark.md>)
 
-## Modes
+No latency or competitor-performance guarantee is made here. Repository size, syntax, scope, disk state, tool availability, and output format all affect cost.
 
-- **Fast literal search** – default. Works when `symbol` contains only
-  `[A-Za-z0-9_]`.
-  - Cost: single union `rg`. ~9 ms warm (debug build) vs 4 ms `rg` plain.
-  - Recommendations: disable AST (`--disable-ast-grep`) if the calling agent
-    relies solely on textual matches.
+## Bound the work
 
-- **Full-context search** – triggered for non-literal symbols or when the fast
-  path is skipped.
-  - Pipeline: `fd` → multi-rewrite `rg` → optional Tantivy/rga → AST.
-  - Warm latency (fixtures): ~20–25 ms with AST, ~12 ms without AST.
+- Prefer a narrow directory, --scope-file, or --path-glob before increasing limits.
+- Use raw --text when you need fixed-string content rather than symbol expansion.
+- Use --concise for bounded agent payloads; avoid full file bodies unless needed.
+- --top-hits limits surfaced results; --max-matches limits collection per rewrite. Neither proves a complete count of repository occurrences.
+- --timeout-secs is a per-tool CLI timeout, not a total request deadline. The adapter has a separate whole-call timeout and output-byte limit.
+- Optional --disable-fd and --disable-ast-grep skip those helpers. Disabling the external AST helper does not disable the independent tree-sitter fact/graph analysis used by refs.
 
-## Flags to adjust
+## Metadata-first caches
 
-| Flag | Default | Effect |
-| --- | --- | --- |
-| `--disable-fd` | `false` | Skip fd discovery; rely on hints or global scope. Helpful if `fd` missing. |
-| `--disable-ast-grep` | `false` | Bypass structural validation; recommended for literal queries. |
-| `--enable-rga` | `false` | Enable ripgrep-all fallback (adds ~8 ms when invoked). |
-| `--enable-index` | `false` | Use Tantivy indices (requires `indexing` feature). |
-| `--max-matches` | `20` | Cap matches retrieved; lowering reduces verification work. |
-| `--timeout-secs` | `3` | Per-tool timeout; lower values cut runaway cost. |
+Analysis facts/graphs and file data can reuse unchanged entries based on reliable metadata identity. On Unix this includes file size, nanosecond modification/change times, device, and inode. Warm metadata hits can avoid source reads and hashes. Same-size edits, restored mtime edits, and atomic replacements are covered by regression tests.
 
-## Telemetry
+The optimization trusts filesystem ctime/identity semantics; it is not a defense against a party able to forge metadata or tamper with caches. Non-Unix systems and unsupported/coarse identities conservatively read/hash content rather than assuming mtime alone is sufficient. Old cache formats can be invalidated and rebuilt.
 
-- `--log-dir` adds minimal cost but can be toggled off in latency-critical paths.
-- Set `RUST_LOG=warn` to minimize tracing output.
-- Prometheus counters (`/metrics`) are updated in-memory; scraping introduces no
-  meaningful overhead.
+Default cache resolution uses XDG_CACHE_HOME or HOME's .cache, under swe-grep and a root-derived namespace, with a repository-local fallback. Use search/refs --cache-dir for an explicit writable location. Context has no --cache-dir flag; ensure its normal cache location is writable. Cache I/O failures are not universally silent: context reports fact-extraction failure. --clear-cache removes state/index data before the requested command; it is not a read-only diagnostic.
 
-## Benchmark budgets
+## Optional incremental Tantivy index
 
-- Warm literal queries: `swe-grep` should stay within `rg_mean_ms + 6 ms`.
-- Full-context searches: target < 30 ms warm; monitor `stage_stats` to isolate
-  spikes (fd, AST, index).
+The default core build has no indexing feature. To build and opt into the index path:
 
-Use `scripts/bench_rg_vs_sweg.py` and `scripts/evaluate_bench.py` locally before
-shipping changes to ensure these budgets are respected.
+```sh
+cargo build --release -p swe-grep --features indexing
+./target/release/swe-grep --no-config --disable-telemetry search login_user fixtures/multi_lang --enable-index --json-only
+```
+
+The default index directory is .swe-grep-index under the search root; --index-dir overrides it. Index discovery is an optional search path, not a replacement for all text or semantic analysis.
+
+Refresh compares the manifest with current files and updates added, changed, and deleted documents. On reliable Unix metadata, unchanged warm opens avoid source reads, hashing, writer acquisition, and commits. Metadata-only changes can update identity without reindexing unchanged content. Corrupt/incompatible manifests trigger recovery rather than a speed guarantee. See [incremental index tests](<../crates/swe-grep-indexer/tests/incremental.rs>).
+
+The harness tool contract does not expose --enable-index, --index-dir, or arbitrary cache flags. Do not add unknown tool arguments to enable CLI-only features.

@@ -68,10 +68,11 @@ fn configure_metrics() -> Result<&'static TelemetryState> {
     let exporter = build_exporter(&registry)?;
 
     let provider = SdkMeterProvider::builder()
-        .with_resource(Resource::new(vec![KeyValue::new(
-            "service.name",
-            "swe-grep",
-        )]))
+        .with_resource(
+            Resource::builder_empty()
+                .with_service_name("swe-grep")
+                .build(),
+        )
         .with_reader(exporter)
         .build();
 
@@ -81,27 +82,27 @@ fn configure_metrics() -> Result<&'static TelemetryState> {
     let tool_invocations = meter
         .u64_counter("swegrep_tool_invocations_total")
         .with_description("Number of tool invocations executed by SWE-Grep")
-        .init();
+        .build();
     let tool_results = meter
         .u64_counter("swegrep_tool_results_total")
         .with_description("Number of matches produced by tool invocations")
-        .init();
+        .build();
     let cache_hits = meter
         .u64_counter("swegrep_cache_hits_total")
         .with_description("Cache hits recorded during search execution")
-        .init();
+        .build();
     let reward_histogram = meter
         .f64_histogram("swegrep_reward_score")
         .with_description("Reward signal produced per reasoning cycle")
-        .init();
+        .build();
     let cycle_latency_histogram = meter
         .f64_histogram("swegrep_cycle_latency_ms")
         .with_description("End-to-end latency of a reasoning cycle in milliseconds")
-        .init();
+        .build();
     let stage_latency_histogram = meter
         .f64_histogram("swegrep_stage_latency_ms")
         .with_description("Latency of individual pipeline stages in milliseconds")
-        .init();
+        .build();
 
     // Initialize metrics handles
     let _ = METRICS.set(MetricsHandles {
@@ -212,4 +213,78 @@ pub fn export_prometheus() -> Result<String> {
         .encode(&metric_families, &mut buffer)
         .context("failed to encode metrics")?;
     String::from_utf8(buffer).context("metrics buffer is not valid UTF-8")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn prometheus_text_export_preserves_counters_histograms_and_labels() {
+        let first = configure_metrics().expect("initialize metrics");
+        let second = configure_metrics().expect("repeat initialization");
+        assert!(std::ptr::eq(first, second));
+
+        record_tool_invocation("telemetry_test");
+        record_tool_results("telemetry_test", 7);
+        record_cache_hits("telemetry_test", 3);
+        record_reward(0.5);
+        record_cycle_latency(12);
+        record_stage_latency("telemetry_test", 4);
+        record_stage_latency("zero_latency_test", 0);
+        record_cache_hits("zero_hits_test", 0);
+
+        let text = export_prometheus().expect("encode Prometheus text without protobuf");
+        // Preserve the previous exporter's suffixing of names already ending in `_total`.
+        for (name, label, value) in [
+            (
+                "swegrep_tool_invocations_total_total",
+                "tool=\"telemetry_test\"",
+                "1",
+            ),
+            (
+                "swegrep_tool_results_total_total",
+                "tool=\"telemetry_test\"",
+                "7",
+            ),
+            (
+                "swegrep_cache_hits_total_total",
+                "cache=\"telemetry_test\"",
+                "3",
+            ),
+            (
+                "swegrep_stage_latency_ms_sum",
+                "stage=\"telemetry_test\"",
+                "4",
+            ),
+            (
+                "swegrep_stage_latency_ms_count",
+                "stage=\"telemetry_test\"",
+                "1",
+            ),
+        ] {
+            assert!(
+                text.lines().any(|line| {
+                    line.starts_with(&format!("{name}{{"))
+                        && line.contains(label)
+                        && line.ends_with(&format!(" {value}"))
+                }),
+                "missing sample {name} with {label} = {value}:\n{text}"
+            );
+        }
+        // Other parallel tests may record into these unlabelled histograms too.
+        assert!(
+            text.lines()
+                .any(|line| line.starts_with("swegrep_reward_score_sum{")),
+            "{text}"
+        );
+        assert!(
+            text.lines()
+                .any(|line| line.starts_with("swegrep_cycle_latency_ms_sum{")),
+            "{text}"
+        );
+        assert!(text.contains("service_name=\"swe-grep\""), "{text}");
+        assert!(!text.contains("zero_latency_test"));
+        assert!(!text.contains("zero_hits_test"));
+    }
 }

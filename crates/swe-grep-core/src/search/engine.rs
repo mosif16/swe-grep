@@ -5,7 +5,7 @@ use std::io::ErrorKind;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
-use std::sync::mpsc;
+use std::sync::{Mutex, mpsc};
 use std::thread;
 use std::time::{Instant as StdInstant, SystemTime, UNIX_EPOCH};
 
@@ -28,12 +28,14 @@ use super::config::{
     DEFAULT_INLINE_CONTEXT, SearchConfig, TRUNCATED_INLINE_CONTEXT, languages_include,
     normalize_path, passes_extension_filter,
 };
+use super::declarations::DeclarationIndex;
 use super::formatting::{
     ContextHint, format_snippet, gather_expanded_snippet, rust_context_hints, swift_context_hints,
 };
 use super::fuzzy::{rank_scored_suggestions, tokenize};
 use super::hits::{BodyPayload, HitOrigin, ProbeKind, SearchCache, SearchHit};
 use super::query::{PatternMode, QueryRewriter};
+use super::scope::SearchScope;
 use super::state::PersistentState;
 use super::stats::{
     ConceptExpansionSummary, FuzzyMatch, GitInfo, SearchMetrics, SearchSummary, StageStats,
@@ -67,7 +69,7 @@ const LANGUAGE_EXTENSION_BOOST: f32 = 1.15;
 pub(crate) struct SearchEngine {
     pub(crate) config: SearchConfig,
     concept_expansion: Option<ConceptExpansion>,
-    git_scope: Option<HashSet<String>>,
+    pub(crate) scope: SearchScope,
     fd_tool: Option<FdTool>,
     rg_tool: RipgrepTool,
     rga_tool: Option<RgaTool>,
@@ -81,6 +83,8 @@ pub(crate) struct SearchEngine {
     reward_total: f32,
     startup_stats: StartupStats,
     file_cache: FileCache,
+    declarations: Mutex<HashMap<PathBuf, DeclarationIndex>>,
+    declaration_patterns: Vec<String>,
     language_cache: HashMap<PathBuf, &'static str>,
     body_cache: HashMap<PathBuf, BodyPayload>,
     warnings: Vec<String>,
@@ -96,7 +100,7 @@ impl SearchEngine {
             .concept
             .as_ref()
             .map(|concept| concept_expansion::expand_concept(concept));
-        let git_scope = build_git_scope(&config)?;
+        let scope = SearchScope::new(&config, build_git_scope(&config)?);
 
         let fd_tool = None;
 
@@ -143,7 +147,7 @@ impl SearchEngine {
         Ok(Self {
             config,
             concept_expansion,
-            git_scope,
+            scope,
             fd_tool,
             rg_tool,
             rga_tool,
@@ -156,7 +160,9 @@ impl SearchEngine {
             state,
             reward_total: 0.0,
             startup_stats,
-            file_cache: FileCache::new(128),
+            file_cache: FileCache::for_cycle(128),
+            declarations: Mutex::new(HashMap::new()),
+            declaration_patterns: Vec::new(),
             language_cache: HashMap::new(),
             body_cache: HashMap::new(),
             warnings: Vec::new(),
@@ -174,11 +180,18 @@ impl SearchEngine {
     pub(crate) async fn run_cycle(&mut self) -> Result<SearchSummary> {
         let mut stage_stats = StageStats::default();
         self.warnings.clear();
+        self.scope.clear();
+        self.file_cache.clear();
+        self.body_cache.clear();
+        if let Ok(mut declarations) = self.declarations.lock() {
+            declarations.clear();
+        }
         self.ast_fallback = false;
 
         tracing::info!(symbol = %self.config.symbol, "search_cycle_start");
 
         let rewrites = self.build_queries();
+        self.declaration_patterns = rewrites.clone();
         if matches!(self.config.search_mode, SearchMode::Ast) {
             let disambiguate_start = Instant::now();
             let ast_matches = self.disambiguate(&[]).await;
@@ -187,8 +200,9 @@ impl SearchEngine {
             stage_stats.record_disambiguate_languages(&ast_matches, stage_stats.disambiguate_ms);
 
             let verify_start = Instant::now();
+            let hits = self.hits_from_ast(&ast_matches);
             let verification = self
-                .verify(Vec::new(), ast_matches, HashSet::new(), Vec::new())
+                .verify(hits, ast_matches, HashSet::new(), Vec::new())
                 .await?;
             stage_stats.verify_ms = elapsed_ms(verify_start);
             stage_stats
@@ -815,46 +829,20 @@ impl SearchEngine {
         }
     }
 
-    fn is_definition_hit(&self, hit: &SearchHit, hints: &[ContextHint]) -> bool {
-        if hints.iter().any(|hint| {
-            matches!(
-                hint.kind.as_str(),
-                "declaration" | "impl" | "type" | "extension" | "module"
-            )
-        }) {
-            return true;
-        }
-
-        let snippet_lower = hit.snippet.to_ascii_lowercase();
-        let symbol_lower = self.config.symbol.to_ascii_lowercase();
-        if snippet_lower.is_empty() || symbol_lower.is_empty() {
+    fn is_definition_hit(&self, hit: &SearchHit, _hints: &[ContextHint]) -> bool {
+        // Parse each immutable file snapshot once. Match query expressions against
+        // declaration identifiers, not against enclosing function/body spans.
+        let Ok(mut declarations) = self.declarations.lock() else {
             return false;
-        }
-
-        let definition_markers = [
-            format!("fn {symbol_lower}"),
-            format!("struct {symbol_lower}"),
-            format!("enum {symbol_lower}"),
-            format!("trait {symbol_lower}"),
-            format!("impl {symbol_lower}"),
-            format!("type {symbol_lower}"),
-            format!("const {symbol_lower}"),
-            format!("static {symbol_lower}"),
-            format!("class {symbol_lower}"),
-            format!("interface {symbol_lower}"),
-            format!("function {symbol_lower}"),
-            format!("protocol {symbol_lower}"),
-            format!("extension {symbol_lower}"),
-            format!("actor {symbol_lower}"),
-            format!("mod {symbol_lower}"),
-            format!("let {symbol_lower}"),
-            format!("var {symbol_lower}"),
-            format!("case {symbol_lower}"),
-        ];
-
-        definition_markers
-            .iter()
-            .any(|pattern| snippet_lower.contains(pattern))
+        };
+        let index = declarations.entry(hit.path.clone()).or_insert_with(|| {
+            let absolute = self.config.root.join(&hit.path);
+            self.file_cache
+                .read_file(&absolute)
+                .map(|source| DeclarationIndex::new(&hit.path, source.contents()))
+                .unwrap_or_default()
+        });
+        index.is_declaration(hit.line, &self.declaration_patterns)
     }
 
     fn ensure_fd_tool(&mut self) -> Option<&FdTool> {
@@ -964,7 +952,12 @@ impl SearchEngine {
         let target_lower = target.to_ascii_lowercase();
 
         let mut candidates: Vec<String> = Vec::new();
-        candidates.extend(self.state.known_symbols());
+        candidates.extend(self.state.known_symbols().into_iter().filter(|symbol| {
+            self.state
+                .hints_for_symbol(symbol)
+                .iter()
+                .any(|path| self.matches_path_globs(path))
+        }));
         candidates.extend(collect_candidate_symbols(discover_candidates));
         candidates.extend(collect_candidate_symbols(&verification.fd_candidates));
         let ast_paths: Vec<PathBuf> = verification
@@ -1080,6 +1073,9 @@ impl SearchEngine {
             Ok(matches) => {
                 let mut tokens = Vec::new();
                 for m in matches {
+                    if !self.matches_path_globs(&m.path) {
+                        continue;
+                    }
                     tokens.extend(tokenize(&m.lines));
                     if let Some(stem) = m.path.file_stem().and_then(|s| s.to_str()) {
                         tokens.push(stem.to_string());
@@ -1104,6 +1100,9 @@ impl SearchEngine {
 
     async fn locate_symbol_occurrence(&self, symbol: &str) -> Option<(String, usize)> {
         for hint in self.state.hints_for_symbol(symbol) {
+            if !self.matches_path_globs(&hint) {
+                continue;
+            }
             let absolute = self.config.root.join(&hint);
             if let Ok(contents) = fs::read_to_string(&absolute) {
                 if let Some(line) = first_line_containing(&contents, symbol) {
@@ -1125,15 +1124,19 @@ impl SearchEngine {
             )
             .await
         {
-            Ok(matches) => matches.first().map(|m| {
-                let absolute = if m.path.is_absolute() {
-                    m.path.clone()
-                } else {
-                    self.config.root.join(&m.path)
-                };
-                let normalized = normalize_path(&self.config.root, &absolute).unwrap_or(absolute);
-                (normalized.to_string_lossy().to_string(), m.line_number)
-            }),
+            Ok(matches) => matches
+                .iter()
+                .find(|m| self.matches_path_globs(&m.path))
+                .map(|m| {
+                    let absolute = if m.path.is_absolute() {
+                        m.path.clone()
+                    } else {
+                        self.config.root.join(&m.path)
+                    };
+                    let normalized =
+                        normalize_path(&self.config.root, &absolute).unwrap_or(absolute);
+                    (normalized.to_string_lossy().to_string(), m.line_number)
+                }),
             Err(err) => {
                 tracing::debug!(error = %err, "fuzzy locate ripgrep probe failed");
                 None
@@ -1202,42 +1205,7 @@ impl SearchEngine {
     }
 
     fn matches_path_globs(&self, path: &Path) -> bool {
-        if !passes_extension_filter(path, self.config.extension_filter.as_deref()) {
-            return false;
-        }
-
-        if let Some(scope) = &self.git_scope {
-            let key = normalize_for_scope(&self.config.root, path);
-            if !scope.contains(&key) {
-                return false;
-            }
-        }
-
-        if let Some(globs) = &self.config.exclude_globs {
-            let rel = path.to_string_lossy().replace('\\', "/");
-            let abs_path = if path.is_absolute() {
-                path.to_path_buf()
-            } else {
-                self.config.root.join(path)
-            };
-            let abs = abs_path.to_string_lossy().replace('\\', "/");
-            if globs.is_match(rel.as_str()) || globs.is_match(abs.as_str()) {
-                return false;
-            }
-        }
-
-        if let Some(globs) = &self.config.path_globs {
-            let rel = path.to_string_lossy().replace('\\', "/");
-            let abs_path = if path.is_absolute() {
-                path.to_path_buf()
-            } else {
-                self.config.root.join(path)
-            };
-            let abs = abs_path.to_string_lossy().replace('\\', "/");
-            globs.is_match(rel.as_str()) || globs.is_match(abs.as_str())
-        } else {
-            true
-        }
+        self.scope.allows(path)
     }
 
     fn file_type_multiplier(&self, path: &Path) -> f32 {
@@ -1344,6 +1312,9 @@ impl SearchEngine {
         let mut line = serde_json::to_vec(&entry)?;
         line.push(b'\n');
         file.write_all(&line).await?;
+        // Tokio file writes can remain pending after write_all; complete them
+        // before a short-lived CLI invocation shuts down its runtime.
+        file.flush().await?;
 
         Ok(())
     }
@@ -1531,6 +1502,41 @@ impl SearchEngine {
         }
     }
 
+    fn hits_from_ast(&self, matches: &[AstGrepMatch]) -> Vec<SearchHit> {
+        matches
+            .iter()
+            .filter_map(|m| {
+                let path = normalize_path(&self.config.root, &m.path).ok()?;
+                if !self.matches_path_globs(&path) {
+                    return None;
+                }
+                if let Some(scope_file) = &self.config.scope_file {
+                    if normalize_for_scope(&self.config.root, &path)
+                        != normalize_for_scope(&self.config.root, scope_file)
+                    {
+                        return None;
+                    }
+                }
+                let absolute = self.config.root.join(&path);
+                // AST locations are zero-based; use the source line rather than
+                // re-searching the symbol (which would discard structural matches).
+                let file = self.file_cache.read_file(&absolute)?;
+                let snippet = file.contents().lines().nth(m.line)?.to_string();
+                let snippet_length = snippet.chars().count();
+                Some(SearchHit {
+                    path,
+                    line: m.line.saturating_add(1),
+                    snippet,
+                    score: 1.0,
+                    origin: HitOrigin::AstGrep,
+                    raw_snippet: None,
+                    snippet_length,
+                    raw_snippet_truncated: false,
+                })
+            })
+            .collect()
+    }
+
     async fn disambiguate(&mut self, scope: &[PathBuf]) -> Vec<AstGrepMatch> {
         if !self.should_run_ast() {
             return Vec::new();
@@ -1553,10 +1559,19 @@ impl SearchEngine {
             Ok(matches) => {
                 crate::telemetry::record_tool_results("ast-grep", matches.len());
                 matches
+                    .into_iter()
+                    .filter(|m| {
+                        normalize_path(&self.config.root, &m.path)
+                            .is_ok_and(|path| self.matches_path_globs(&path))
+                    })
+                    .collect()
             }
             Err(err) => {
                 if Self::is_not_found_error(&err) {
                     self.ast_unavailable = true;
+                    if self.config.verbose_ast {
+                        self.push_warning("ast-grep not found on PATH; AST search unavailable (no fallback applied)");
+                    }
                     tracing::debug!(
                         error = %err,
                         "ast-grep not found on PATH; disabling AST disambiguation"
@@ -1568,7 +1583,7 @@ impl SearchEngine {
                     tracing::debug!(
                         symbol = %symbol,
                         pattern = %pattern_err.pattern(),
-                        "ast-grep pattern invalid; falling back to literal search"
+                        "ast-grep pattern invalid"
                     );
                     if self.config.verbose_ast {
                         self.push_warning(format!(
@@ -1681,6 +1696,10 @@ impl SearchEngine {
 
         let mut dedup: HashMap<(PathBuf, usize), SearchHit> = HashMap::new();
         for mut hit in hits {
+            // Every backend (including RGA and future fallbacks) crosses this boundary.
+            if !self.matches_path_globs(&hit.path) {
+                continue;
+            }
             let key = (hit.path.clone(), hit.line);
             if fd_set.contains(&hit.path) {
                 hit.score += 0.2;
@@ -1898,14 +1917,34 @@ fn build_git_scope(config: &SearchConfig) -> Result<Option<HashSet<String>>> {
         return Ok(None);
     };
 
+    // Git status paths are repository-relative, even when invoked in a
+    // subdirectory. Run every scope query at that same repository root.
+    let output = run_command_with_timeout(
+        {
+            let mut cmd = Command::new("git");
+            cmd.args(["rev-parse", "--show-toplevel"])
+                .current_dir(&config.root);
+            cmd
+        },
+        config.timeout,
+    )
+    .with_context(|| "failed to locate git repository")?;
+    if !output.status.success() {
+        anyhow::bail!(
+            "git rev-parse --show-toplevel failed with {}",
+            output.status
+        );
+    }
+    let repo_root =
+        git_path_from_bytes(output.stdout.strip_suffix(b"\n").unwrap_or(&output.stdout));
     let mut scoped: HashSet<String> = HashSet::new();
 
     if filter.modified {
         let output = run_command_with_timeout(
             {
                 let mut cmd = Command::new("git");
-                cmd.args(["status", "--porcelain"])
-                    .current_dir(&config.root);
+                cmd.args(["status", "--porcelain=v1", "-z", "--untracked-files=all"])
+                    .current_dir(&repo_root);
                 cmd
             },
             config.timeout,
@@ -1914,13 +1953,21 @@ fn build_git_scope(config: &SearchConfig) -> Result<Option<HashSet<String>>> {
         if !output.status.success() {
             anyhow::bail!("git status --porcelain failed with {}", output.status);
         }
-        for line in String::from_utf8_lossy(&output.stdout).lines() {
-            if line.len() < 4 {
+        let mut records = output.stdout.split(|byte| *byte == 0);
+        while let Some(record) = records.next() {
+            if record.len() < 4 {
                 continue;
             }
-            let path = line[3..].trim();
-            if let Some(key) = normalize_git_path(&config.root, path) {
+            // Porcelain -z puts the destination first and the source in a
+            // separate NUL-delimited record for renames/copies.
+            if let Some(key) = normalize_git_path(&config.root, &repo_root, &record[3..]) {
                 scoped.insert(key);
+            }
+            if record[..2]
+                .iter()
+                .any(|status| matches!(status, b'R' | b'C'))
+            {
+                records.next();
             }
         }
     }
@@ -1929,8 +1976,8 @@ fn build_git_scope(config: &SearchConfig) -> Result<Option<HashSet<String>>> {
         let output = run_command_with_timeout(
             {
                 let mut cmd = Command::new("git");
-                cmd.args(["diff", "--name-only", since, "--"])
-                    .current_dir(&config.root);
+                cmd.args(["diff", "--name-only", "-z", since, "--"])
+                    .current_dir(&repo_root);
                 cmd
             },
             config.timeout,
@@ -1939,9 +1986,8 @@ fn build_git_scope(config: &SearchConfig) -> Result<Option<HashSet<String>>> {
         if !output.status.success() {
             anyhow::bail!("git diff --name-only {since} failed with {}", output.status);
         }
-        for line in String::from_utf8_lossy(&output.stdout).lines() {
-            let path = line.trim();
-            if let Some(key) = normalize_git_path(&config.root, path) {
+        for path in output.stdout.split(|byte| *byte == 0) {
+            if let Some(key) = normalize_git_path(&config.root, &repo_root, path) {
                 scoped.insert(key);
             }
         }
@@ -1951,7 +1997,7 @@ fn build_git_scope(config: &SearchConfig) -> Result<Option<HashSet<String>>> {
         let output = run_command_with_timeout(
             {
                 let mut cmd = Command::new("git");
-                cmd.args(["ls-files"]).current_dir(&config.root);
+                cmd.args(["ls-files", "-z"]).current_dir(&repo_root);
                 cmd
             },
             config.timeout,
@@ -1962,11 +2008,12 @@ fn build_git_scope(config: &SearchConfig) -> Result<Option<HashSet<String>>> {
         }
         // If no other filters, tracked_only defines the entire scope
         // If combined with modified/since, take the intersection
-        let tracked: HashSet<String> = String::from_utf8_lossy(&output.stdout)
-            .lines()
-            .filter_map(|line| normalize_git_path(&config.root, line.trim()))
+        let tracked: HashSet<String> = output
+            .stdout
+            .split(|byte| *byte == 0)
+            .filter_map(|path| normalize_git_path(&config.root, &repo_root, path))
             .collect();
-        if scoped.is_empty() {
+        if !filter.modified && filter.since.is_none() {
             scoped = tracked;
         } else {
             scoped = scoped.intersection(&tracked).cloned().collect();
@@ -2030,24 +2077,28 @@ fn run_command_with_timeout(mut cmd: Command, timeout: std::time::Duration) -> R
     }
 }
 
-fn normalize_git_path(root: &Path, raw: &str) -> Option<String> {
+fn git_path_from_bytes(raw: &[u8]) -> PathBuf {
+    #[cfg(unix)]
+    {
+        use std::os::unix::ffi::OsStrExt;
+        PathBuf::from(std::ffi::OsStr::from_bytes(raw))
+    }
+    #[cfg(not(unix))]
+    {
+        PathBuf::from(String::from_utf8_lossy(raw).as_ref())
+    }
+}
+
+fn normalize_git_path(root: &Path, repo_root: &Path, raw: &[u8]) -> Option<String> {
     if raw.is_empty() {
         return None;
     }
-    let mut path = PathBuf::from(raw);
-    if path.is_relative() {
-        path = root.join(path);
-    }
-    if !path.exists() {
-        return None;
-    }
-    let canonical = path.canonicalize().unwrap_or(path);
-    let rel = canonical
-        .strip_prefix(root)
-        .unwrap_or(&canonical)
-        .to_string_lossy()
-        .replace('\\', "/");
-    Some(rel)
+    let path = repo_root.join(git_path_from_bytes(raw));
+    // Deleted files cannot produce search results. Also reject files outside
+    // the requested search subtree instead of giving them absolute scope keys.
+    let canonical = path.canonicalize().ok()?;
+    let rel = canonical.strip_prefix(root).ok()?;
+    Some(rel.to_string_lossy().replace('\\', "/"))
 }
 
 fn normalize_for_scope(root: &Path, path: &Path) -> String {

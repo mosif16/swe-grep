@@ -435,7 +435,8 @@ JSON: Use `--json-only` for structured output
 }
 
 async fn run(cli: Cli) -> Result<(), AppError> {
-    let disable_telemetry = cli.disable_telemetry || telemetry_default_disabled();
+    let disable_telemetry =
+        cli.disable_telemetry || (!cli.no_config && telemetry_default_disabled());
     if cli.clear_cache {
         clear_cache_for_command(&cli)?;
     }
@@ -1452,18 +1453,19 @@ async fn handle_context(cmd: ContextCommand, _disable_telemetry: bool) -> Result
     let cache_dir = search::default_cache_dir_for_root(&root);
 
     let options = ExtractFactsOptions::for_search(None, None);
-    let extracted = extract_repo_facts(&root, &cache_dir, &options).ok();
+    let (_stats, file_facts) = extract_repo_facts(&root, &cache_dir, &options).map_err(|err| {
+        anyhow!(
+            "failed to extract repository facts for {}: {err:#}",
+            root.display()
+        )
+    })?;
 
     if cmd.stream {
-        stream_context(&root, &symbol, &selection, extracted.as_ref().map(|v| &v.1))?;
+        stream_context(&root, &symbol, &selection, Some(&file_facts))?;
         return Ok(());
     }
 
-    let response = if let Some((_stats, file_facts)) = extracted {
-        assemble_context_from_facts(&root, &symbol, &selection, &file_facts)?
-    } else {
-        ContextResponse::empty(symbol.clone())
-    };
+    let response = assemble_context_from_facts(&root, &symbol, &selection, &file_facts)?;
 
     if cmd.grouped {
         let grouped = GroupedContextOutput::from_response(&response, cmd.budget);
@@ -1750,14 +1752,15 @@ fn apply_grouped_context_budget(grouped: &mut GroupedContextBuckets, budget_toke
 
 impl ConciseContextOutput {
     fn from_response(response: &ContextResponse) -> Self {
-        let def_location = response
-            .definition
-            .as_ref()
-            .and_then(|d| match (d.file.as_deref(), d.line) {
-                (Some(file), Some(line)) => Some(format!("{file}:{line}")),
-                (Some(file), None) => Some(file.to_string()),
-                _ => None,
-            });
+        let def_location =
+            response
+                .definition
+                .as_ref()
+                .and_then(|d| match (d.file.as_deref(), d.line) {
+                    (Some(file), Some(line)) => Some(format!("{file}:{line}")),
+                    (Some(file), None) => Some(file.to_string()),
+                    _ => None,
+                });
         let def = response
             .definition
             .as_ref()
@@ -2491,6 +2494,12 @@ async fn handle_refs(mut cmd: RefsCommand, _disable_telemetry: bool) -> Result<(
         cmd.positional.lang_or_path_pos.as_deref(),
     )?;
 
+    if cmd.search.definitions_only || cmd.search.kind.is_some() {
+        return Err(AppError::Usage(
+            "refs reports usage edges; --definitions-only and --kind filter declaration sites. Use search or context for declarations.".to_string(),
+        ));
+    }
+
     let mut args = cmd.search.clone();
     if args.context_before == 0 && args.context_after == 0 {
         args.context_before = 2;
@@ -2500,27 +2509,18 @@ async fn handle_refs(mut cmd: RefsCommand, _disable_telemetry: bool) -> Result<(
         args.body = true;
     }
 
-    let summary = search::execute(args.clone()).await?;
+    let (summary, scope) = search::execute_with_scope(args.clone()).await?;
 
     let mut caller_hits: Vec<CallerRef> = Vec::new();
     let mut callee_hits: Vec<CalleeRef> = Vec::new();
     let mut import_hits: Vec<ImportRef> = Vec::new();
     let mut importer_hits: Vec<ImportRef> = Vec::new();
-    let mut definition_hits: Vec<&search::TopHit> = Vec::new();
     let mut notes = summary.notes.clone();
     let mut warnings = summary.warnings.clone();
 
-    // Try to get callers/callees from the call graph (static analysis)
-    let root = args
-        .path
-        .clone()
-        .unwrap_or_else(|| std::path::PathBuf::from("."));
-    let root = if root.is_file() {
-        root.parent().unwrap_or(&root).to_path_buf()
-    } else {
-        root
-    };
-    let cache_dir = search::default_cache_dir_for_root(&root);
+    // Keep the full repository parse context for resolution; scope only emitted edges.
+    let root = scope.root();
+    let cache_dir = search::default_cache_dir_for_root(root);
 
     let call_graph_requested = callers_requested || callees_requested;
     if call_graph_requested {
@@ -2528,11 +2528,17 @@ async fn handle_refs(mut cmd: RefsCommand, _disable_telemetry: bool) -> Result<(
         let graph_cache = GraphCache::new(&root, &cache_dir);
         match graph_cache.load_or_update(&options) {
             Ok((stats, graphs, graph_warnings)) => {
+                if !graph_warnings.is_empty() {
+                    warnings.push("incomplete refs: call graph analysis reported warnings; some edges may be omitted".to_string());
+                }
                 warnings.extend(graph_warnings);
 
                 if callers_requested {
                     let caller_edges = graphs.call_graph.caller_edges_for(&summary.symbol);
                     for edge in caller_edges {
+                        if !scope.allows(Path::new(&edge.file)) {
+                            continue;
+                        }
                         let abs_path = root.join(&edge.file);
                         let snippet = std::fs::read_to_string(&abs_path).ok().and_then(|content| {
                             content
@@ -2554,6 +2560,9 @@ async fn handle_refs(mut cmd: RefsCommand, _disable_telemetry: bool) -> Result<(
                 if callees_requested {
                     let callee_edges = graphs.call_graph.callee_edges_for(&summary.symbol);
                     for edge in callee_edges {
+                        if !scope.allows(Path::new(&edge.file)) {
+                            continue;
+                        }
                         if !cmd.include_constructors
                             && edge.file.ends_with(".rs")
                             && is_rust_constructor_noise(&edge.callee)
@@ -2588,7 +2597,9 @@ async fn handle_refs(mut cmd: RefsCommand, _disable_telemetry: bool) -> Result<(
                 ));
             }
             Err(err) => {
-                warnings.push(format!("call graph unavailable: {err}"));
+                warnings.push(format!(
+                    "incomplete refs: call graph unavailable; call edges omitted: {err}"
+                ));
             }
         }
     }
@@ -2610,10 +2621,12 @@ async fn handle_refs(mut cmd: RefsCommand, _disable_telemetry: bool) -> Result<(
                 }
 
                 if imports_requested {
-                    import_hits = collect_import_edges(&graph, &target_files, cmd.import_depth);
+                    import_hits =
+                        collect_import_edges(&graph, &target_files, cmd.import_depth, &scope);
                 }
                 if importers_requested {
-                    importer_hits = collect_importer_edges(&graph, &target_files, cmd.import_depth);
+                    importer_hits =
+                        collect_importer_edges(&graph, &target_files, cmd.import_depth, &scope);
                 }
 
                 notes.push(format!(
@@ -2628,29 +2641,6 @@ async fn handle_refs(mut cmd: RefsCommand, _disable_telemetry: bool) -> Result<(
         }
     }
 
-    // Also add text-search based hits (fallback/supplement)
-    for hit in &summary.top_hits {
-        let is_definition = is_definition_hit(hit);
-        if is_definition {
-            definition_hits.push(hit);
-        }
-        // Only add text search hits if not already found by call graph
-        if callers_requested && (!is_definition || summary.top_hits.len() == 1) {
-            let already_found = caller_hits
-                .iter()
-                .any(|c| c.file == hit.path && c.line == hit.line);
-            if !already_found {
-                caller_hits.push(CallerRef {
-                    file: hit.path.clone(),
-                    line: hit.line,
-                    snippet: pick_snippet(hit),
-                    origin: Some(hit.origin_label.clone()),
-                    git_info: hit.git_info.clone(),
-                });
-            }
-        }
-    }
-
     // Dedup and sort
     caller_hits.sort_by(|a, b| (&a.file, a.line).cmp(&(&b.file, b.line)));
     caller_hits.dedup_by(|a, b| a.file == b.file && a.line == b.line);
@@ -2658,11 +2648,9 @@ async fn handle_refs(mut cmd: RefsCommand, _disable_telemetry: bool) -> Result<(
     callee_hits.sort_by(|a, b| (&a.file, a.line, &a.symbol).cmp(&(&b.file, b.line, &b.symbol)));
     callee_hits.dedup_by(|a, b| a.file == b.file && a.line == b.line && a.symbol == b.symbol);
 
-    let callees = if callees_requested && callee_hits.is_empty() {
-        extract_callees(&definition_hits, &summary.symbol)
-    } else {
-        callee_hits
-    };
+    // An empty successful graph query is authoritative. Never guess calls from
+    // whole-file text: unrelated function bodies and declarations are not edges.
+    let callees = callee_hits;
 
     let output = RefsOutput {
         symbol: summary.symbol.clone(),
@@ -2718,7 +2706,12 @@ fn resolve_import_graph_targets(graph: &ImportGraph, query: &str) -> Vec<String>
         .collect()
 }
 
-fn collect_import_edges(graph: &ImportGraph, targets: &[String], depth: usize) -> Vec<ImportRef> {
+fn collect_import_edges(
+    graph: &ImportGraph,
+    targets: &[String],
+    depth: usize,
+    scope: &search::SearchScope,
+) -> Vec<ImportRef> {
     let depth = depth.max(1);
     let mut out: Vec<ImportRef> = Vec::new();
     let mut visited_files: HashSet<String> = HashSet::new();
@@ -2736,6 +2729,11 @@ fn collect_import_edges(graph: &ImportGraph, targets: &[String], depth: usize) -
             continue;
         }
         for edge in graph.imports_of(&current) {
+            if !scope.allows(Path::new(&edge.importer))
+                || (graph.is_known_file(&edge.imported) && !scope.allows(Path::new(&edge.imported)))
+            {
+                continue;
+            }
             let key = (edge.importer.clone(), edge.imported.clone(), edge.line);
             if !seen_edges.insert(key) {
                 continue;
@@ -2755,7 +2753,12 @@ fn collect_import_edges(graph: &ImportGraph, targets: &[String], depth: usize) -
     out
 }
 
-fn collect_importer_edges(graph: &ImportGraph, targets: &[String], depth: usize) -> Vec<ImportRef> {
+fn collect_importer_edges(
+    graph: &ImportGraph,
+    targets: &[String],
+    depth: usize,
+    scope: &search::SearchScope,
+) -> Vec<ImportRef> {
     let depth = depth.max(1);
     let mut out: Vec<ImportRef> = Vec::new();
     let mut visited_files: HashSet<String> = HashSet::new();
@@ -2773,6 +2776,11 @@ fn collect_importer_edges(graph: &ImportGraph, targets: &[String], depth: usize)
             continue;
         }
         for edge in graph.importers_of(&current) {
+            if !scope.allows(Path::new(&edge.importer))
+                || (graph.is_known_file(&edge.imported) && !scope.allows(Path::new(&edge.imported)))
+            {
+                continue;
+            }
             let key = (edge.importer.clone(), edge.imported.clone(), edge.line);
             if !seen_edges.insert(key) {
                 continue;
@@ -3095,43 +3103,6 @@ fn collect_imports(summary: &search::SearchSummary) -> Vec<String> {
     collected
 }
 
-fn is_definition_hit(hit: &search::TopHit) -> bool {
-    if hit
-        .hints
-        .iter()
-        .any(|hint| matches!(hint.kind.as_str(), "declaration" | "impl" | "type"))
-    {
-        return true;
-    }
-
-    let Some(text) = hit
-        .snippet
-        .as_deref()
-        .or(hit.raw_snippet.as_deref())
-        .map(|s| s.to_ascii_lowercase())
-    else {
-        return false;
-    };
-
-    let trimmed = text.trim_start();
-    trimmed.starts_with("fn ")
-        || trimmed.starts_with("func ")
-        || trimmed.starts_with("pub fn")
-        || trimmed.starts_with("struct ")
-        || trimmed.starts_with("class ")
-        || trimmed.starts_with("enum ")
-        || trimmed.starts_with("trait ")
-        || trimmed.starts_with("impl ")
-}
-
-fn pick_snippet(hit: &search::TopHit) -> Option<String> {
-    hit.snippet
-        .as_deref()
-        .or(hit.expanded_snippet.as_deref())
-        .or(hit.raw_snippet.as_deref())
-        .map(normalize_line_snippet)
-}
-
 fn normalize_line_snippet(value: &str) -> String {
     let collapsed = value
         .split_whitespace()
@@ -3143,83 +3114,6 @@ fn normalize_line_snippet(value: &str) -> String {
     } else {
         collapsed
     }
-}
-
-fn extract_callees(definitions: &[&search::TopHit], symbol: &str) -> Vec<CalleeRef> {
-    let call_regex = Regex::new(r"(?m)\b([A-Za-z_][A-Za-z0-9_]*)\s*\(")
-        .unwrap_or_else(|_| Regex::new("$^").unwrap());
-    let stoplist: HashSet<&'static str> = [
-        "if",
-        "for",
-        "while",
-        "loop",
-        "match",
-        "switch",
-        "return",
-        "await",
-        "self",
-        "super",
-        "this",
-        "macro_rules",
-        "let",
-        "var",
-        "func",
-        "function",
-        "class",
-        "struct",
-        "enum",
-        "impl",
-        "where",
-    ]
-    .into_iter()
-    .collect();
-
-    let mut seen: HashSet<(String, usize, String)> = HashSet::new();
-    let mut results: Vec<CalleeRef> = Vec::new();
-    let lowered_symbol = symbol.to_ascii_lowercase();
-
-    for hit in definitions {
-        let Some(body) = hit.body.as_deref() else {
-            continue;
-        };
-        let start = hit.line.saturating_sub(50);
-        let end = hit.line.saturating_add(120);
-
-        for (idx, line) in body.lines().enumerate() {
-            let line_no = idx + 1;
-            if line_no < start || line_no > end {
-                continue;
-            }
-            for caps in call_regex.captures_iter(line) {
-                let name = caps
-                    .get(1)
-                    .map(|m| m.as_str().to_string())
-                    .unwrap_or_default();
-                if name.is_empty() {
-                    continue;
-                }
-                let lowered = name.to_ascii_lowercase();
-                if lowered == lowered_symbol || stoplist.contains(lowered.as_str()) {
-                    continue;
-                }
-                let key = (lowered.clone(), line_no, hit.path.clone());
-                if seen.insert(key) {
-                    results.push(CalleeRef {
-                        symbol: name,
-                        file: hit.path.clone(),
-                        line: line_no,
-                        snippet: Some(normalize_line_snippet(line)),
-                        git_info: hit.git_info.clone(),
-                    });
-                    if results.len() >= 50 {
-                        return results;
-                    }
-                }
-            }
-        }
-    }
-
-    results
 }
 
 fn render_refs_tree(output: &RefsOutput) -> String {

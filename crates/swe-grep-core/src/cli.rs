@@ -52,6 +52,10 @@ pub struct Cli {
     #[arg(long, global = true, action = ArgAction::SetTrue)]
     pub disable_telemetry: bool,
 
+    /// Ignore ambient per-user configuration for reproducible programmatic calls.
+    #[arg(long, global = true, action = ArgAction::SetTrue)]
+    pub no_config: bool,
+
     /// Clear swe-grep caches (state + index) before running the command.
     #[arg(long, global = true, action = ArgAction::SetTrue)]
     pub clear_cache: bool,
