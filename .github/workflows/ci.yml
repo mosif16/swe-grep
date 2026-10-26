@@ -33,6 +33,9 @@ jobs:
           cargo test --locked -p swe-grep --all-targets
           cargo test --locked -p swe-grep --all-targets --features indexing
           cargo test --locked -p swe-grep-indexer
+      - name: Check desktop dependency compatibility
+        if: runner.os == 'macOS'
+        run: cargo check --locked -p swe-grep-desktop --all-targets
       - uses: actions/setup-node@v4
         with:
           node-version: 22

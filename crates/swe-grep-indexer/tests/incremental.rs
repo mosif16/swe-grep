@@ -23,7 +23,9 @@ fn warm_open_has_no_content_reads_commits_or_writer_lock() {
         assert_eq!(cold.stats().source_reads, 12);
         assert_eq!(cold.stats().commits, 1);
         let index = tantivy::Index::open_in_dir(config.index_dir.join(".swe-grep-v2-0")).unwrap();
-        let _held_writer = index.writer(50_000_000).unwrap();
+        let _held_writer = index
+            .writer::<tantivy::TantivyDocument>(50_000_000)
+            .unwrap();
         let warm = TantivyIndex::open_or_build(config).await.unwrap();
         assert_eq!(warm.stats().source_reads, 0);
         assert_eq!(warm.stats().hashed_files, 0);
@@ -105,7 +107,9 @@ fn corrupt_manifest_is_rebuilt_without_duplicate_documents() {
         fs::write(root.path().join("source.rs"), "recovermarker").unwrap();
         drop(TantivyIndex::open_or_build(config.clone()).await.unwrap());
         let index = tantivy::Index::open_in_dir(config.index_dir.join(".swe-grep-v2-0")).unwrap();
-        let mut writer = index.writer(50_000_000).unwrap();
+        let mut writer = index
+            .writer::<tantivy::TantivyDocument>(50_000_000)
+            .unwrap();
         let mut prepared = writer.prepare_commit().unwrap();
         prepared.set_payload("malformed manifest");
         prepared.commit().unwrap();
@@ -146,5 +150,39 @@ fn concurrent_warm_readers_never_rewrite_the_index() {
                 handle.join().unwrap();
             }
         });
+    });
+}
+
+#[test]
+fn incompatible_generation_is_preserved_and_rebuilt_from_sources() {
+    tokio::runtime::Runtime::new().unwrap().block_on(async {
+        let root = tempfile::tempdir().unwrap();
+        let config = config(root.path());
+        fs::write(root.path().join("source.rs"), "migrationmarker").unwrap();
+        let previous = config.index_dir.join(".swe-grep-v2-0");
+        fs::create_dir_all(&previous).unwrap();
+        fs::write(previous.join(".swe-grep-owner"), b"swe-grep-index-v2\n").unwrap();
+        // An unreadable older index must take the same non-destructive fallback
+        // as a corrupt index, never reuse its manifest or delete its files.
+        let old_metadata = b"{\"index_format_version\": 0}";
+        fs::write(previous.join("meta.json"), old_metadata).unwrap();
+        fs::write(previous.join("old-segment"), b"preserve me").unwrap();
+        let rebuilt = TantivyIndex::open_or_build(config.clone()).await.unwrap();
+        assert_eq!(rebuilt.stats().indexed_documents, 1);
+        assert_eq!(rebuilt.stats().commits, 1);
+        assert_eq!(
+            rebuilt.search("migrationmarker", 10).await.unwrap(),
+            vec![PathBuf::from("source.rs")]
+        );
+        assert_eq!(fs::read(previous.join("meta.json")).unwrap(), old_metadata);
+        assert_eq!(
+            fs::read(previous.join("old-segment")).unwrap(),
+            b"preserve me"
+        );
+        assert!(config.index_dir.join(".swe-grep-v2-1/meta.json").exists());
+        drop(rebuilt);
+        let warm = TantivyIndex::open_or_build(config).await.unwrap();
+        assert_eq!(warm.stats().commits, 0);
+        assert_eq!(warm.search("migrationmarker", 10).await.unwrap().len(), 1);
     });
 }
