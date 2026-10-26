@@ -3,9 +3,9 @@ use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::{Arc, Barrier};
-use std::time::{Duration, SystemTime};
+use std::time::{Duration, Instant, SystemTime};
 
-use swe_grep::cache_gc::{CacheLease, GcPolicy, collect};
+use swe_grep::cache_gc::{CacheLease, GcPolicy, GcReport, collect};
 
 #[test]
 fn lease_child() {
@@ -16,21 +16,46 @@ fn lease_child() {
         .canonicalize()
         .unwrap();
     let namespace = swe_grep::search::default_cache_dir_for_root(&root);
+    // Registration must not require an exclusive activity lock. A reader may
+    // already hold the activity inode when a stale initializer reaches it.
+    let _existing_reader = if mode == "shared_before_registration" {
+        fs::create_dir_all(&namespace).unwrap();
+        let reader = fs::File::options()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(namespace.join(".swe-grep-lease"))
+            .unwrap();
+        reader.lock_shared().unwrap();
+        Some(reader)
+    } else {
+        None
+    };
     if mode == "concurrent" {
-        let start = Arc::new(Barrier::new(8));
-        let acquired = Arc::new(Barrier::new(8));
-        std::thread::scope(|scope| {
-            for _ in 0..8 {
-                let (start, acquired, root, namespace) =
-                    (start.clone(), acquired.clone(), &root, &namespace);
-                scope.spawn(move || {
-                    start.wait();
-                    let lease = CacheLease::acquire(root, namespace);
-                    acquired.wait();
-                    let _lease = lease.unwrap();
-                });
-            }
-        });
+        for round in 0..16 {
+            let round_root = root.join(format!("round-{round}"));
+            fs::create_dir(&round_root).unwrap();
+            let round_namespace = swe_grep::search::default_cache_dir_for_root(&round_root);
+            let start = Arc::new(Barrier::new(8));
+            let acquired = Arc::new(Barrier::new(8));
+            std::thread::scope(|scope| {
+                for _ in 0..8 {
+                    let (start, acquired, root, namespace) = (
+                        start.clone(),
+                        acquired.clone(),
+                        &round_root,
+                        &round_namespace,
+                    );
+                    scope.spawn(move || {
+                        start.wait();
+                        let lease = CacheLease::acquire(root, namespace);
+                        acquired.wait();
+                        let _lease = lease.unwrap();
+                    });
+                }
+            });
+        }
     }
     let _lease = CacheLease::acquire(&root, &namespace).unwrap();
     println!("GC_READY={}", serde_json::to_string(&namespace).unwrap());
@@ -212,12 +237,8 @@ fn age_and_size_policies_use_last_use_not_payload_write_time() {
         max_bytes: u64::MAX,
         ..GcPolicy::default()
     };
-    assert_eq!(
-        collect(fixture.base(), &policy, false)
-            .unwrap()
-            .eligible_files,
-        0
-    );
+    let fresh = preview_quiescent_cache(fixture.base(), &policy);
+    assert_eq!(fresh.eligible_files, 0, "fresh collection: {fresh:#?}");
     let used = fixture.namespace.join(".swe-grep-last-used");
     fs::File::options()
         .write(true)
@@ -225,12 +246,8 @@ fn age_and_size_policies_use_last_use_not_payload_write_time() {
         .unwrap()
         .set_modified(SystemTime::now() - Duration::from_secs(31 * 86400))
         .unwrap();
-    assert_eq!(
-        collect(fixture.base(), &policy, false)
-            .unwrap()
-            .eligible_files,
-        1
-    );
+    let aged = preview_quiescent_cache(fixture.base(), &policy);
+    assert_eq!(aged.eligible_files, 1, "aged collection: {aged:#?}");
     fs::File::options()
         .write(true)
         .open(&used)
@@ -238,8 +255,32 @@ fn age_and_size_policies_use_last_use_not_payload_write_time() {
         .set_modified(SystemTime::now())
         .unwrap();
     policy.max_bytes = 1;
-    let report = collect(fixture.base(), &policy, false).unwrap();
-    assert_eq!(report.entries[0].reason, "size");
+    let report = preview_quiescent_cache(fixture.base(), &policy);
+    assert_eq!(
+        report.entries.len(),
+        1,
+        "size collection report: {report:#?}"
+    );
+    assert_eq!(report.entries.first().unwrap().reason, "size");
+}
+
+fn preview_quiescent_cache(base: &Path, policy: &GcPolicy) -> GcReport {
+    // Collection deliberately skips busy locks. Other tests spawn subprocesses
+    // concurrently; a fork can briefly inherit a flock descriptor until exec
+    // closes it, even after this process has finished its previous dry run.
+    // Retry only explicit contention, never missing/unknown/policy results.
+    let deadline = Instant::now() + Duration::from_secs(1);
+    loop {
+        let report = collect(base, policy, false).unwrap();
+        if !report.collector_busy && report.skipped_active == 0 {
+            return report;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "cache remained busy: {report:#?}"
+        );
+        std::thread::sleep(Duration::from_millis(1));
+    }
 }
 
 #[test]
@@ -292,6 +333,19 @@ fn simultaneous_first_acquires_share_one_valid_namespace() {
     let (mut child, namespace) = spawn(&root, &home, "concurrent");
     assert!(child.wait().unwrap().success());
     assert!(namespace.join(".swe-grep-owner.json").exists());
+}
+
+#[test]
+fn registration_does_not_request_exclusive_activity_access() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("source");
+    let home = temp.path().join("cache");
+    fs::create_dir(&root).unwrap();
+    fs::create_dir(&home).unwrap();
+    let (mut child, namespace) = spawn(&root, &home, "shared_before_registration");
+    assert!(child.wait().unwrap().success());
+    assert!(namespace.join(".swe-grep-owner.json").exists());
+    assert!(namespace.join(".swe-grep-init").exists());
 }
 
 #[test]

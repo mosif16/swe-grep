@@ -14,6 +14,7 @@ use serde::{Deserialize, Serialize};
 const FORMAT: &str = "swe-grep-managed-cache-v1";
 const OWNER: &str = ".swe-grep-owner.json";
 const LEASE: &str = ".swe-grep-lease";
+const INIT: &str = ".swe-grep-init";
 const USED: &str = ".swe-grep-last-used";
 const COLLECTOR: &str = ".swe-grep-collector";
 const COLLECTED: &str = ".swe-grep-last-gc";
@@ -256,18 +257,17 @@ impl CacheLease {
             }
         }
         let file = open_control(&cache_dir.join(LEASE), true)?;
-        // Initialization alone needs exclusivity. Existing namespaces can take
-        // another shared lease even when this process already holds one.
-        while owner_at(cache_dir)?.is_none() {
-            match file.try_lock() {
-                Ok(()) => {
-                    initialize_namespace(root, cache_dir)?;
-                    file.unlock()?;
-                    break;
-                }
-                Err(TryLockError::WouldBlock) => std::thread::sleep(Duration::from_millis(1)),
-                Err(TryLockError::Error(error)) => return Err(error.into()),
-            }
+        // Serialize first registration on a separate inode. An initializer
+        // that observed missing ownership may arrive after another caller has
+        // already taken a shared activity lease. Its stale request must never
+        // contend for exclusive access to that activity inode.
+        if owner_at(cache_dir)?.is_none() {
+            let initialization = open_control(&cache_dir.join(INIT), true)?;
+            initialization.lock()?;
+            initialize_namespace(root, cache_dir)?;
+            // Release initialization before waiting for shared activity access:
+            // readers and collectors never acquire these locks in reverse order.
+            drop(initialization);
         }
         file.lock_shared()?;
         match owner_at(cache_dir)? {
@@ -325,7 +325,7 @@ fn initialize_namespace(root: &Path, cache_dir: &Path) -> Result<()> {
                 let name = entry.file_name();
                 let name = name.to_string_lossy();
                 ensure!(
-                    name == LEASE || name.starts_with(".swe-owner-"),
+                    name == LEASE || name == INIT || name.starts_with(".swe-owner-"),
                     "unmarked cache namespace contains existing files; refusing adoption"
                 );
             }
@@ -633,7 +633,7 @@ fn scan_payloads(
         let path = entry.path();
         let name = entry.file_name();
         let name = name.to_string_lossy();
-        if [OWNER, LEASE, USED, PAYLOAD_CURSOR].contains(&name.as_ref()) {
+        if [OWNER, LEASE, INIT, USED, PAYLOAD_CURSOR].contains(&name.as_ref()) {
             continue;
         }
         if (name == "facts" || name == "graphs") && directory(&path)? {
