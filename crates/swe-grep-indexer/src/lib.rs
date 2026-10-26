@@ -8,8 +8,8 @@ use anyhow::{Context, Result, ensure};
 use ignore::WalkBuilder;
 use tantivy::collector::TopDocs;
 use tantivy::directory::{Directory, Lock, MmapDirectory};
-use tantivy::schema::{STORED, STRING, Schema, SchemaBuilder, TEXT};
-use tantivy::{Index, IndexReader, ReloadPolicy, Term};
+use tantivy::schema::{STORED, STRING, Schema, SchemaBuilder, TEXT, Value};
+use tantivy::{Index, IndexReader, ReloadPolicy, TantivyDocument, Term};
 use tokio::task;
 
 #[derive(Clone)]
@@ -88,7 +88,7 @@ impl TantivyIndex {
         let stats = refresh(&index, &root, &index_dir, &extensions, &fingerprint)?;
         let reader: IndexReader = index
             .reader_builder()
-            .reload_policy(ReloadPolicy::OnCommit)
+            .reload_policy(ReloadPolicy::OnCommitWithDelay)
             .try_into()
             .context("failed to create index reader")?;
         reader.reload()?;
@@ -132,9 +132,9 @@ impl TantivyIndex {
 
             let mut results = Vec::new();
             for (_score, doc_address) in top_docs {
-                let retrieved = searcher.doc(doc_address)?;
+                let retrieved: TantivyDocument = searcher.doc(doc_address)?;
                 if let Some(value) = retrieved.get_first(path_field) {
-                    let text = value.as_text().unwrap_or_default();
+                    let text = value.as_str().unwrap_or_default();
                     let path = PathBuf::from(text);
                     results.push(normalize_path(&root, &path));
                 }
@@ -421,7 +421,7 @@ fn refresh(
                 stats.deleted_documents += 1;
             }
             if let Some(text) = text {
-                let mut doc = tantivy::Document::new();
+                let mut doc = TantivyDocument::new();
                 doc.add_text(path_field, &path);
                 doc.add_text(exact_field, &path);
                 doc.add_text(body_field, text);

@@ -361,10 +361,10 @@ impl eframe::App for DesktopApp {
                     );
                     ui.add_space(24.0);
 
-                    egui::Frame::none()
+                    egui::Frame::NONE
                         .fill(ui.visuals().widgets.inactive.bg_fill)
-                        .rounding(egui::Rounding::same(14.0))
-                        .inner_margin(egui::Margin::same(16.0))
+                        .corner_radius(egui::CornerRadius::same(14))
+                        .inner_margin(egui::Margin::same(16))
                         .show(ui, |ui| {
                             ui.set_width(640.0);
                             ui.horizontal(|ui| {
@@ -516,10 +516,10 @@ impl eframe::App for DesktopApp {
 
             ui.columns(2, |cols| {
                 cols[0].vertical(|ui| {
-                    egui::Frame::none()
+                    egui::Frame::NONE
                         .fill(ui.visuals().widgets.inactive.bg_fill)
-                        .rounding(egui::Rounding::same(10.0))
-                        .inner_margin(egui::Margin::same(10.0))
+                        .corner_radius(egui::CornerRadius::same(10))
+                        .inner_margin(egui::Margin::same(10))
                         .show(ui, |ui| {
                             ui.label(
                                 egui::RichText::new(format!("Results ({} hits)", self.rows.len()))
@@ -562,10 +562,10 @@ impl eframe::App for DesktopApp {
                 });
 
                 cols[1].vertical(|ui| {
-                    egui::Frame::none()
+                    egui::Frame::NONE
                         .fill(ui.visuals().widgets.inactive.bg_fill)
-                        .rounding(egui::Rounding::same(10.0))
-                        .inner_margin(egui::Margin::same(10.0))
+                        .corner_radius(egui::CornerRadius::same(10))
+                        .inner_margin(egui::Margin::same(10))
                         .show(ui, |ui| {
                             if let Some(index) = self.selected {
                                 if let Some(hit) = self.rows.get(index) {
