@@ -16,6 +16,8 @@ This is a behavior-oriented summary of the current working revision, not a tagge
 
 Declaration/usage classification is language-aware and refreshed after edits. --definitions-only and --usages-only partition matching declaration/use locations; --kind selects declaration kinds. This is still search: a query can match a longer identifier.
 
+Opt into --exact-symbol (swe_search exactSymbol) to require a complete identifier and remove substring noise during match collection. It uses identifier boundaries including Unicode continuation characters and `$`; it is not compiler identity resolution. Existing default literal search remains unchanged, and exact matching requires literal mode.
+
 **Migration:** refs rejects --definitions-only and --kind with an error explaining that refs reports usage edges. Use search for declarations, context for a definition, or refs for callers/callees. --usages-only remains accepted for refs.
 
 Semantic reference filtering now keeps allowed call/import graph data while excluding disallowed origins/endpoints. Callees come from matching function/method scopes rather than unrelated functions in a matching file. Filtered queries should not fall back to invented file-wide dependencies.
@@ -24,11 +26,17 @@ Semantic reference filtering now keeps allowed call/import graph data while excl
 
 **Migration:** context no longer disguises fact-extraction/cache I/O failures as an absent symbol. Invalid UTF-8 or other extraction failures cause a nonzero exit with a diagnostic and no success payload, including concise, grouped, and streaming modes. Handle this separately from successful absence (missing/null definition fields).
 
-Request --callers/--callees or an appropriate preset when you need context relationships; empty unrequested sections are not exhaustive graph answers. The harness context contract intentionally exposes fewer options; use swe_refs for graph queries.
+**Migration:** unpreset context defaults to definition only; explicitly request --callers/--callees or a preset for relationships. Requested unpreset relationships default to direct depth 1; use --depth for transitive context. The tool exposes optional direction and language without arbitrary CLI flags.
+
+Context and refs return resolution candidates and per-section analysis status (not_requested, complete, incomplete). complete describes the requested static pass within its scope and budgets, not a compiler or runtime proof. Truncated, unresolved, or unavailable analysis is marked incomplete. Empty unrequested sections are not exhaustive graph answers.
+
+Select an ambiguous declaration with --target-file/--target-line, or tool targetFile/targetLine. Paths are relative to the analysis directory and lines are 1-based declaration start lines; targetLine requires targetFile. Selection does not restrict caller scope, and a missing selector match does not fall back to another definition. Selected outgoing calls are isolated from other same-name methods/nested declarations. Uncertain incoming calls to duplicate declarations are omitted and marked incomplete.
 
 ## Caches and index
 
 Metadata-first reuse includes reliable Unix ctime identity, not seconds-only mtime. Non-Unix or unreliable metadata falls back to hashing. Optional Tantivy refresh is incremental for added, changed, and deleted files; unchanged reliable warm opens need no writer/commit. These are implementation properties covered by tests, not benchmark promises.
+
+Opt-in --enable-index --exact-symbol uses index-first candidate discovery for supported ASCII identifiers, then verifies source. Unsupported or incomplete candidates fall back to scanning; default substring and regex behavior remains unchanged. See [index limits](performance-tuning.md). The plugin does not expose index/cache CLI controls.
 
 ## Licensing
 

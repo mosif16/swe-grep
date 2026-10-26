@@ -24,12 +24,13 @@ Run from the checkout root:
 ./target/release/swe-grep login_user fixtures/multi_lang
 ./target/release/swe-grep login_user fixtures/multi_lang -C 2
 ./target/release/swe-grep search login_user fixtures/multi_lang --json-only --concise
+./target/release/swe-grep search login_user fixtures/multi_lang --exact-symbol --definitions-only --json-only
 ./target/release/swe-grep search login_user fixtures/multi_lang --definitions-only --kind func --json-only
 ./target/release/swe-grep search 'login_user|fetchUser' fixtures/multi_lang --mode regex --json-only
 ./target/release/swe-grep search 'token-admin' fixtures/multi_lang --text --json-only
 ```
 
-Default literal-symbol search may match longer identifiers too. --text requests raw fixed-string search without symbol rewrites; --mode regex interprets a regex. --definitions-only and --usages-only classify matching locations; they are mutually exclusive. --kind filters declaration kinds, not runtime value types.
+Default literal-symbol search may match longer identifiers too. Add --exact-symbol to match a complete identifier, including Unicode identifier boundaries and `$`, rather than a substring. This opt-in requires literal-symbol mode; it does not provide compiler identity resolution. --text requests raw fixed-string search without symbol rewrites; --mode regex interprets a regex. --definitions-only and --usages-only classify matching locations; they are mutually exclusive. --kind filters declaration kinds, not runtime value types.
 
 For a file, pass its path to search, or use --scope-file relative to the root. Quote shell glob patterns:
 
@@ -42,10 +43,15 @@ For a file, pass its path to search, or use --scope-file relative to the root. Q
 ```sh
 ./target/release/swe-grep context login_user fixtures/multi_lang --concise --callers --callees
 ./target/release/swe-grep context login_user fixtures/multi_lang --body --explain
+./target/release/swe-grep context login_user fixtures/multi_lang --target-file src/lib.rs --target-line 1 --concise --callees
 ./target/release/swe-grep refs login_user fixtures/multi_lang --callers --callees
 ```
 
-Context includes the definition; request relationships with flags such as --callers and --callees, or a --preset refactor|debug|understand bundle. An empty unrequested section is not evidence of no relationships. Use directories for context: the harness rejects files rather than widening to their parent directory.
+Context defaults to definition only. Request relationships with flags such as --callers and --callees, or a --preset refactor|debug|understand bundle. Without a preset or explicit --depth, requested relationships are direct (depth 1). --language narrows analyzed languages. Use directories for context: the harness rejects files rather than widening to their parent directory.
+
+Check resolution.status and its candidate declarations. For duplicate names, pass --target-file relative to the analysis directory and optionally --target-line with the declaration's 1-based start line; both context and refs accept them. This selects a declaration while retaining the requested scope for callers. Invalid or unmatched selections do not fall back to another declaration. Duplicate names can still make caller attribution uncertain; selected ambiguous caller edges are omitted and marked incomplete.
+
+The analysis object distinguishes not_requested, complete, and incomplete sections. complete describes a finished static pass within the selected scope and budgets; it does not prove runtime completeness. Read warnings and truncated before interpreting an empty relationship array.
 
 References report usage edges. Do not pass --definitions-only or --kind to refs; use search for declarations. For filtered graph queries, use refs with --exclude, --path-glob, --scope-file, --exclude-tests, or Git scope flags. Filters retain allowed semantic edges rather than switching to textual guesses.
 

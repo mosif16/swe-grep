@@ -25,7 +25,7 @@ fn json(root: &Path, args: &[&str]) -> Value {
     serde_json::from_slice(&output.stdout).unwrap()
 }
 
-const LANGUAGES: [(&str, &str, &str, &str); 3] = [
+const LANGUAGES: [(&str, &str, &str, &str); 5] = [
     (
         "rust",
         "rs",
@@ -63,6 +63,18 @@ const reference = target;
 ",
         "export function decoy() {}
 ",
+    ),
+    (
+        "javascript",
+        "js",
+        "export function target() {}\nfunction unrelated() { decoy(); }\nfunction actual() { target(); }\nconst reference = target;\n",
+        "export function decoy() {}\n",
+    ),
+    (
+        "jsx",
+        "jsx",
+        "export function target() { return <span>ready</span>; }\nfunction unrelated() { decoy(); }\nfunction actual() { target(); }\nconst reference = target;\n",
+        "export function decoy() { return <span>decoy</span>; }\n",
     ),
 ];
 
@@ -237,9 +249,20 @@ fn mixed_language_graphs_filter_origins_without_disabling_semantics() {
             ],
         );
         let callers = payload["callers"].as_array().unwrap();
-        assert_eq!(callers.len(), 1, "{language}: {payload}");
-        assert_eq!(callers[0]["file"], format!("main.{ext}"), "{payload}");
-        assert_eq!(callers[0]["origin"], "callgraph", "{payload}");
+        let expected_files = if language == "javascript" {
+            vec!["main.js".to_string(), "main.jsx".to_string()]
+        } else {
+            vec![format!("main.{ext}")]
+        };
+        assert_eq!(callers.len(), expected_files.len(), "{language}: {payload}");
+        for file in expected_files {
+            assert!(
+                callers
+                    .iter()
+                    .any(|edge| edge["file"] == file && edge["origin"] == "callgraph"),
+                "{language}: {payload}"
+            );
+        }
         assert_eq!(payload["callees"], serde_json::json!([]), "{payload}");
     }
 }

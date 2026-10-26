@@ -32,6 +32,7 @@ pub fn extract_repo_facts(
     cache_dir: &Path,
     options: &ExtractFactsOptions,
 ) -> Result<(CacheStats, Vec<FileFacts>)> {
+    let _cache_lease = crate::cache_gc::CacheLease::acquire(root, cache_dir)?;
     let cache = AnalysisCache::new(root, cache_dir);
     cache.ensure_ready()?;
 
@@ -56,7 +57,7 @@ pub fn extract_repo_facts(
             };
             if !matches!(
                 language,
-                "rust" | "swift" | "typescript" | "tsx" | "go" | "python"
+                "rust" | "swift" | "typescript" | "tsx" | "javascript" | "jsx" | "go" | "python"
             ) {
                 return Ok(None);
             }
@@ -135,7 +136,9 @@ fn extract_file_facts(language: &str, file: &str, source: &str) -> Result<FactBu
     match language {
         "rust" => super::rust::extract(file, source),
         "swift" => super::swift::extract(file, source),
-        "typescript" | "tsx" => super::typescript::extract(file, source, language),
+        "typescript" | "tsx" | "javascript" | "jsx" => {
+            super::typescript::extract(file, source, language)
+        }
         "go" => super::go::extract(file, source),
         "python" => super::python::extract(file, source),
         other => anyhow::bail!("unsupported language for facts extraction: {other}"),

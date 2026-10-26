@@ -13,6 +13,7 @@ fn fixture_root() -> PathBuf {
 
 fn base_args(symbol: &str, path: PathBuf, language: Option<&str>) -> SearchArgs {
     SearchArgs {
+        exact_symbol: false,
         symbol: symbol.to_string(),
         text: false,
         concept: None,

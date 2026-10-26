@@ -3,6 +3,10 @@ use serde::Serialize;
 #[derive(Debug, Clone, Serialize)]
 pub struct ContextResponse {
     pub symbol: String,
+    pub resolution: SymbolResolution,
+    pub analysis: std::collections::BTreeMap<String, String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub notes: Vec<String>,
     pub definition: Option<Definition>,
     pub callers: Vec<Caller>,
     pub callees: Vec<Callee>,
@@ -17,6 +21,9 @@ impl ContextResponse {
     pub fn empty(symbol: impl Into<String>) -> Self {
         Self {
             symbol: symbol.into(),
+            resolution: SymbolResolution::default(),
+            analysis: std::collections::BTreeMap::new(),
+            notes: Vec::new(),
             definition: None,
             callers: Vec::new(),
             callees: Vec::new(),
@@ -27,6 +34,20 @@ impl ContextResponse {
             truncated: false,
         }
     }
+}
+
+/// Definition identity is separate from the scope in which relationships are searched.
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct SymbolResolution {
+    pub status: String,
+    pub candidates: Vec<SymbolCandidate>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct SymbolCandidate {
+    pub symbol: String,
+    pub file: String,
+    pub line: usize,
 }
 
 #[derive(Debug, Clone, Serialize)]

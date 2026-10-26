@@ -264,6 +264,7 @@ impl SearchExecutor {
 
         let mut args = SearchArgs {
             symbol,
+            exact_symbol: false,
             text: false,
             concept,
             concept_expand,

@@ -79,7 +79,20 @@ pub struct CallGraphView {
 
 impl CallGraph {
     pub fn from_facts(files: &[FileFacts]) -> Self {
-        let signature_index = build_signature_index(None, files);
+        Self::from_facts_with_signatures(files, true)
+    }
+
+    /// Compact consumers need call edges, not an index of every signature in the repository.
+    pub fn from_facts_without_signatures(files: &[FileFacts]) -> Self {
+        Self::from_facts_with_signatures(files, false)
+    }
+
+    fn from_facts_with_signatures(files: &[FileFacts], include_signatures: bool) -> Self {
+        let signature_index = if include_signatures {
+            build_signature_index(None, files)
+        } else {
+            HashMap::new()
+        };
         let mut edges: Vec<CallEdge> = Vec::new();
         for file in files {
             for call in &file.facts.calls {
@@ -316,7 +329,12 @@ impl CallGraph {
             };
 
             children.push(CallTreeNode {
-                symbol: next_symbol,
+                // Normalized keys are for traversal only. Agents need the source
+                // expression (e.g. Object.entries) to navigate the result again.
+                symbol: match direction {
+                    Direction::Callers => edge.caller.clone(),
+                    Direction::Callees => edge.callee.clone(),
+                },
                 signature,
                 file: Some(edge.file.clone()),
                 line: Some(edge.line),

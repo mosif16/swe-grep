@@ -56,7 +56,7 @@ pub struct Cli {
     #[arg(long, global = true, action = ArgAction::SetTrue)]
     pub no_config: bool,
 
-    /// Clear swe-grep caches (state + index) before running the command.
+    /// Clear this root's managed runtime payloads before running; active data and indexes are preserved.
     #[arg(long, global = true, action = ArgAction::SetTrue)]
     pub clear_cache: bool,
 
@@ -124,6 +124,10 @@ pub struct Cli {
     /// Only show definition sites (struct, fn, class, etc.), excluding usages.
     #[arg(long = "definitions-only", short = 'd', action = ArgAction::SetTrue)]
     pub definitions_only: bool,
+
+    /// Match a complete identifier without substring or query expansion.
+    #[arg(long = "exact-symbol", action = ArgAction::SetTrue)]
+    pub exact_symbol: bool,
 
     /// Exclude common test files and directories.
     #[arg(long = "exclude-tests", action = ArgAction::SetTrue)]
@@ -199,10 +203,43 @@ pub enum Commands {
     Remove(RemoveCommand),
     /// Run benchmark scenarios and collect performance metrics.
     Bench(BenchArgs),
+    /// Inspect or collect disposable managed runtime caches.
+    Cache(CacheCommand),
     /// Serve the SWE-Grep API over HTTP and gRPC.
     Serve(ServeArgs),
     /// Collect structured feedback about agent tools (saved under ./Feedback by default).
     Feedback(FeedbackCommand),
+}
+
+#[derive(clap::Args, Debug)]
+pub struct CacheCommand {
+    #[command(subcommand)]
+    pub command: CacheSubcommand,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum CacheSubcommand {
+    /// Preview age/size collection; delete only with --apply.
+    Gc(CacheGcArgs),
+}
+
+#[derive(clap::Args, Debug)]
+pub struct CacheGcArgs {
+    /// Delete eligible managed payloads. Without this flag, report a dry run.
+    #[arg(long, conflicts_with = "dry_run")]
+    pub apply: bool,
+
+    /// Explicitly preview cleanup without deleting cache payloads (the default).
+    #[arg(long)]
+    pub dry_run: bool,
+
+    /// Maximum idle age of managed namespaces in days.
+    #[arg(long, default_value_t = 30)]
+    pub max_age_days: u64,
+
+    /// Soft total byte target across managed runtime payloads.
+    #[arg(long, default_value_t = 536870912)]
+    pub max_bytes: u64,
 }
 
 /// Extended CLI surface for search, including agent-focused flags.
@@ -365,6 +402,10 @@ pub struct SearchArgs {
     /// Symbol or identifier to search for.
     #[arg(long, default_value_t = String::new())]
     pub symbol: String,
+
+    /// Match a complete identifier without substring or query expansion (literal mode only).
+    #[arg(long = "exact-symbol", default_value_t = false, action = ArgAction::SetTrue)]
+    pub exact_symbol: bool,
 
     /// Search for literal/raw text (no query expansion; disables AST disambiguation).
     #[arg(long, default_value_t = false, action = ArgAction::SetTrue)]
@@ -538,6 +579,16 @@ pub struct SearchArgs {
     pub log_dir: Option<PathBuf>,
 }
 
+fn parse_target_line(value: &str) -> Result<usize, String> {
+    let line: usize = value
+        .parse()
+        .map_err(|_| "target line must be a positive integer".to_string())?;
+    if line == 0 || line > 2147483647 {
+        return Err("target line must be in 1..2147483647".to_string());
+    }
+    Ok(line)
+}
+
 fn parse_fuzzy_threshold(value: &str) -> Result<f32, String> {
     let parsed: f32 = value
         .parse()
@@ -584,6 +635,14 @@ pub struct RefsCommand {
 
     #[command(flatten)]
     pub positional: PositionalQueryArgs,
+
+    /// Select the declaration in this file, relative to --path. Does not restrict callers to that file.
+    #[arg(long = "target-file")]
+    pub target_file: Option<PathBuf>,
+
+    /// Select the declaration starting on this 1-based line (requires --target-file).
+    #[arg(long = "target-line", requires = "target_file", value_parser = parse_target_line)]
+    pub target_line: Option<usize>,
 
     /// Include locations that call the symbol.
     #[arg(long, default_value_t = false, action = ArgAction::SetTrue)]
@@ -640,6 +699,18 @@ pub struct ContextCommand {
     /// Symbol to assemble context for (positional shorthand).
     #[arg(value_name = "SYMBOL")]
     pub symbol_pos: Option<String>,
+
+    /// Select the declaration in this file, relative to --path. Does not restrict caller scope.
+    #[arg(long = "target-file")]
+    pub target_file: Option<PathBuf>,
+
+    /// Select the declaration starting on this 1-based line (requires --target-file).
+    #[arg(long = "target-line", requires = "target_file", value_parser = parse_target_line)]
+    pub target_line: Option<usize>,
+
+    /// Restrict analyzed source languages (e.g. rust, python, typescript).
+    #[arg(long)]
+    pub language: Option<String>,
 
     /// Preset configuration for common workflows (refactor|debug|understand).
     #[arg(long, value_enum)]

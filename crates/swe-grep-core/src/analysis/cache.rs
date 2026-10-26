@@ -237,6 +237,11 @@ impl GraphCache {
         &self,
         options: &ExtractFactsOptions,
     ) -> Result<(GraphCacheStats, RepoGraphs, Vec<String>)> {
+        let cache_dir = self
+            .graphs_dir
+            .parent()
+            .context("graph cache has no parent")?;
+        let _cache_lease = crate::cache_gc::CacheLease::acquire(&self.root, cache_dir)?;
         self.ensure_ready()?;
         let mut data = self.load()?.unwrap_or_else(GraphCacheData::empty);
 
@@ -325,7 +330,14 @@ impl GraphCache {
                 let language = detect_language_from_path(&abs_path)?;
                 if !matches!(
                     language,
-                    "rust" | "swift" | "typescript" | "tsx" | "go" | "python"
+                    "rust"
+                        | "swift"
+                        | "typescript"
+                        | "tsx"
+                        | "javascript"
+                        | "jsx"
+                        | "go"
+                        | "python"
                 ) {
                     return None;
                 }
@@ -609,7 +621,9 @@ fn extract_file_facts(
     match language {
         "rust" => super::rust::extract(file, source),
         "swift" => super::swift::extract(file, source),
-        "typescript" | "tsx" => super::typescript::extract(file, source, language),
+        "typescript" | "tsx" | "javascript" | "jsx" => {
+            super::typescript::extract(file, source, language)
+        }
         "go" => super::go::extract(file, source),
         "python" => super::python::extract(file, source),
         other => anyhow::bail!("unsupported language for analysis graph extraction: {other}"),
@@ -749,6 +763,42 @@ mod tests {
         let (warm, graphs, _) = cache.load_or_update(&options).unwrap();
         assert_eq!(warm.updated_files, 0);
         assert_eq!(graphs.call_graph.caller_edges_for("bravo").len(), 1);
+    }
+
+    #[test]
+    fn javascript_and_jsx_populate_existing_empty_graph_and_warm_facts_caches() {
+        let repo = tempfile::tempdir().unwrap();
+        let cache_dir = tempfile::tempdir().unwrap();
+        write_source(
+            &repo.path().join("caller.js"),
+            "export function caller() { return component(); }\n",
+        );
+        write_source(
+            &repo.path().join("component.jsx"),
+            "export function component() { return <span>{helper()}</span>; }\n",
+        );
+        let options = ExtractFactsOptions::for_search(None, None);
+        let cache = GraphCache::new(repo.path(), cache_dir.path());
+        cache.ensure_ready().unwrap();
+        // Older revisions persisted an empty graph while skipping JS/JSX files.
+        cache.store(&GraphCacheData::empty()).unwrap();
+        let (cold, graphs, warnings) = cache.load_or_update(&options).unwrap();
+        assert!(warnings.is_empty(), "{warnings:?}");
+        assert_eq!(cold.scanned_files, 2);
+        assert_eq!(cold.updated_files, 2);
+        assert_eq!(graphs.call_graph.caller_edges_for("component").len(), 1);
+        assert_eq!(graphs.call_graph.caller_edges_for("helper").len(), 1);
+        let (warm, graphs, _) = cache.load_or_update(&options).unwrap();
+        assert_eq!(warm.updated_files, 0);
+        assert_eq!(graphs.call_graph.caller_edges_for("helper").len(), 1);
+
+        let (cold, facts) = extract_repo_facts(repo.path(), cache_dir.path(), &options).unwrap();
+        assert_eq!(cold.processed_files, 2);
+        assert_eq!(cold.cache_hits, 0);
+        assert!(facts.iter().any(|file| file.language == "javascript"));
+        assert!(facts.iter().any(|file| file.language == "jsx"));
+        let (warm, _) = extract_repo_facts(repo.path(), cache_dir.path(), &options).unwrap();
+        assert_eq!(warm.cache_hits, 2);
     }
 
     #[test]

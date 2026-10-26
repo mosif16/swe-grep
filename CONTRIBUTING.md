@@ -22,7 +22,8 @@ feedback focused and respectful; see [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md).
 
 Use a current stable Rust toolchain supporting edition 2024, including rustfmt
 and Clippy, and Node.js >=22.19 with npm. CI runs Node 22 on Linux and macOS.
-Python 3 is used by some optional benchmark scripts, not the core build.
+Python 3.11+ is used by the build-artifact maintenance helper and its disposable
+Cargo-fixture tests; it is not required by the Rust engine.
 
 ```sh
 git clone https://github.com/mosif16/swe-grep.git
@@ -58,6 +59,7 @@ cargo fmt --all -- --check
 cargo test --locked -p swe-grep --all-targets
 cargo test --locked -p swe-grep --all-targets --features indexing
 cargo test --locked -p swe-grep-indexer
+python3 -B -m unittest discover -s scripts/tests -p test_build_cache_gc.py -v
 cargo build --locked -p swe-grep
 SWE_GREP_BINARY="$PWD/target/debug/swe-grep" npm test --prefix integrations/harness
 npm run check --prefix integrations/harness

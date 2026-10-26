@@ -1,6 +1,7 @@
 pub mod agent;
 pub mod analysis;
 pub mod bench;
+pub mod cache_gc;
 pub mod cli;
 pub mod context;
 pub mod feedback;

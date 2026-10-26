@@ -16,13 +16,25 @@ different node after a route or identity failure.
   `limit` is 1–100. `pathGlob` and `exclude` are arrays even for one pattern,
   for example `"pathGlob": ["src/**/*.py"]`; each accepts at most 20 nonempty
   strings of at most 512 UTF-8 bytes. `definitionsOnly` and `usagesOnly` are
-  mutually exclusive.
+  mutually exclusive. Use `exactSymbol: true` with literal mode for a complete
+  identifier rather than longer names containing it.
 - Inspect definitions with `swe_context`. Pass a directory explicitly, not a
-  file; `concise` defaults to true. Empty relationship arrays here do not show
-  that a symbol lacks callers or callees.
+  file; `concise` defaults to true. Request `direction: callers`, `callees`, or
+  `both` when relationships are needed; omitting it requests a definition only.
+  `language` narrows definition selection. Inspect `analysis` status before
+  interpreting empty relationships, and `resolution` for ambiguous or missing
+  definitions.
 - Trace relationships with `swe_refs`, using `direction: callers`, `callees`, or
   `both`. Narrow with `language`, `pathGlob`, `exclude`, `excludeTests`, or
   `trackedOnly` when appropriate.
+
+Carry a selected search hit into `swe_context` or `swe_refs` using `targetFile`
+equal to its `file` and `targetLine` equal to its declaration start `line`, keeping
+the same analysis directory. `targetFile` must be relative, without parent
+traversal, and within the requested canonical scope. `targetLine` is 1-based and
+requires `targetFile`. For file-scoped references, use the same file's basename.
+Selection identifies the definition while retaining relationships from other
+allowed files.
 
 Verify returned `_swe.node` and canonical path. Read the cited source before
 editing: static edges and empty search results are not exhaustive runtime proof.

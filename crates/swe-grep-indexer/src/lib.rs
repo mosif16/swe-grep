@@ -6,7 +6,7 @@ use std::time::UNIX_EPOCH;
 
 use anyhow::{Context, Result, ensure};
 use ignore::WalkBuilder;
-use tantivy::collector::TopDocs;
+use tantivy::collector::{Count, TopDocs};
 use tantivy::directory::{Directory, Lock, MmapDirectory};
 use tantivy::schema::{STORED, STRING, Schema, SchemaBuilder, TEXT, Value};
 use tantivy::{Index, IndexReader, ReloadPolicy, TantivyDocument, Term};
@@ -32,6 +32,8 @@ pub struct IndexStats {
     pub deleted_documents: usize,
     pub commits: usize,
     pub writer_acquisitions: usize,
+    /// Whether every discovered source path/content could be represented in this snapshot.
+    pub coverage_complete: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -108,6 +110,66 @@ impl TantivyIndex {
 
     pub fn stats(&self) -> &IndexStats {
         &self.stats
+    }
+
+    /// Exhaustive candidate files for an exact ASCII identifier, or None when the
+    /// token index cannot safely narrow a source scan. Actual matching remains the
+    /// caller's responsibility: tokenization deliberately admits false positives.
+    pub async fn exact_identifier_candidates(
+        &self,
+        identifier: &str,
+        limit: usize,
+    ) -> Result<Option<Vec<PathBuf>>> {
+        // Tantivy's default analyzer splits underscores and removes long tokens.
+        // Keep every component below its 40-byte limit and quote operator words.
+        if !self.stats.coverage_complete
+            || limit == 0
+            || identifier.is_empty()
+            || !identifier
+                .bytes()
+                .all(|c| c.is_ascii_alphanumeric() || c == b'_')
+        {
+            return Ok(None);
+        }
+        let components: Vec<_> = identifier
+            .split('_')
+            .filter(|part| !part.is_empty())
+            .collect();
+        if components.is_empty() || components.iter().any(|part| part.len() >= 40) {
+            return Ok(None);
+        }
+        let query_string = components
+            .into_iter()
+            .map(|part| format!("\"{}\"", part.to_ascii_lowercase()))
+            .collect::<Vec<_>>()
+            .join(" AND ");
+        let parser = self.query_parser.clone();
+        let reader = self.reader.clone();
+        let path_field = self.path_field;
+        let root = self.root.clone();
+        task::spawn_blocking(move || {
+            let searcher = reader.searcher();
+            let query = parser.parse_query(&query_string)?;
+            let (count, top_docs) =
+                searcher.search(&query, &(Count, TopDocs::with_limit(limit)))?;
+            if count > limit {
+                return Ok(None);
+            }
+            let mut paths = Vec::with_capacity(count);
+            for (_, address) in top_docs {
+                let document: TantivyDocument = searcher.doc(address)?;
+                let Some(path) = document
+                    .get_first(path_field)
+                    .and_then(|value| value.as_str())
+                else {
+                    return Ok(None);
+                };
+                paths.push(normalize_path(&root, Path::new(path)));
+            }
+            Ok::<_, anyhow::Error>(Some(paths))
+        })
+        .await
+        .context("index candidate task cancelled")?
     }
 
     pub async fn search(&self, query: &str, limit: usize) -> Result<Vec<PathBuf>> {
@@ -249,7 +311,7 @@ fn identity(path: &Path) -> Result<Option<Identity>> {
 
 type Snapshot = BTreeMap<String, Identity>;
 
-fn scan(root: &Path, index_dir: &Path, extensions: &[String]) -> Result<Snapshot> {
+fn scan(root: &Path, index_dir: &Path, extensions: &[String]) -> Result<(Snapshot, bool)> {
     let excluded = index_dir.to_path_buf();
     let mut walker = WalkBuilder::new(root);
     walker
@@ -260,6 +322,7 @@ fn scan(root: &Path, index_dir: &Path, extensions: &[String]) -> Result<Snapshot
                 && !entry.file_type().map(|ft| ft.is_symlink()).unwrap_or(false)
         });
     let mut result = BTreeMap::new();
+    let mut complete = true;
     for entry in walker.build() {
         let entry = entry.context("failed to walk sources")?;
         if !entry.file_type().map(|ft| ft.is_file()).unwrap_or(false) {
@@ -281,9 +344,11 @@ fn scan(root: &Path, index_dir: &Path, extensions: &[String]) -> Result<Snapshot
         // Never alias distinct non-UTF-8 paths through lossy conversion.
         if let (Some(path_text), Some(identity)) = (path.to_str(), identity(path)?) {
             result.insert(path_text.to_owned(), identity);
+        } else {
+            complete = false;
         }
     }
-    Ok(result)
+    Ok((result, complete))
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -350,8 +415,12 @@ fn refresh(
 ) -> Result<IndexStats> {
     let mut stats = IndexStats::default();
     let manifest = load_manifest(index)?;
-    let snapshot = scan(root, index_dir, extensions)?;
+    let (snapshot, complete) = scan(root, index_dir, extensions)?;
     if unchanged(manifest.as_ref(), &snapshot, fingerprint) {
+        stats.coverage_complete = complete
+            && manifest
+                .as_ref()
+                .is_some_and(|m| m.files.values().all(|entry| entry.indexed));
         return Ok(stats);
     }
 
@@ -368,8 +437,12 @@ fn refresh(
         .context("failed to acquire index writer")?;
     stats.writer_acquisitions += 1;
     let manifest = load_manifest(index)?;
-    let snapshot = scan(root, index_dir, extensions)?;
+    let (snapshot, complete) = scan(root, index_dir, extensions)?;
     if unchanged(manifest.as_ref(), &snapshot, fingerprint) {
+        stats.coverage_complete = complete
+            && manifest
+                .as_ref()
+                .is_some_and(|m| m.files.values().all(|entry| entry.indexed));
         return Ok(stats);
     }
     let recover = manifest.is_none();
@@ -438,6 +511,7 @@ fn refresh(
             },
         );
     }
+    stats.coverage_complete = complete && files.values().all(|entry| entry.indexed);
     let manifest = Manifest {
         fingerprint: fingerprint.to_owned(),
         files,

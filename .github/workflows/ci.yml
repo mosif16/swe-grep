@@ -36,6 +36,11 @@ jobs:
       - name: Check desktop dependency compatibility
         if: runner.os == 'macOS'
         run: cargo check --locked -p swe-grep-desktop --all-targets
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.13'
+      - name: Test safe Cargo artifact cleanup
+        run: python3 -B -m unittest discover -s scripts/tests -p test_build_cache_gc.py -v
       - uses: actions/setup-node@v4
         with:
           node-version: 22

@@ -1,0 +1,23 @@
+[
+  {
+    "name": "rust_login_definition",
+    "path": "fixtures/multi_lang",
+    "symbol": "login_user",
+    "language": "rust",
+    "expected": { "path": "src/lib.rs", "line": 1, "top_n": 3 }
+  },
+  {
+    "name": "rust_checksum_definition",
+    "path": "fixtures/multi_lang",
+    "symbol": "compute_checksum",
+    "language": "rust",
+    "expected": { "path": "src/lib.rs", "line": 9, "top_n": 3 }
+  },
+  {
+    "name": "python_helper_definition",
+    "path": "fixtures/multi_lang",
+    "symbol": "helper",
+    "language": "python",
+    "expected": { "path": "src/app.py", "line": 29, "top_n": 3 }
+  }
+]

@@ -67,6 +67,7 @@ const DEFINITION_BONUS: f32 = 0.35;
 const LANGUAGE_EXTENSION_BOOST: f32 = 1.15;
 
 pub(crate) struct SearchEngine {
+    _cache_lease: crate::cache_gc::CacheLease,
     pub(crate) config: SearchConfig,
     concept_expansion: Option<ConceptExpansion>,
     pub(crate) scope: SearchScope,
@@ -94,6 +95,7 @@ pub(crate) struct SearchEngine {
 impl SearchEngine {
     pub(crate) fn new(config: SearchConfig) -> Result<Self> {
         let init_start = StdInstant::now();
+        let cache_lease = crate::cache_gc::CacheLease::acquire(&config.root, &config.cache_dir)?;
         let mut startup_stats = StartupStats::default();
 
         let concept_expansion = config
@@ -145,6 +147,7 @@ impl SearchEngine {
         crate::telemetry::record_stage_latency("init_index", startup_stats.index_ms);
 
         Ok(Self {
+            _cache_lease: cache_lease,
             config,
             concept_expansion,
             scope,
@@ -281,7 +284,20 @@ impl SearchEngine {
             self.log_summary(&summary).await?;
             return Ok(summary);
         }
-        if let Some(summary) = self.try_fast_path(&rewrites).await? {
+        #[cfg(feature = "indexing")]
+        if let Some((candidates, index_ms)) = self.exact_index_candidates().await {
+            // An empty candidate set still falls through to the ordinary scan:
+            // zero results must not hide unsupported or concurrently changed data.
+            if !candidates.is_empty() {
+                if let Some(summary) = self
+                    .try_fast_path(&rewrites, Some((&candidates, index_ms)))
+                    .await?
+                {
+                    return Ok(summary);
+                }
+            }
+        }
+        if let Some(summary) = self.try_fast_path(&rewrites, None).await? {
             return Ok(summary);
         }
 
@@ -476,6 +492,18 @@ impl SearchEngine {
     }
 
     fn build_queries(&self) -> Vec<String> {
+        if self.config.exact_symbol {
+            // Explicit identifier boundaries include `$`, unlike regex `\b`.
+            // Apply at collection time so substring noise cannot exhaust the match limit.
+            let escaped = regex::escape(&self.config.symbol);
+            let pattern =
+                format!(r"(?:^|[^\p{{XID_Continue}}$]){escaped}(?:$|[^\p{{XID_Continue}}$])");
+            return vec![if self.config.ignore_case {
+                format!("(?i){pattern}")
+            } else {
+                pattern
+            }];
+        }
         if let Some(concept) = &self.config.concept {
             let expansion = self
                 .concept_expansion
@@ -499,14 +527,18 @@ impl SearchEngine {
         .build()
     }
 
-    async fn try_fast_path(&mut self, rewrites: &[String]) -> Result<Option<SearchSummary>> {
+    async fn try_fast_path(
+        &mut self,
+        rewrites: &[String],
+        indexed: Option<(&[PathBuf], u64)>,
+    ) -> Result<Option<SearchSummary>> {
         if !self.is_literal_symbol() {
             return Ok(None);
         }
 
         crate::telemetry::record_tool_invocation("rg");
         let probe_start = Instant::now();
-        let scope = self.effective_scope(&[]);
+        let scope = self.effective_scope(indexed.map_or(&[], |(paths, _)| paths));
         let matches = match self
             .rg_tool
             .search_union(
@@ -532,13 +564,23 @@ impl SearchEngine {
         }
 
         let probe_ms = elapsed_ms(probe_start);
+        let probe_kind = {
+            #[cfg(feature = "indexing")]
+            if indexed.is_some() {
+                ProbeKind::Indexed
+            } else {
+                ProbeKind::Global
+            }
+            #[cfg(not(feature = "indexing"))]
+            ProbeKind::Global
+        };
         let mut hits: Vec<SearchHit> = matches
             .into_iter()
             .map(|m| {
                 SearchHit::from_ripgrep(
                     &self.config.root,
                     m,
-                    ProbeKind::Global,
+                    probe_kind.clone(),
                     self.config.max_columns,
                 )
             })
@@ -559,11 +601,16 @@ impl SearchEngine {
         let verify_ms = elapsed_ms(verify_start);
 
         let mut stage_stats = StageStats::default();
+        if let Some((candidates, index_ms)) = indexed {
+            stage_stats.index_candidates = candidates.len();
+            stage_stats.index_probe_hits = total_hits;
+            stage_stats.index_ms = index_ms;
+        }
         stage_stats.probe_ms = probe_ms;
         stage_stats.probe_hits = total_hits;
         stage_stats.record_probe_languages(&probe_hits_snapshot, stage_stats.probe_ms);
         stage_stats.verify_ms = verify_ms;
-        stage_stats.cycle_latency_ms = probe_ms + verify_ms;
+        stage_stats.cycle_latency_ms = stage_stats.index_ms + probe_ms + verify_ms;
         stage_stats.precision = round_two(verification.metrics.precision);
         stage_stats.density = round_two(verification.metrics.density);
         stage_stats.clustering = round_two(verification.metrics.cluster_score);
@@ -1655,6 +1702,30 @@ impl SearchEngine {
                     ));
                 }
                 Vec::new()
+            }
+        }
+    }
+
+    #[cfg(feature = "indexing")]
+    async fn exact_index_candidates(&mut self) -> Option<(Vec<PathBuf>, u64)> {
+        if !self.config.use_index || !self.config.exact_symbol || !self.is_literal_symbol() {
+            return None;
+        }
+        let started = Instant::now();
+        let symbol = self.config.symbol.clone();
+        let result = match self.ensure_index().await {
+            Ok(index) => index.exact_identifier_candidates(&symbol, 4096).await,
+            Err(error) => {
+                self.push_warning(format!("index initialization failed: {error}"));
+                return None;
+            }
+        };
+        match result {
+            Ok(Some(candidates)) => Some((candidates, elapsed_ms(started))),
+            Ok(None) => None,
+            Err(error) => {
+                self.push_warning(format!("index candidate search failed: {error}"));
+                None
             }
         }
     }

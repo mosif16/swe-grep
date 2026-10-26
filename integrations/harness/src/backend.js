@@ -122,6 +122,12 @@ export class SweGrepBackend {
         if (rootInfo.kind !== 'directory' || !['directory', 'file'].includes(target.kind)) throw failure('SWE_GREP_INVALID_PATH', 'Expected a regular file or directory');
         if (!await interruptible(() => this.filesystem.contains(rootInfo, target), combined)) throw failure('SWE_GREP_PATH_OUTSIDE_ROOT', 'Path is outside the allowed root');
         if (toolName === 'swe_context' && target.kind !== 'directory') throw failure('SWE_GREP_INVALID_PATH', 'Context requires a directory; file context would widen scope');
+        if (input.targetFile !== undefined) {
+          const selectorBase = target.kind === 'directory' ? target.path : path.dirname(target.path);
+          const selected = await resolve(input.targetFile, selectorBase);
+          if (selected.kind !== 'file') throw failure('SWE_GREP_INVALID_PATH', 'targetFile must identify a regular file');
+          if (!await interruptible(() => this.filesystem.contains(target, selected), combined)) throw failure('SWE_GREP_PATH_OUTSIDE_ROOT', 'targetFile is outside the requested analysis scope');
+        }
       } catch (error) {
         if (combined.aborted) throw combined.reason;
         if (error.code?.startsWith('SWE_GREP_')) throw error;
@@ -135,8 +141,11 @@ export class SweGrepBackend {
         else argv.push('--mode=' + (input.mode ?? 'literal'));
         if (input.definitionsOnly) argv.push('--definitions-only');
         if (input.usagesOnly) argv.push('--usages-only');
+        if (input.exactSymbol) argv.push('--exact-symbol');
       } else if (toolName === 'swe_context') {
         if (input.concise !== false) argv.push('--concise');
+        if (input.direction === 'callers' || input.direction === 'both') argv.push('--callers');
+        if (input.direction === 'callees' || input.direction === 'both') argv.push('--callees');
       } else {
         argv.push('--format=json', '--disable-fd', '--disable-ast-grep');
         if (input.direction !== 'callees') argv.push('--callers');
@@ -144,7 +153,9 @@ export class SweGrepBackend {
         if (input.excludeTests) argv.push('--exclude-tests');
         if (input.trackedOnly) argv.push('--tracked-only');
       }
-      if (input.language && toolName !== 'swe_context') argv.push('--language=' + input.language);
+      if (input.language) argv.push('--language=' + input.language);
+      if (input.targetFile !== undefined) argv.push('--target-file=' + input.targetFile);
+      if (input.targetLine !== undefined) argv.push('--target-line=' + input.targetLine);
       for (const value of input.exclude ?? []) argv.push('--exclude=' + value);
       for (const value of input.pathGlob ?? []) argv.push('--path-glob=' + value);
       const request = { argv, cwd: rootInfo.path, env: { SWE_GREP_DISABLE_TELEMETRY: '1', GIT_OPTIONAL_LOCKS: '0', GIT_CONFIG_COUNT: '1', GIT_CONFIG_KEY_0: 'core.fsmonitor', GIT_CONFIG_VALUE_0: 'false' }, signal: combined, maxOutputBytes: this.maxOutputBytes };

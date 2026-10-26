@@ -252,3 +252,80 @@ test('real agent workflow locates a definition and traces source-verified edges'
   await assert.rejects(client.callTool({ name: 'swe_search',
     arguments: { query: 'workflow_target', pathGlob: '*.py' } }), error => error.code === -32602);
 });
+
+test('real workflow carries an exact search hit into selected context and references', {
+  skip: !process.env.SWE_GREP_BINARY, timeout: 60000,
+}, async t => {
+  const directory = await mkdtemp(join(tmpdir(), 'swe selected workflow '));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  for (const suffix of ['a', 'b']) {
+    await writeFile(join(directory, suffix + '.py'), [
+      `def helper_${suffix}():`, '    return 1', '',
+      'def selected_target():', `    return helper_${suffix}()`, '',
+      `def caller_${suffix}():`, '    return selected_target()', '',
+      'def selected_target_extra():', '    return 2', '',
+    ].join('\n'));
+  }
+  const client = new Client({ name: 'selected-workflow-test', version: '1.0.0' });
+  const transport = new StdioClientTransport({ command: process.execPath,
+    args: [entry, '--root', directory, '--binary', process.env.SWE_GREP_BINARY], stderr: 'pipe' });
+  t.after(() => client.close());
+  await client.connect(transport);
+  async function call(name, arguments_) {
+    const result = await client.callTool({ name, arguments: arguments_ });
+    assert.notEqual(result.isError, true, JSON.stringify(result));
+    assert.deepEqual(JSON.parse(result.content[0].text), result.structuredContent);
+    return result.structuredContent;
+  }
+  const search = await call('swe_search', { query: 'selected_target', definitionsOnly: true, exactSymbol: true });
+  assert.deepEqual(search.hits.map(hit => [hit.file, hit.line]).sort(), [['a.py', 4], ['b.py', 4]]);
+  const hit = search.hits.find(hit => hit.file === 'b.py');
+  const selector = { query: 'selected_target', targetFile: hit.file, targetLine: hit.line, language: 'python' };
+  const context = await call('swe_context', { ...selector, direction: 'callees' });
+  assert.equal(context.def_location, 'b.py:4');
+  assert.ok(context.callees.includes('helper_b'));
+  assert.ok(!context.callees.includes('helper_a'));
+  const refs = await call('swe_refs', { ...selector, direction: 'callees' });
+  assert.ok(refs.callees.some(edge => edge.symbol === 'helper_b' && edge.line === 5));
+  assert.ok(!refs.callees.some(edge => edge.symbol === 'helper_a'));
+});
+
+test('real JavaScript and JSX workflow resolves definitions and cross-file callers', {
+  skip: !process.env.SWE_GREP_BINARY, timeout: 60000,
+}, async t => {
+  const directory = await mkdtemp(join(tmpdir(), 'swe javascript workflow '));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  await writeFile(join(directory, 'helper.js'), 'export function labelText() { return "ready"; }\n');
+  await writeFile(join(directory, 'component.jsx'), [
+    'import { labelText } from "./helper";',
+    'export function renderLabel() {',
+    '  return <span>{labelText()}</span>;',
+    '}', '',
+  ].join('\n'));
+  await writeFile(join(directory, 'caller.js'), [
+    'import { renderLabel } from "./component";',
+    'export function openView() { return renderLabel(); }', '',
+  ].join('\n'));
+  const client = new Client({ name: 'javascript-workflow-test', version: '1.0.0' });
+  const transport = new StdioClientTransport({ command: process.execPath,
+    args: [entry, '--root', directory, '--binary', process.env.SWE_GREP_BINARY], stderr: 'pipe' });
+  t.after(() => client.close());
+  await client.connect(transport);
+  async function call(name, arguments_) {
+    const result = await client.callTool({ name, arguments: arguments_ });
+    assert.notEqual(result.isError, true, JSON.stringify(result));
+    return result.structuredContent;
+  }
+  const search = await call('swe_search', { query: 'renderLabel', definitionsOnly: true, exactSymbol: true, language: 'javascript' });
+  assert.deepEqual(search.hits.map(hit => [hit.file, hit.line]), [['component.jsx', 2]]);
+  const selector = { query: 'renderLabel', targetFile: 'component.jsx', targetLine: 2, language: 'javascript', direction: 'both' };
+  const context = await call('swe_context', selector);
+  assert.equal(context.def_location, 'component.jsx:2');
+  assert.ok(context.callees.includes('labelText'));
+  assert.ok(context.callers.includes('caller.js:2'));
+  const refs = await call('swe_refs', selector);
+  assert.ok(refs.callers.some(edge => edge.file === 'caller.js' && edge.line === 2 && edge.origin === 'callgraph'));
+  assert.ok(refs.callees.some(edge => edge.symbol === 'labelText' && edge.file === 'component.jsx' && edge.line === 3));
+  const helper = await call('swe_context', { query: 'labelText', targetFile: 'helper.js', targetLine: 1 });
+  assert.equal(helper.def_location, 'helper.js:1');
+});

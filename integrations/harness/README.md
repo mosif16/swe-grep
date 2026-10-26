@@ -85,11 +85,29 @@ Replace `sample` with an identifier in your workspace. A successful search retur
 
 | Tool | Use | Additional inputs |
 | --- | --- | --- |
-| `swe_search` | Locate code, declarations, usages, or text | `language`, `mode` (`literal`, `regex`, `text`), `limit`, `exclude`, `pathGlob`, `definitionsOnly`, `usagesOnly` |
-| `swe_context` | Definition and related semantic context | `concise` (default `true`); `path` must be a directory |
-| `swe_refs` | Semantic callers/callees with graph-preserving filters | `language`, `direction` (`callers`, `callees`, `both`), `exclude`, `pathGlob`, `excludeTests`, `trackedOnly` |
+| `swe_search` | Locate code, declarations, usages, or text | `language`, `mode` (`literal`, `regex`, `text`), `limit`, `exclude`, `pathGlob`, `exactSymbol`, `definitionsOnly`, `usagesOnly` |
+| `swe_context` | Definition and optional relationships | `concise` (default `true`), `language`, `targetFile`, `targetLine`, optional `direction` (`callers`, `callees`, `both`); `path` must be a directory |
+| `swe_refs` | Semantic callers/callees with graph-preserving filters | `language`, `targetFile`, `targetLine`, `direction` (`callers`, `callees`, `both`), `exclude`, `pathGlob`, `excludeTests`, `trackedOnly` |
 
 Search defaults to 20 matches; `limit` must be 1–100. Reference direction defaults to `both`. `definitionsOnly` and `usagesOnly` cannot both be true. Query length is 1–256 UTF-8 bytes (nonblank); paths are bounded to 4096 bytes. Each glob list accepts at most 20 nonempty strings, each at most 512 bytes. Unknown keys are rejected. Models cannot supply `env`, raw CLI arguments, binary paths, roots, timeouts, output caps, or cache locations.
+
+For a complete identifier, use `exactSymbol: true` with literal mode. Without it,
+literal search can also find longer identifiers containing the query. To carry a
+selected definition into context or references, pass the search hit's `file` and
+`line` as `targetFile` and `targetLine`, keeping the same analysis directory:
+
+```json
+{"query":"sample","path":".","targetFile":"src/code.py","targetLine":12,"direction":"both"}
+```
+
+`targetFile` is relative to the requested analysis directory, stays within its
+canonical scope, and must identify a regular file. For file-scoped references,
+use that file's basename; selecting another file is rejected. `targetLine` is the
+1-based declaration start line (1–2147483647) and requires `targetFile`. Selectors
+disambiguate a definition without excluding its callers in other allowed files.
+Context omits relationship analysis unless `direction` is provided; inspect the
+returned `analysis` status before treating empty arrays as absence, and inspect
+`resolution` when the symbol is missing or ambiguous.
 
 ## Use an MCP client instead
 

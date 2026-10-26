@@ -60,6 +60,8 @@ test('search defaults, literal/text modes and usage filter', async t => {
   assert.ok(argv.includes('--text'));
   assert.ok(argv.includes('--usages-only'));
   assert.ok(!argv.some(value => value.startsWith('--mode=')));
+  await backend.call('swe_search', { query: 'sample', exactSymbol: true, definitionsOnly: true });
+  assert.ok(argv.includes('--exact-symbol'));
 });
 
 test('context accepts directories only and concise is controllable', async t => {
@@ -70,9 +72,43 @@ test('context accepts directories only and concise is controllable', async t => 
   assert.ok(argv.includes('context'));
   assert.ok(argv.includes('--symbol=-x'));
   assert.ok(argv.includes('--concise'));
+  assert.ok(!argv.includes('--callers'));
+  assert.ok(!argv.includes('--callees'));
   await backend.call('swe_context', { query: 'x', concise: false });
   assert.ok(!argv.includes('--concise'));
   await rejectsCode(() => backend.call('swe_context', { query: 'x', path: 'src/code.js' }), 'SWE_GREP_INVALID_PATH');
+});
+
+test('context can select a search hit and explicitly request relationships', async t => {
+  const root = await workspace(t);
+  let argv;
+  const backend = new SweGrepBackend({ root, runner: async request => { argv = request.argv; return ok(); } });
+  for (const direction of ['callers', 'callees', 'both']) {
+    await backend.call('swe_context', { query: 'sample', targetFile: 'src/code.js', targetLine: 230, language: 'javascript', direction });
+    assert.ok(argv.includes('--target-file=src/code.js'));
+    assert.ok(argv.includes('--target-line=230'));
+    assert.ok(argv.includes('--language=javascript'));
+    assert.equal(argv.includes('--callers'), direction !== 'callees');
+    assert.equal(argv.includes('--callees'), direction !== 'callers');
+  }
+});
+
+test('definition selectors retain the requested directory or file scope', async t => {
+  const root = await workspace(t);
+  const outside = await workspace(t);
+  await symlink(path.join(outside, 'src/code.js'), path.join(root, 'src/escape.js'));
+  let calls = 0;
+  const backend = new SweGrepBackend({ root, runner: async () => { calls++; return ok(); } });
+  for (const tool of ['swe_context', 'swe_refs']) {
+    await rejectsCode(() => backend.call(tool, { query: 'sample', path: 'src', targetFile: 'escape.js' }), 'SWE_GREP_PATH_OUTSIDE_ROOT');
+    await rejectsCode(() => backend.call(tool, { query: 'sample', targetFile: 'src' }), 'SWE_GREP_INVALID_PATH');
+    await rejectsCode(() => backend.call(tool, { query: 'sample', targetFile: 'missing.js' }), 'SWE_GREP_INVALID_PATH');
+  }
+  await writeFile(path.join(root, 'src/other.js'), 'function sample() {}\n');
+  await rejectsCode(() => backend.call('swe_refs', { query: 'sample', path: 'src/code.js', targetFile: 'other.js' }), 'SWE_GREP_PATH_OUTSIDE_ROOT');
+  assert.equal(calls, 0);
+  await backend.call('swe_refs', { query: 'sample', path: 'src/code.js', targetFile: 'code.js', targetLine: 1 });
+  assert.equal(calls, 1);
 });
 
 test('refs accepts file scope, directions and filters', async t => {

@@ -133,6 +133,21 @@ test('configured root is session-relative and symlink escape uses provider conta
   assert.equal(escaped.calls.spawn.length, 0);
 });
 
+test('native definition selectors retain provider identities and analysis scope', async () => {
+  const f = fixture();
+  await f.call('swe_context', { query: 'Widget', path: 'src', targetFile: 'widget.rs', targetLine: 120, language: 'rust', direction: 'both' });
+  assert.equal(f.calls.resolve[2].options.cwd, '/execution/repo/src');
+  assert.equal(f.calls.contains.length, 2);
+  assert.equal(f.calls.contains[1].root, f.calls.stat[1].target);
+  assert.equal(f.calls.contains[1].target, f.calls.stat[2].target);
+  for (const flag of ['--target-file=widget.rs', '--target-line=120', '--language=rust', '--callers', '--callees']) {
+    assert.ok(f.calls.spawn[0].argv.includes(flag), flag);
+  }
+  const escaped = fixture();
+  await assert.rejects(escaped.call('swe_context', { query: 'Widget', targetFile: 'link' }), { code: 'SWE_GREP_INVALID_PATH' });
+  assert.equal(escaped.calls.spawn.length, 0);
+});
+
 test('context file paths and agent-less execution fail before spawn', async () => {
   const f = fixture();
   await assert.rejects(f.call('swe_context', { query: 'Widget', path: 'file.rs' }), { code: 'SWE_GREP_INVALID_PATH' });

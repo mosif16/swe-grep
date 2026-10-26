@@ -41,6 +41,7 @@ pub(crate) struct GitFilter {
 pub(crate) struct SearchConfig {
     pub(crate) root: PathBuf,
     pub(crate) symbol: String,
+    pub(crate) exact_symbol: bool,
     pub(crate) attribute: bool,
     pub(crate) concept: Option<String>,
     pub(crate) concept_expand: bool,
@@ -117,6 +118,17 @@ impl SearchConfig {
         }
 
         let regex_mode = matches!(args.mode, Some(SearchMode::Regex)) || args.regex;
+        if args.exact_symbol
+            && (args.text
+                || regex_mode
+                || args.wildcard
+                || args.string
+                || args.attribute
+                || args.concept.is_some()
+                || matches!(args.mode, Some(SearchMode::Ast)))
+        {
+            anyhow::bail!("--exact-symbol requires literal identifier mode");
+        }
         if args.literal_regex && !regex_mode {
             anyhow::bail!("--literal-regex requires --regex or --mode regex");
         }
@@ -151,6 +163,12 @@ impl SearchConfig {
                 MAX_SYMBOL_LENGTH,
                 symbol.len()
             );
+        }
+
+        if args.exact_symbol
+            && !regex::Regex::new(r"^[\p{XID_Start}_$][\p{XID_Continue}$]*$")?.is_match(&symbol)
+        {
+            anyhow::bail!("--exact-symbol requires a single identifier");
         }
 
         if regex_mode {
@@ -328,6 +346,7 @@ impl SearchConfig {
         Ok(Self {
             root,
             symbol: symbol.to_string(),
+            exact_symbol: args.exact_symbol,
             attribute: args.attribute,
             kind: args.kind,
             language,
@@ -409,29 +428,15 @@ fn has_glob_chars(value: &str) -> bool {
 }
 
 pub(crate) fn default_cache_dir_for_root(root: &Path) -> PathBuf {
-    let base = xdg_cache_base().unwrap_or_else(|| root.join(".swe-grep-cache"));
+    let base = crate::cache_gc::managed_base().unwrap_or_else(|| {
+        crate::cache_gc::canonical_cache_parent(root)
+            .join(".swe-grep-cache")
+            .join("managed-v1")
+    });
     let mut hasher = DefaultHasher::new();
     root.to_string_lossy().hash(&mut hasher);
     let digest = hasher.finish();
     base.join(format!("{:016x}", digest))
-}
-
-fn xdg_cache_base() -> Option<PathBuf> {
-    if let Ok(value) = std::env::var("XDG_CACHE_HOME") {
-        let trimmed = value.trim();
-        if !trimmed.is_empty() {
-            return Some(PathBuf::from(trimmed).join("swe-grep"));
-        }
-    }
-
-    if let Ok(value) = std::env::var("HOME") {
-        let trimmed = value.trim();
-        if !trimmed.is_empty() {
-            return Some(PathBuf::from(trimmed).join(".cache").join("swe-grep"));
-        }
-    }
-
-    None
 }
 
 fn build_globset(root: &Path, patterns: &[String]) -> Result<Option<GlobSet>> {

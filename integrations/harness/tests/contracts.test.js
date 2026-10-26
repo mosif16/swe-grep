@@ -12,6 +12,8 @@ test('all hosts share three strict read-only query contracts', () => {
   assert.equal(validateInput('swe_search', {query: 'Target'}).limit, 20);
   assert.equal(validateInput('swe_refs', {query: 'Target'}).direction, 'both');
   assert.equal(validateInput('swe_context', {query: 'Target'}).concise, true);
+  assert.equal(validateInput('swe_context', {query: 'Target'}).direction, undefined);
+  assert.equal(validateInput('swe_context', {query: 'Target', language: 'rust', targetFile: 'src/lib.rs', targetLine: 230}).targetLine, 230);
 });
 
 test('invalid or ambiguous requests never reach a process', () => {
@@ -25,11 +27,26 @@ test('invalid or ambiguous requests never reach a process', () => {
     ['swe_search', {query: 'ok', definitionsOnly: true, usagesOnly: true}],
     ['swe_search', {query: 'ok', exclude: ['x'.repeat(513)]}],
     ['swe_search', {query: 'ok', pathGlob: Array(21).fill('*.rs')}],
-    ['swe_context', {query: 'ok', language: 'rust'}],
+    ['swe_search', {query: 'ok', exactSymbol: true, mode: 'regex'}],
+    ['swe_search', {query: 'ok', exactSymbol: true, mode: 'text'}],
+    ['swe_context', {query: 'ok', language: '--rust'}],
+    ['swe_context', {query: 'ok', targetLine: 1}],
+    ['swe_context', {query: 'ok', targetFile: 'src/lib.rs', targetLine: 0}],
+    ['swe_context', {query: 'ok', targetFile: 'src/lib.rs', targetLine: 1.5}],
+    ['swe_context', {query: 'ok', targetFile: 'src/lib.rs', targetLine: 2147483648}],
     ['swe_refs', {query: 'ok', direction: 'delete'}],
     ['swe_refs', {query: 'ok', trackedOnly: 'true'}],
   ]) {
     assert.throws(() => validateInput(name, args), {code: 'SWE_GREP_INVALID_INPUT'});
+  }
+});
+
+test('definition selectors reject absolute paths and parent traversal before filesystem access', () => {
+  for (const name of ['swe_context', 'swe_refs']) {
+    for (const targetFile of ['', ' ', '/etc/passwd', '../outside.py', 'src/../../outside.py', 'C:\\outside.py', '\\\\server\\share\\code.py', 'src\\..\\outside.py', 'x'.repeat(4097), 'src/\0code.py']) {
+      assert.throws(() => validateInput(name, {query: 'target', targetFile}), {code: 'SWE_GREP_INVALID_INPUT'});
+    }
+    assert.equal(validateInput(name, {query: 'target', targetFile: 'src/a file.py', targetLine: 2147483647}).targetFile, 'src/a file.py');
   }
 });
 

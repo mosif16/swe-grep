@@ -22,6 +22,7 @@
 - [JSON output and error handling](agent-mode.md).
 - [Troubleshooting](troubleshooting.md) and [analysis capabilities/limits](context_extraction_todo.md).
 - [Cache and performance tuning](performance-tuning.md) and [measurement procedure](benchmark.md).
+- [Safe Cargo build-artifact cleanup](build-cache-cleanup.md).
 - [Current behavior and migration notes](changelog.md), not a tagged release history.
 - [Feedback collection](../Feedback/README.md); its autofix processor is experimental
   and does not replace the contributor verification matrix.

@@ -8,7 +8,8 @@ Feedback/runs/
 Feedback/inbox/shell_feedback.ndjson
 
 # Benchmark data and results
-benchmarks/
+benchmarks/*
+!benchmarks/default.json
 **/benchmark*.json
 **/benchmark*.jsonl
 docs/benchmark*.json

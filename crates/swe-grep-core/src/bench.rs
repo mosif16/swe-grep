@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, ensure};
 use serde::Deserialize;
 use serde::Serialize;
 use tokio::fs;
@@ -34,8 +34,16 @@ pub async fn run(args: BenchArgs) -> Result<()> {
             scenario_path.display()
         )
     })?;
+    ensure!(
+        !scenarios.is_empty(),
+        "benchmark scenario file must not be empty"
+    );
+    ensure!(
+        args.iterations > 0,
+        "benchmark iterations must be greater than zero"
+    );
 
-    let iterations = usize::max(1, args.iterations);
+    let iterations = args.iterations;
     let mut reports = Vec::new();
     let mut total_elapsed = Duration::ZERO;
     let mut total_iterations = 0usize;
@@ -46,24 +54,47 @@ pub async fn run(args: BenchArgs) -> Result<()> {
         let mut latencies = Vec::<f64>::new();
         let mut hits = 0usize;
         let mut latest_top_hits = Vec::new();
+        let mut samples = Vec::new();
 
-        for _ in 0..iterations {
+        for iteration in 0..iterations {
             let search_args = build_search_args(&repo_root, &scenario, &args);
             let start = Instant::now();
-            let summary = search::execute(search_args).await?;
+            let result = search::execute(search_args).await;
             let elapsed = start.elapsed();
 
             latencies.push(elapsed.as_secs_f64() * 1000.0);
             total_elapsed += elapsed;
             total_iterations += 1;
 
-            let matched = matches_expectation(&summary, &scenario);
+            let (matched, error, warnings, truncated) = match result {
+                Ok(summary) => {
+                    let matched = matches_expectation(&summary, &scenario);
+                    latest_top_hits = summary.top_hits;
+                    (matched, None, summary.warnings, summary.truncated)
+                }
+                Err(error) => {
+                    latest_top_hits.clear();
+                    (false, Some(format!("{error:#}")), Vec::new(), false)
+                }
+            };
             if matched {
                 hits += 1;
                 total_hits += 1;
             }
 
-            latest_top_hits = summary.top_hits.clone();
+            samples.push(Sample {
+                iteration: iteration + 1,
+                cache_state: if iteration == 0 {
+                    "first_run_uncontrolled"
+                } else {
+                    "repeat"
+                },
+                elapsed_ms: elapsed.as_secs_f64() * 1000.0,
+                matched,
+                error,
+                warnings,
+                truncated,
+            });
         }
 
         let mean_latency_ms = if latencies.is_empty() {
@@ -87,11 +118,14 @@ pub async fn run(args: BenchArgs) -> Result<()> {
             symbol: scenario.symbol.clone(),
             iterations: latencies.len(),
             mean_latency_ms,
+            median_latency_ms: percentile(&latencies, 0.5),
+            p95_latency_ms: percentile(&latencies, 0.95),
             throughput_qps,
             success_rate,
             hits,
             expected: scenario.expected.clone(),
             latest_top_hits,
+            samples,
         });
     }
 
@@ -112,10 +146,13 @@ pub async fn run(args: BenchArgs) -> Result<()> {
     };
 
     let summary = BenchmarkSummary {
+        measurement: "in_process_search_engine",
+        cache_policy: "No cache reset: first_run_uncontrolled may already be warm; repeat samples reuse available caches. OS page cache is never reset.",
         scenarios: reports,
         totals: Totals {
             total_iterations,
             total_hits,
+            total_failures: total_iterations - total_hits,
             mean_latency_ms: overall_mean_latency_ms,
             throughput_qps: overall_qps,
             success_rate: overall_success_rate,
@@ -154,7 +191,22 @@ pub async fn run(args: BenchArgs) -> Result<()> {
         file.write_all(&line).await?;
     }
 
+    ensure!(
+        total_hits == total_iterations,
+        "benchmark correctness failed: {total_hits}/{total_iterations} iterations matched expectations; inspect the emitted samples"
+    );
     Ok(())
+}
+
+// Nearest-rank percentile keeps tail values observable for small sample sets.
+fn percentile(samples: &[f64], fraction: f64) -> f64 {
+    if samples.is_empty() {
+        return 0.0;
+    }
+    let mut sorted = samples.to_vec();
+    sorted.sort_by(f64::total_cmp);
+    let index = ((fraction * sorted.len() as f64).ceil() as usize).saturating_sub(1);
+    sorted[index.min(sorted.len() - 1)]
 }
 
 fn build_search_args(repo_root: &Path, scenario: &Scenario, bench: &BenchArgs) -> SearchArgs {
@@ -191,6 +243,7 @@ fn build_search_args(repo_root: &Path, scenario: &Scenario, bench: &BenchArgs) -
         ignore_case: false,
         fuzzy_threshold: 0.7,
         definitions_only: false,
+        exact_symbol: false,
         usages_only: false,
         kind: None,
         path: Some(repo_root.to_path_buf()),
@@ -299,6 +352,8 @@ struct Expectation {
 
 #[derive(Serialize)]
 struct BenchmarkSummary {
+    measurement: &'static str,
+    cache_policy: &'static str,
     scenarios: Vec<ScenarioReport>,
     totals: Totals,
 }
@@ -309,19 +364,66 @@ struct ScenarioReport {
     symbol: String,
     iterations: usize,
     mean_latency_ms: f64,
+    median_latency_ms: f64,
+    p95_latency_ms: f64,
     throughput_qps: f64,
     success_rate: f64,
     hits: usize,
     #[serde(skip_serializing_if = "Option::is_none")]
     expected: Option<Expectation>,
     latest_top_hits: Vec<crate::search::TopHit>,
+    samples: Vec<Sample>,
+}
+
+#[derive(Serialize)]
+struct Sample {
+    iteration: usize,
+    cache_state: &'static str,
+    elapsed_ms: f64,
+    matched: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error: Option<String>,
+    warnings: Vec<String>,
+    truncated: bool,
 }
 
 #[derive(Serialize)]
 struct Totals {
     total_iterations: usize,
     total_hits: usize,
+    total_failures: usize,
     mean_latency_ms: f64,
     throughput_qps: f64,
     success_rate: f64,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn percentiles_preserve_tail_samples() {
+        assert_eq!(percentile(&[], 0.5), 0.0);
+        assert_eq!(percentile(&[50.0, 1.0, 2.0, 3.0, 4.0], 0.5), 3.0);
+        assert_eq!(percentile(&[50.0, 1.0, 2.0, 3.0, 4.0], 0.95), 50.0);
+    }
+
+    #[test]
+    fn shipped_default_scenarios_resolve_in_checkout() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let scenarios: Vec<Scenario> =
+            serde_json::from_str(include_str!("../../../benchmarks/default.json")).unwrap();
+        assert!(!scenarios.is_empty());
+        for scenario in scenarios {
+            let expected = scenario.expected.unwrap();
+            let source =
+                std::fs::read_to_string(root.join(scenario.path).join(expected.path)).unwrap();
+            let line = source.lines().nth(expected.line.unwrap() - 1).unwrap();
+            assert!(
+                line.contains(&scenario.symbol),
+                "{} has a stale expectation",
+                scenario.name
+            );
+        }
+    }
 }

@@ -4,7 +4,13 @@ This package versions the node router, portable/compatibility manifests, bundled
 skill and desktop launcher used by the local Codex deployment. It reuses the
 harness backend and contracts. Routing is trusted operator configuration; model
 calls must select a node and absolute path. Failed routes never fall back locally.
-Context requires a directory; use references for relationship queries.
+Context requires a directory and can request relationships with `direction`.
+Use `exactSymbol: true` for complete literal identifiers, then carry a selected
+search hit's `file`/`line` into context or references as `targetFile`/`targetLine`.
+The selector file is relative to the requested analysis directory and cannot
+escape that scope. Inspect returned `analysis` and `resolution` status rather
+than interpreting every empty relationship array as absence. See the
+[shared tool contract](../harness/README.md#tools-and-minimal-calls) for bounds.
 
 ## Build a local marketplace
 

@@ -11,7 +11,7 @@ use super::imports::{ExportFact, ExportKind, ImportFact, ImportKind};
 pub(crate) fn extract(file: &str, source: &str, variant: &str) -> Result<FactBundle> {
     let mut parser = Parser::new();
     let language = match variant {
-        "tsx" => tree_sitter_typescript::LANGUAGE_TSX,
+        "tsx" | "jsx" => tree_sitter_typescript::LANGUAGE_TSX,
         _ => tree_sitter_typescript::LANGUAGE_TYPESCRIPT,
     };
     if parser.set_language(&language.into()).is_err() {

@@ -170,6 +170,7 @@ impl DesktopApp {
                     for symbol in symbols {
                         let args = SearchArgs {
                             symbol: symbol.clone(),
+                            exact_symbol: false,
                             text,
                             concept: None,
                             concept_expand: false,

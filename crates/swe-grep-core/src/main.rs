@@ -19,13 +19,16 @@ use swe_grep::analysis::{
 };
 use swe_grep::bench;
 use swe_grep::cli::{
-    Cli, Commands, ContextCommand, ContextPreset, OutputFormat, RefsCommand, RefsFormat,
-    RemoveCommand, SearchArgs, SearchCommand, UsageCommand, UsageFormat,
+    CacheSubcommand, Cli, Commands, ContextCommand, ContextPreset, OutputFormat, RefsCommand,
+    RefsFormat, RemoveCommand, SearchArgs, SearchCommand, UsageCommand, UsageFormat,
 };
 use swe_grep::cli::{FeedbackCommand, FeedbackSubcommand, ShellFeedbackArgs};
+use swe_grep::context::selection::{
+    resolve_symbol, resolve_target_file, select_symbol_facts_in_place, target_has_ambiguous_callers,
+};
 use swe_grep::context::{
     Callee, Caller, ContextResponse, ContextSummary, Definition, ImportContext, SymbolComplexity,
-    TestFile, TypeContext,
+    SymbolResolution, TestFile, TypeContext,
 };
 use swe_grep::feedback::{
     DEFAULT_FEEDBACK_DIR, SHELL_TOOL_NAME, ShellFeedback, ShellInvocation,
@@ -473,6 +476,31 @@ async fn run(cli: Cli) -> Result<(), AppError> {
         Commands::Context(cmd) => handle_context(cmd, disable_telemetry).await,
         Commands::Remove(cmd) => handle_remove(cmd, disable_telemetry).await,
         Commands::Feedback(cmd) => handle_feedback(cmd).await,
+        Commands::Cache(cmd) => {
+            telemetry::silence_tracing();
+            match cmd.command {
+                CacheSubcommand::Gc(args) => {
+                    let base = swe_grep::cache_gc::managed_base().ok_or_else(|| {
+                        AppError::Usage(
+                            "Cannot resolve the managed cache base from XDG_CACHE_HOME or HOME"
+                                .into(),
+                        )
+                    })?;
+                    let seconds = args
+                        .max_age_days
+                        .checked_mul(86400)
+                        .ok_or_else(|| AppError::Usage("--max-age-days is too large".into()))?;
+                    let policy = swe_grep::cache_gc::GcPolicy {
+                        max_age: std::time::Duration::from_secs(seconds),
+                        max_bytes: args.max_bytes,
+                        ..Default::default()
+                    };
+                    let report = swe_grep::cache_gc::collect(&base, &policy, args.apply)?;
+                    println!("{}", serde_json::to_string_pretty(&report)?);
+                    Ok(())
+                }
+            }
+        }
         Commands::Bench(args) => {
             if !disable_telemetry {
                 telemetry::init()?;
@@ -581,6 +609,7 @@ async fn handle_simple_search(
         path_glob,
         exclude_patterns: cli.exclude_patterns.clone(),
         definitions_only: cli.definitions_only,
+        exact_symbol: cli.exact_symbol,
         exclude_tests: cli.exclude_tests,
         code_only: cli.code_only,
         tracked_only: cli.tracked_only,
@@ -1451,21 +1480,88 @@ async fn handle_context(cmd: ContextCommand, _disable_telemetry: bool) -> Result
     let selection = ContextSelection::from_command(&cmd);
     let root = resolve_context_root(path)?;
     let cache_dir = search::default_cache_dir_for_root(&root);
+    let _cache_lease =
+        swe_grep::cache_gc::CacheLease::acquire(&root, &cache_dir).map_err(|err| {
+            anyhow!(
+                "failed to extract repository facts for {}: cache lifecycle unavailable: {err:#}",
+                root.display()
+            )
+        })?;
 
-    let options = ExtractFactsOptions::for_search(None, None);
-    let (_stats, file_facts) = extract_repo_facts(&root, &cache_dir, &options).map_err(|err| {
-        anyhow!(
-            "failed to extract repository facts for {}: {err:#}",
-            root.display()
-        )
-    })?;
+    let languages = swe_grep::language::expand_language_hint(cmd.language.as_deref());
+    let extensions = swe_grep::language::extensions_for_languages(&languages, false)
+        .map(|exts| exts.into_iter().map(str::to_string).collect());
+    let options = ExtractFactsOptions::for_search(None, extensions);
+    let (_stats, mut file_facts) =
+        extract_repo_facts(&root, &cache_dir, &options).map_err(|err| {
+            anyhow!(
+                "failed to extract repository facts for {}: {err:#}",
+                root.display()
+            )
+        })?;
 
+    let target_file = resolve_target_file(&root, cmd.target_file.as_deref())?;
+    let resolution = resolve_symbol(
+        &file_facts,
+        &symbol,
+        target_file.as_deref(),
+        cmd.target_line,
+    );
+    let ambiguous_callers = selection.include_callers
+        && resolution
+            .candidates
+            .first()
+            .is_some_and(|target| target_has_ambiguous_callers(&file_facts, target));
+    if let Some(target) = resolution
+        .candidates
+        .first()
+        .filter(|_| resolution.status == "resolved")
+    {
+        select_symbol_facts_in_place(&mut file_facts, target);
+    }
+    let mut response = if resolution.status == "resolved" {
+        assemble_context_from_facts(&root, &symbol, &selection, &file_facts)?
+    } else {
+        ContextResponse::empty(symbol.clone())
+    };
+    response.resolution = resolution;
+    for (name, requested) in [
+        ("callers", selection.include_callers),
+        ("callees", selection.include_callees),
+        ("tests", selection.include_tests),
+        ("types", selection.include_types),
+        ("imports", selection.include_imports),
+    ] {
+        response.analysis.insert(
+            name.to_string(),
+            if !requested {
+                "not_requested"
+            } else if response.resolution.status != "resolved" || response.truncated {
+                "incomplete"
+            } else {
+                "complete"
+            }
+            .to_string(),
+        );
+    }
+    // Import context is a placeholder, not an exhaustive successful analysis.
+    if selection.include_imports {
+        response
+            .analysis
+            .insert("imports".into(), "incomplete".into());
+    }
+    if ambiguous_callers {
+        response.callers.clear();
+        response
+            .analysis
+            .insert("callers".into(), "incomplete".into());
+        response.notes.push("Name-based analysis cannot attribute callers to duplicate declarations; ambiguous caller edges omitted.".into());
+    }
+    response.summary.callers = response.callers.len();
     if cmd.stream {
-        stream_context(&root, &symbol, &selection, Some(&file_facts))?;
+        stream_context(&response)?;
         return Ok(());
     }
-
-    let response = assemble_context_from_facts(&root, &symbol, &selection, &file_facts)?;
 
     if cmd.grouped {
         let grouped = GroupedContextOutput::from_response(&response, cmd.budget);
@@ -1487,6 +1583,7 @@ async fn handle_context(cmd: ContextCommand, _disable_telemetry: bool) -> Result
 
 #[derive(Clone, Copy, Debug)]
 struct ContextSelection {
+    concise: bool,
     depth: usize,
     max_lines: usize,
     include_callers: bool,
@@ -1504,6 +1601,7 @@ impl ContextSelection {
         let mut selection = if let Some(preset) = cmd.preset {
             match preset {
                 ContextPreset::Refactor => Self {
+                    concise: cmd.concise,
                     depth: 2,
                     max_lines: 300,
                     include_callers: true,
@@ -1516,6 +1614,7 @@ impl ContextSelection {
                     include_explain: false,
                 },
                 ContextPreset::Debug => Self {
+                    concise: cmd.concise,
                     depth: 2,
                     max_lines: 200,
                     include_callers: true,
@@ -1528,6 +1627,7 @@ impl ContextSelection {
                     include_explain: false,
                 },
                 ContextPreset::Understand => Self {
+                    concise: cmd.concise,
                     depth: 2,
                     max_lines: 300,
                     include_callers: true,
@@ -1542,12 +1642,13 @@ impl ContextSelection {
             }
         } else {
             Self {
-                depth: 2,
+                concise: cmd.concise,
+                depth: 1,
                 max_lines: 300,
-                include_callers: true,
-                include_callees: true,
-                include_types: true,
-                include_imports: true,
+                include_callers: false,
+                include_callees: false,
+                include_types: false,
+                include_imports: false,
                 include_tests: false,
                 include_body: false,
                 include_signatures: true,
@@ -1590,6 +1691,11 @@ impl ContextSelection {
 #[derive(Serialize)]
 struct ConciseContextOutput {
     symbol: String,
+    resolution: SymbolResolution,
+    analysis: BTreeMap<String, String>,
+    truncated: bool,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    notes: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     def: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1602,6 +1708,8 @@ struct ConciseContextOutput {
 #[derive(Serialize)]
 struct GroupedContextOutput {
     symbol: String,
+    resolution: SymbolResolution,
+    analysis: BTreeMap<String, String>,
     grouped: GroupedContextBuckets,
     summary: GroupedContextSummary,
     truncated: bool,
@@ -1691,13 +1799,23 @@ impl GroupedContextOutput {
             test_coverage,
         };
 
-        let mut truncated = false;
+        let mut truncated = response.truncated;
         if let Some(budget_tokens) = budget {
-            truncated = apply_grouped_context_budget(&mut grouped, budget_tokens);
+            truncated |= apply_grouped_context_budget(&mut grouped, budget_tokens);
+        }
+        let mut analysis = response.analysis.clone();
+        if truncated {
+            for status in analysis.values_mut() {
+                if status == "complete" {
+                    *status = "incomplete".into();
+                }
+            }
         }
 
         Self {
             symbol: response.symbol.clone(),
+            resolution: response.resolution.clone(),
+            analysis,
             grouped,
             summary,
             truncated,
@@ -1713,6 +1831,7 @@ fn apply_grouped_context_budget(grouped: &mut GroupedContextBuckets, budget_toke
         return true;
     }
 
+    let original = serde_json::to_vec(grouped).unwrap_or_default();
     grouped.test_coverage.truncate(20);
     grouped.callees.truncate(50);
 
@@ -1721,7 +1840,7 @@ fn apply_grouped_context_budget(grouped: &mut GroupedContextBuckets, budget_toke
         let bytes = serde_json::to_vec(grouped).map(|v| v.len()).unwrap_or(0);
         let tokens = usize::max(1, bytes / 4);
         if tokens <= budget_tokens {
-            return false;
+            return serde_json::to_vec(grouped).unwrap_or_default() != original;
         }
 
         if per_file_limit > 5 {
@@ -1783,6 +1902,10 @@ impl ConciseContextOutput {
 
         Self {
             symbol: response.symbol.clone(),
+            resolution: response.resolution.clone(),
+            analysis: response.analysis.clone(),
+            truncated: response.truncated,
+            notes: response.notes.clone(),
             def: def.as_deref().map(normalize_line_snippet),
             def_location: def_location.as_deref().map(normalize_line_snippet),
             callers,
@@ -1806,73 +1929,18 @@ fn resolve_context_root(path: Option<&PathBuf>) -> Result<PathBuf, AppError> {
     Ok(root)
 }
 
-fn stream_context(
-    root: &Path,
-    symbol: &str,
-    selection: &ContextSelection,
-    file_facts: Option<&Vec<FileFacts>>,
-) -> Result<(), AppError> {
-    let mut response = ContextResponse::empty(symbol.to_string());
-
-    if let Some(files) = file_facts {
-        response.definition = assemble_definition_from_facts(root, symbol, selection, files);
-        enforce_context_budget(&mut response, selection.max_lines);
-        if let Some(definition) = response.definition.clone() {
-            emit_json_line(&serde_json::json!({"type":"definition","data":definition}))?;
-        } else {
-            emit_json_line(
-                &serde_json::json!({"type":"definition","data":serde_json::Value::Null}),
-            )?;
-        }
-
-        if selection.include_callers {
-            response.callers = assemble_callers_from_facts(root, symbol, selection, files);
-        }
-        enforce_context_budget(&mut response, selection.max_lines);
-        emit_json_line(&serde_json::json!({"type":"callers","data":&response.callers}))?;
-
-        if selection.include_callees {
-            response.callees = assemble_callees_from_facts(root, symbol, selection, files);
-        }
-        enforce_context_budget(&mut response, selection.max_lines);
-        emit_json_line(&serde_json::json!({"type":"callees","data":&response.callees}))?;
-
-        if selection.include_types {
-            response.types = assemble_types_from_facts(symbol, files);
-        }
-        enforce_context_budget(&mut response, selection.max_lines);
-        emit_json_line(&serde_json::json!({"type":"types","data":&response.types}))?;
-
-        if selection.include_imports {
-            response.imports = ImportContext::default();
-        }
-        enforce_context_budget(&mut response, selection.max_lines);
-        emit_json_line(&serde_json::json!({"type":"imports","data":&response.imports}))?;
-
-        if selection.include_tests {
-            response.tests = assemble_tests_from_facts(root, symbol, files);
-        }
-        enforce_context_budget(&mut response, selection.max_lines);
-        emit_json_line(&serde_json::json!({"type":"tests","data":&response.tests}))?;
-    } else {
-        emit_json_line(&serde_json::json!({"type":"definition","data":serde_json::Value::Null}))?;
-        emit_json_line(&serde_json::json!({"type":"callers","data":[]}))?;
-        emit_json_line(&serde_json::json!({"type":"callees","data":[]}))?;
-        emit_json_line(&serde_json::json!({"type":"types","data":TypeContext::default()}))?;
-        emit_json_line(&serde_json::json!({"type":"imports","data":ImportContext::default()}))?;
-        emit_json_line(&serde_json::json!({"type":"tests","data":[]}))?;
-    }
-
-    enforce_context_budget(&mut response, selection.max_lines);
-    response.summary = ContextSummary {
-        callers: response.callers.len(),
-        callees: response.callees.len(),
-        tests: response.tests.len(),
-    };
+fn stream_context(response: &ContextResponse) -> Result<(), AppError> {
+    emit_json_line(&serde_json::json!({"type":"resolution","data":response.resolution}))?;
+    emit_json_line(&serde_json::json!({"type":"analysis","data":response.analysis}))?;
+    emit_json_line(&serde_json::json!({"type":"definition","data":response.definition}))?;
+    emit_json_line(&serde_json::json!({"type":"callers","data":response.callers}))?;
+    emit_json_line(&serde_json::json!({"type":"callees","data":response.callees}))?;
+    emit_json_line(&serde_json::json!({"type":"types","data":response.types}))?;
+    emit_json_line(&serde_json::json!({"type":"imports","data":response.imports}))?;
+    emit_json_line(&serde_json::json!({"type":"tests","data":response.tests}))?;
     emit_json_line(
-        &serde_json::json!({"type":"summary","data":{"summary":response.summary,"truncated":response.truncated}}),
+        &serde_json::json!({"type":"summary","data":{"summary":response.summary,"truncated":response.truncated,"notes":response.notes}}),
     )?;
-
     Ok(())
 }
 
@@ -1884,11 +1952,22 @@ fn assemble_context_from_facts(
 ) -> Result<ContextResponse, AppError> {
     let mut response = ContextResponse::empty(symbol.to_string());
     response.definition = assemble_definition_from_facts(root, symbol, selection, files);
-    if selection.include_callers {
-        response.callers = assemble_callers_from_facts(root, symbol, selection, files);
-    }
-    if selection.include_callees {
-        response.callees = assemble_callees_from_facts(root, symbol, selection, files);
+    if selection.include_callers || selection.include_callees {
+        let graph = if selection.include_signatures && !selection.concise {
+            CallGraph::from_facts_enriched(root, files, true, true)
+        } else {
+            CallGraph::from_facts_without_signatures(files)
+        };
+        if selection.include_callers {
+            let (callers, truncated) = assemble_callers_from_facts(&graph, symbol, selection);
+            response.callers = callers;
+            response.truncated |= truncated;
+        }
+        if selection.include_callees {
+            let (callees, truncated) = assemble_callees_from_facts(&graph, symbol, selection);
+            response.callees = callees;
+            response.truncated |= truncated;
+        }
     }
     if selection.include_types {
         response.types = assemble_types_from_facts(symbol, files);
@@ -1898,6 +1977,10 @@ fn assemble_context_from_facts(
     }
     if selection.include_tests {
         response.tests = assemble_tests_from_facts(root, symbol, files);
+        if response.tests.len() > 50 {
+            response.tests.truncate(50);
+            response.truncated = true;
+        }
     }
 
     enforce_context_budget(&mut response, selection.max_lines);
@@ -2199,22 +2282,16 @@ fn extract_definition_body(
 }
 
 fn assemble_callers_from_facts(
-    root: &Path,
+    graph: &CallGraph,
     symbol: &str,
     selection: &ContextSelection,
-    files: &[FileFacts],
-) -> Vec<Caller> {
-    let graph = if selection.include_signatures {
-        CallGraph::from_facts_enriched(root, files, true, true)
-    } else {
-        CallGraph::from_facts(files)
-    };
+) -> (Vec<Caller>, bool) {
     let view = graph.callers_view(
         symbol,
         selection.depth,
         selection.max_lines.saturating_mul(2),
     );
-    flatten_call_tree(&view.nodes)
+    let nodes = flatten_call_tree(&view.nodes)
         .into_iter()
         .map(|node| Caller {
             symbol: node.symbol,
@@ -2231,26 +2308,21 @@ fn assemble_callers_from_facts(
             file: node.file,
             line: node.line,
         })
-        .collect()
+        .collect();
+    (nodes, view.truncated)
 }
 
 fn assemble_callees_from_facts(
-    root: &Path,
+    graph: &CallGraph,
     symbol: &str,
     selection: &ContextSelection,
-    files: &[FileFacts],
-) -> Vec<Callee> {
-    let graph = if selection.include_signatures {
-        CallGraph::from_facts_enriched(root, files, true, true)
-    } else {
-        CallGraph::from_facts(files)
-    };
+) -> (Vec<Callee>, bool) {
     let view = graph.callees_view(
         symbol,
         selection.depth,
         selection.max_lines.saturating_mul(2),
     );
-    flatten_call_tree(&view.nodes)
+    let nodes = flatten_call_tree(&view.nodes)
         .into_iter()
         .map(|node| Callee {
             symbol: node.symbol,
@@ -2267,7 +2339,8 @@ fn assemble_callees_from_facts(
             file: node.file,
             line: node.line,
         })
-        .collect()
+        .collect();
+    (nodes, view.truncated)
 }
 
 fn flatten_call_tree(nodes: &[CallTreeNode]) -> Vec<CallTreeNode> {
@@ -2352,9 +2425,6 @@ fn assemble_tests_from_facts(root: &Path, symbol: &str, files: &[FileFacts]) -> 
                 path: file.file.clone(),
                 test_names: Vec::new(),
             });
-        }
-        if results.len() >= 50 {
-            break;
         }
     }
 
@@ -2467,6 +2537,8 @@ struct ImportRef {
 #[derive(Serialize)]
 struct RefsOutput {
     symbol: String,
+    resolution: SymbolResolution,
+    analysis: BTreeMap<String, String>,
     callers: Vec<CallerRef>,
     callees: Vec<CalleeRef>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
@@ -2521,6 +2593,62 @@ async fn handle_refs(mut cmd: RefsCommand, _disable_telemetry: bool) -> Result<(
     // Keep the full repository parse context for resolution; scope only emitted edges.
     let root = scope.root();
     let cache_dir = search::default_cache_dir_for_root(root);
+    let _cache_lease = swe_grep::cache_gc::CacheLease::acquire(root, &cache_dir)?;
+
+    let target_file = resolve_target_file(root, cmd.target_file.as_deref())?;
+    if target_file
+        .as_ref()
+        .is_some_and(|file| !scope.allows(Path::new(file)))
+    {
+        return Err(AppError::Usage(
+            "target file is excluded by the requested scope".into(),
+        ));
+    }
+    let mut resolution = SymbolResolution {
+        status: "not_analyzed".into(),
+        candidates: Vec::new(),
+    };
+    let mut selected_graph = None;
+    let mut ambiguous_callers = false;
+    let mut target_unresolved = false;
+    if callers_requested || callees_requested {
+        match extract_repo_facts(
+            root,
+            &cache_dir,
+            &ExtractFactsOptions::for_search(None, None),
+        ) {
+            Ok((_, mut files)) => {
+                resolution = resolve_symbol(
+                    &files,
+                    &summary.symbol,
+                    target_file.as_deref(),
+                    cmd.target_line,
+                );
+                if target_file.is_some() {
+                    if resolution.status == "resolved" {
+                        let target = &resolution.candidates[0];
+                        ambiguous_callers = target_has_ambiguous_callers(&files, target);
+                        select_symbol_facts_in_place(&mut files, target);
+                        selected_graph = Some(CallGraph::from_facts(&files));
+                        if ambiguous_callers && callers_requested {
+                            warnings.push("incomplete refs: name-based analysis cannot attribute callers to duplicate declarations; ambiguous caller edges omitted".into());
+                        }
+                    } else {
+                        target_unresolved = true;
+                        warnings.push("incomplete refs: target declaration was not uniquely resolved; select a declaration file and start line".into());
+                    }
+                } else if resolution.status == "ambiguous" {
+                    warnings.push("incomplete refs: multiple declarations match; relationships are merged by name. Select target-file and target-line to disambiguate callees".into());
+                }
+            }
+            Err(err) => {
+                warnings.push(format!(
+                    "incomplete refs: declaration resolution unavailable: {err}"
+                ));
+                target_unresolved = target_file.is_some();
+            }
+        }
+    }
 
     let call_graph_requested = callers_requested || callees_requested;
     if call_graph_requested {
@@ -2533,8 +2661,11 @@ async fn handle_refs(mut cmd: RefsCommand, _disable_telemetry: bool) -> Result<(
                 }
                 warnings.extend(graph_warnings);
 
-                if callers_requested {
-                    let caller_edges = graphs.call_graph.caller_edges_for(&summary.symbol);
+                if callers_requested && !target_unresolved && !ambiguous_callers {
+                    let caller_edges = selected_graph
+                        .as_ref()
+                        .map(|graph| graph.caller_edges_for(&summary.symbol))
+                        .unwrap_or_else(|| graphs.call_graph.caller_edges_for(&summary.symbol));
                     for edge in caller_edges {
                         if !scope.allows(Path::new(&edge.file)) {
                             continue;
@@ -2557,8 +2688,11 @@ async fn handle_refs(mut cmd: RefsCommand, _disable_telemetry: bool) -> Result<(
                     }
                 }
 
-                if callees_requested {
-                    let callee_edges = graphs.call_graph.callee_edges_for(&summary.symbol);
+                if callees_requested && !target_unresolved {
+                    let callee_edges = selected_graph
+                        .as_ref()
+                        .map(|graph| graph.callee_edges_for(&summary.symbol))
+                        .unwrap_or_else(|| graphs.call_graph.callee_edges_for(&summary.symbol));
                     for edge in callee_edges {
                         if !scope.allows(Path::new(&edge.file)) {
                             continue;
@@ -2652,8 +2786,29 @@ async fn handle_refs(mut cmd: RefsCommand, _disable_telemetry: bool) -> Result<(
     // whole-file text: unrelated function bodies and declarations are not edges.
     let callees = callee_hits;
 
+    let mut analysis = BTreeMap::new();
+    for (name, requested) in [
+        ("callers", callers_requested),
+        ("callees", callees_requested),
+        ("imports", imports_requested),
+        ("importers", importers_requested),
+    ] {
+        analysis.insert(
+            name.to_string(),
+            if !requested {
+                "not_requested"
+            } else if !warnings.is_empty() {
+                "incomplete"
+            } else {
+                "complete"
+            }
+            .to_string(),
+        );
+    }
     let output = RefsOutput {
         symbol: summary.symbol.clone(),
+        resolution,
+        analysis,
         callers: caller_hits,
         callees,
         imports: import_hits,
@@ -3279,21 +3434,37 @@ fn render_removal_plan(plan: &RemovalPlan, applied: bool) -> String {
 }
 
 fn clear_cache_for_command(cli: &Cli) -> Result<(), AppError> {
+    let search_root = |args: &SearchArgs,
+                       positional: &swe_grep::cli::PositionalQueryArgs|
+     -> Result<PathBuf, AppError> {
+        let mut args = args.clone();
+        apply_positional_query_to_search_args(
+            &mut args,
+            positional.symbol_pos.as_deref(),
+            positional.lang_or_path_pos.as_deref(),
+        )?;
+        resolve_root(&args)
+    };
     let root = match &cli.command {
-        Some(Commands::Search(cmd)) => resolve_root(&cmd.search)?,
-        Some(Commands::Usages(cmd)) => resolve_root(&cmd.search)?,
-        Some(Commands::Refs(cmd)) => resolve_root(&cmd.search)?,
+        Some(Commands::Search(cmd)) => search_root(&cmd.search, &cmd.positional)?,
+        Some(Commands::Usages(cmd)) => search_root(&cmd.search, &cmd.positional)?,
+        Some(Commands::Refs(cmd)) => search_root(&cmd.search, &cmd.positional)?,
         Some(Commands::Context(cmd)) => {
-            let base = if let Some(path) = &cmd.path {
+            let base = if let Some(path) = cmd.path.as_ref().or(cmd.path_pos.as_ref()) {
                 path.clone()
             } else {
                 std::env::current_dir().context("failed to resolve current directory")?
             };
             base.canonicalize().unwrap_or(base)
         }
-        Some(Commands::Remove(cmd)) => resolve_root(&cmd.search)?,
+        Some(Commands::Remove(cmd)) => search_root(&cmd.search, &cmd.positional)?,
         Some(Commands::Feedback(_)) => {
             std::env::current_dir().context("failed to resolve current directory")?
+        }
+        Some(Commands::Cache(_)) => {
+            return Err(AppError::Usage(
+                "Use cache gc --apply to collect managed caches".into(),
+            ));
         }
         Some(Commands::Serve(args)) => {
             if let Some(path) = &args.path {
@@ -3314,20 +3485,34 @@ fn clear_cache_for_command(cli: &Cli) -> Result<(), AppError> {
             std::env::current_dir().context("failed to resolve current directory")?
         }
     };
+    let root = root.canonicalize().unwrap_or(root);
+    let root = if root.is_file() {
+        root.parent().unwrap_or(&root).to_path_buf()
+    } else {
+        root
+    };
     clear_cache_dirs(&root)?;
     Ok(())
 }
 
 fn clear_cache_dirs(root: &Path) -> Result<(), AppError> {
-    let cache_dir = crate::search::default_cache_dir_for_root(root);
-    let legacy_cache_dir = root.join(".swe-grep-cache");
-    let index_dir = root.join(".swe-grep-index");
-
-    for dir in [cache_dir, legacy_cache_dir, index_dir] {
-        if dir.exists() {
-            fs::remove_dir_all(&dir)
-                .with_context(|| format!("failed to clear cache directory {}", dir.display()))?;
-        }
+    let report = swe_grep::cache_gc::purge(root)?;
+    if report.collector_busy {
+        return Err(AppError::Usage(
+            "Cache collector is busy; retry --clear-cache after it finishes".into(),
+        ));
+    }
+    // Active requests keep their shared lease; never invalidate data under them.
+    if report.skipped_active > 0 {
+        return Err(AppError::Usage(
+            "Cache is currently in use; retry --clear-cache after active requests finish".into(),
+        ));
+    }
+    if report.scan_limited {
+        return Err(AppError::Usage(
+            "Cache cleanup reached its bounded scan limit; repeat cache gc --apply before retrying"
+                .into(),
+        ));
     }
     Ok(())
 }
@@ -3373,6 +3558,7 @@ mod tests {
 
     fn search_args(symbol: &str) -> SearchArgs {
         SearchArgs {
+            exact_symbol: false,
             symbol: symbol.to_string(),
             text: false,
             concept: None,
