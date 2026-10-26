@@ -1,11 +1,11 @@
 {
   "name": "swe-grep",
   "version": "1.0.0",
-  "description": "Instant code understanding in a single call - Dual licensed: MIT for individual use, commercial license for business",
+  "description": "Code search and static symbol analysis for coding agents",
   "license": "SEE LICENSE IN LICENSE",
   "repository": {
     "type": "git",
-    "url": "https://github.com/recordandlearn/swe-grep"
+    "url": "https://github.com/mosif16/swe-grep.git"
   },
   "author": "Record & Learn LLC <msayf@recordandlearn.info>",
   "homepage": "https://recordandlearn.info",
@@ -18,10 +18,11 @@
     "ast-search"
   ],
   "bugs": {
-    "url": "https://github.com/recordandlearn/swe-grep/issues"
+    "url": "https://github.com/mosif16/swe-grep/issues"
   },
   "dependencies": {},
   "devDependencies": {
     "@openai/codex": "^0.73.0"
-  }
+  },
+  "private": true
 }

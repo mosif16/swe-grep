@@ -7,9 +7,10 @@ This is a behavior-oriented summary of the current working revision, not a tagge
 ## Integration
 
 - Native DSH tools, an official-SDK MCP stdio server, and a reusable backend share the Rust CLI engine.
-- Native DSH is tested at 0.2.1-rc.2; MCP SDK is 1.32.1; integration requires Node.js 22+.
+- Native DSH is tested at 0.2.1-rc.2; MCP SDK is 1.32.1; integration requires Node.js >=22.19.
 - Build the backend binary from this revision. Calls use global --no-config to avoid ambient user configuration; an older executable may reject the flag.
-- Tool contracts reject unknown arguments, confine requested paths to their configured root, and expose no arbitrary environment/argument passthrough. Context tool paths must be directories.
+- Tool contracts reject unknown arguments and expose no arbitrary environment/argument passthrough. The portable/native backend confines paths to its configured root. Context tool paths must be directories.
+- The [Codex router](../integrations/codex/README.md) adds explicit node/absolute-path inputs, identity checks, a bundled skill and relocatable marketplace packaging. It intentionally permits OS-readable paths on the selected node rather than confining analysis to one project.
 
 ## Search declarations and references
 

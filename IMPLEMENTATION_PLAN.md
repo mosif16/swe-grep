@@ -1,5 +1,10 @@
 # SWE-Grep Implementation Plan
 
+> Historical design/review record. Status, commands, measurements and licensing
+> descriptions may refer to an older revision or proposal. Use the
+> [documentation map](docs/README.md), [contributor guide](CONTRIBUTING.md) and
+> [LICENSE](LICENSE) for current guidance.
+
 Based on analysis of 5 feedback reports from Dec 9, 2025, this plan prioritizes user-requested features by impact and implementation complexity.
 
 ---

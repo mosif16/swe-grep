@@ -4,10 +4,10 @@
 
 ## Build and connect
 
-Use a current stable Rust toolchain supporting edition 2024. Node.js 22+ is required for the harness/MCP integration, not for direct CLI use.
+Use a current stable Rust toolchain supporting edition 2024. Node.js >=22.19 is required for the harness/MCP integration, not for direct CLI use.
 
 ```sh
-cargo build --release -p swe-grep
+cargo build --release --locked -p swe-grep
 ./target/release/swe-grep --help
 npm ci --ignore-scripts --prefix integrations/harness
 ```

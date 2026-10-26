@@ -9,7 +9,7 @@ The former benchmark rankings and latency tables have been removed: they do not 
 Build a release executable and inspect the built-in harness options:
 
 ```sh
-cargo build --release -p swe-grep
+cargo build --release --locked -p swe-grep
 ./target/release/swe-grep bench --help
 ```
 

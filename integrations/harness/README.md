@@ -11,7 +11,7 @@ This is a **local, unpublished npm package**. The npm tarball contains ready-to-
 - Native adapter: **DSH 0.2.1-rc.2**, using its official tool, working-directory, filesystem, and subprocess SDK services.
 - MCP adapter: the official **`@modelcontextprotocol/sdk` 1.32.1**, using its standard stdio transport. Native DSH peer packages are optional and are not required for portable backend/MCP production installs.
 
-Validation includes 49 passing integration tests with a real binary and a verified production-only portable installation without native peers. These are tested configurations, not a promise that every MCP client, DSH version, operating system, or proprietary plugin API is compatible.
+Validation includes real-binary integration tests and a production-only portable installation without native peers. These are tested configurations, not a promise that every MCP client, DSH version, operating system, or proprietary plugin API is compatible.
 
 ## Quickstart: build, pack, install in DSH
 
@@ -20,7 +20,7 @@ Validation includes 49 passing integration tests with a real binary and a verifi
 Run from this repository’s root:
 
 ```sh
-cargo build --release -p swe-grep
+cargo build --release --locked -p swe-grep
 cd integrations/harness
 npm ci --ignore-scripts
 npm pack --ignore-scripts
@@ -135,7 +135,7 @@ The server communicates over **stdin/stdout only**; it opens no network listener
 | --- | --- |
 | Package installed, tools absent | Select/enable the bundle in the correct profile; verify the native `/dsh` row and follow DSH restart instructions. Installing an npm dependency alone is insufficient. |
 | `SWE_GREP_BINARY_NOT_FOUND` / execution failure | Set `binary` to an absolute executable path in the execution world; check permissions and provider access. The npm package does not include the binary. |
-| Unknown `--no-config`, CLI failure, or invalid JSON | Rebuild with `cargo build --release -p swe-grep` from the adapter’s revision and update the configured path. Do not use a wrapper that prints non-JSON text to stdout. |
+| Unknown `--no-config`, CLI failure, or invalid JSON | Rebuild with `cargo build --release --locked -p swe-grep` from the adapter’s revision and update the configured path. Do not use a wrapper that prints non-JSON text to stdout. |
 | `SWE_GREP_INVALID_PATH` / `SWE_GREP_PATH_OUTSIDE_ROOT` | Use an existing path inside the configured root. Check canonical symlink targets; give `swe_context` a directory, not a file. |
 | `SWE_GREP_INVALID_INPUT` / MCP invalid parameters | Use only the documented tool keys and bounds; do not pass CLI flags, `env`, or configuration as model arguments. |
 | `SWE_GREP_TIMEOUT` / `SWE_GREP_OUTPUT_TRUNCATED` | Narrow the path/query, reduce search `limit`, or use concise context. A trusted operator may raise the configured limits when appropriate. |
@@ -169,7 +169,7 @@ The native adapter demonstrates these seams without substituting local Node file
 
 ## Development and verification
 
-From the integration package directory:
+From `integrations/harness` in a source checkout:
 
 ```sh
 npm ci --ignore-scripts

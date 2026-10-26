@@ -1,5 +1,10 @@
 # Pipeline review and hardening
 
+> Historical design/review record. Status, commands, measurements and licensing
+> descriptions may refer to an older revision or proposal. Use the
+> [documentation map](docs/README.md), [contributor guide](CONTRIBUTING.md) and
+> [LICENSE](LICENSE) for current guidance.
+
 ## Scope
 
 Reviewed CLI/configuration, discovery, embedded/external matching, AST disambiguation, fallback/index search, verification/ranking, context/reference extraction, caches, and HTTP/gRPC request boundaries. This is a tested hardening pass, not a claim that every dependency or performance issue is solved.

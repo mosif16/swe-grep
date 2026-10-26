@@ -1,5 +1,10 @@
 # SWE-Grep Feedback Improvement Plan
 
+> Historical design/review record. Status, commands, measurements and licensing
+> descriptions may refer to an older revision or proposal. Use the
+> [documentation map](docs/README.md), [contributor guide](CONTRIBUTING.md) and
+> [LICENSE](LICENSE) for current guidance.
+
 **Created:** 2025-12-09
 **Based on:** 5 user feedback reports
 **Goal:** Address critical pain points and high-value feature requests

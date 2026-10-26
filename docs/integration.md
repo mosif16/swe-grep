@@ -7,15 +7,16 @@
 | Entry point | Role |
 | --- | --- |
 | Native DSH plugin | Registers swe_search, swe_context, and swe_refs with DSH's tools service; uses managed subprocess and filesystem services. Tested against 0.2.1-rc.2. |
-| MCP stdio server | Exposes the same contracts using official MCP SDK 1.32.1. Requires Node.js 22+. No HTTP listener is needed. |
+| MCP stdio server | Exposes the same contracts using official MCP SDK 1.32.1. Requires Node.js >=22.19. No HTTP listener is needed. |
 | Reusable adapter | SweGrepBackend plus shared contracts; other hosts supply their own registry and, for remote/sandboxed execution, runner and filesystem services. |
+| Codex node router | Adds explicit node selection, absolute paths and response identity to the shared backend; see [Codex packaging](../integrations/codex/README.md). |
 | CLI | Direct access to the Rust engine, including options intentionally omitted from tool contracts. |
 
 The JavaScript package does not implement a second search engine. All tool calls execute a Rust binary built from this revision. See [installation and host examples](<../integrations/harness/README.md>); do not assume native DSH modules load unchanged into another host.
 
 ## Model-facing contracts
 
-All tools require query (1–256 UTF-8 bytes). path defaults to the configured root. Search accepts language, mode (literal|regex|text), limit (1–100), exclude/pathGlob arrays, definitionsOnly, and usagesOnly. Context accepts only query, directory path, and concise. References accept language, direction (callers|callees|both), exclude/pathGlob, excludeTests, and trackedOnly.
+The portable/native tools require query (1–256 UTF-8 bytes); path defaults to the configured root. The Codex router additionally requires an explicit node and absolute path on every MCP call. Search accepts language, mode (literal|regex|text), limit (1–100), exclude/pathGlob arrays, definitionsOnly, and usagesOnly. Context accepts only query, directory path, and concise. References accept language, direction (callers|callees|both), exclude/pathGlob, excludeTests, and trackedOnly.
 
 The authoritative [contracts](<../integrations/harness/src/contracts.js>) reject unknown properties and invalid combinations. Filter arrays allow at most 20 nonempty patterns of at most 512 UTF-8 bytes each. Root, executable, environment, cache paths, arbitrary arguments, and timeouts are not model-controlled.
 
@@ -26,6 +27,12 @@ The backend resolves the configured root and target, checks containment, and rej
 Calls use argument arrays, not shell interpolation. They pass --no-config and --disable-telemetry, suppress the hint banner, and constrain output. Local execution keeps an allowlist of launch environment variables; native execution delegates to host policy. Git operations disable optional locks and fsmonitor hooks. This is not a claim that the standalone CLI is an OS sandbox or that a malicious repository is safe in every execution environment.
 
 Default backend limits are 30 seconds and 2 MiB stdout. Cancellation and output overflow terminate managed execution; incomplete JSON is an error, not a successful partial object. Cache writes can occur even though these tools do not edit source files. Choose a trusted binary and enforce the host's filesystem/process policy.
+
+The Codex node router intentionally chooses the canonical target volume root as
+its backend boundary, allowing OS-readable local or mounted paths on the selected
+node. It is not confined to one project directory. It uses operator-configured
+routes and identity checks, rejects mismatched response nodes and never substitutes
+a local node after a route failure. See [the router guide](../integrations/codex/README.md).
 
 ## Results and failures
 

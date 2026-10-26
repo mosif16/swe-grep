@@ -1,5 +1,10 @@
 # Phase 2: Intelligence & Analysis Layer
 
+> Historical design/review record. Status, commands, measurements and licensing
+> descriptions may refer to an older revision or proposal. Use the
+> [documentation map](docs/README.md), [contributor guide](CONTRIBUTING.md) and
+> [LICENSE](LICENSE) for current guidance.
+
 ## Objective
 
 Build a reusable "analysis layer" that extracts code facts (definitions, references, calls, type-relations) with a stable JSON schema. Surface these facts through existing commands (`refs`, `usages`, `remove`) and new commands (`types`, `watch`) with consistent output formats (`json|tree|compact`).

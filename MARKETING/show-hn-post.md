@@ -1,5 +1,9 @@
 # Show HN: swe-grep – Semantic code search that's faster than ripgrep
 
+> Historical marketing draft, not current product, benchmark or licensing guidance.
+> See the [README](../README.md), [documentation map](../docs/README.md) and
+> [LICENSE](../LICENSE).
+
 ## Title (80 chars max)
 Show HN: swe-grep – Semantic code search 30-50% faster than ripgrep
 

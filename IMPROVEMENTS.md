@@ -1,5 +1,10 @@
 # SWE-Grep: Critical Improvements
 
+> Historical design/review record. Status, commands, measurements and licensing
+> descriptions may refer to an older revision or proposal. Use the
+> [documentation map](docs/README.md), [contributor guide](CONTRIBUTING.md) and
+> [LICENSE](LICENSE) for current guidance.
+
 ## Executive Summary
 
 After deep analysis, I've identified **three fundamental issues** that prevent swe-grep from being a truly exceptional code intelligence tool:

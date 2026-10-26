@@ -9,7 +9,7 @@ Prerequisites: **Node.js 22.19 or newer** for the integration, and a **current s
 From this checkout:
 
 ```sh
-cargo build --release -p swe-grep
+cargo build --release --locked -p swe-grep
 npm ci --ignore-scripts --prefix integrations/harness
 ```
 
@@ -23,7 +23,7 @@ Follow the [plugin installation guide](<integrations/harness/README.md>) for bun
 | swe_context | Retrieve a symbol definition in a directory; concise by default. |
 | swe_refs | Find semantic callers/callees with scope-aware filters. |
 
-Model calls cannot supply arbitrary CLI arguments or environment variables. Requested paths are checked against the configured root; context rejects file paths. These controls complement, rather than replace, host execution policy. See [integration boundaries](<docs/integration.md>).
+Model calls cannot supply arbitrary CLI arguments or environment variables. The portable/native backend checks requested paths against its configured root; the Codex router permits readable paths on an explicitly selected node. Context rejects file paths. These controls complement, rather than replace, host execution policy. See [integration boundaries](<docs/integration.md>).
 
 ## Codex node plugin
 
@@ -49,7 +49,18 @@ Search finds matching locations; it is not exact symbol identity resolution. Con
 - [Optional indexer](<crates/swe-grep-indexer/Cargo.toml>): incremental Tantivy indexing, enabled with the core's indexing feature and CLI --enable-index flag; not part of the default core build.
 - [Desktop consumer](<crates/swe-grep-desktop/Cargo.toml>): a separate application consuming the engine, not required for plugin or CLI use.
 
+## Contributing and maintenance
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for authorized contributions and verification,
+[MAINTAINING.md](MAINTAINING.md) for ongoing maintenance and packaging,
+[SUPPORT.md](SUPPORT.md) for help, and [SECURITY.md](SECURITY.md) for private
+vulnerability reporting. Participation expectations are in
+[CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md).
+
 ## Documentation
+
+Start with the [documentation map](docs/README.md), which distinguishes maintained
+guides from historical plans and drafts.
 
 - [Quickstart](<docs/quickstart.md>) — build, run, filter.
 - [Agent workflow](<docs/agent-use.md>) and [JSON output](<docs/agent-mode.md>).

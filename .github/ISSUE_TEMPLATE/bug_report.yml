@@ -1,0 +1,56 @@
+name: Bug report
+description: Report reproducible incorrect behavior.
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Check the troubleshooting guide first. Report vulnerabilities privately using SECURITY.md.
+        Use synthetic source and redact credentials, private routes and session data.
+  - type: input
+    id: revision
+    attributes:
+      label: Revision and component versions
+      description: Git commit, dirty-tree state, binary features, adapter or plugin version.
+    validations:
+      required: true
+  - type: dropdown
+    id: entrypoint
+    attributes:
+      label: Entry point
+      options:
+        - CLI
+        - DSH native plugin
+        - MCP stdio
+        - Codex node plugin
+        - Optional indexer
+        - Desktop application
+        - HTTP/gRPC service
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: OS/architecture, Rust/Node and host/client versions. For routed calls, provide the selected node with sanitized identity/path.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Minimal reproduction
+      description: Exact command or JSON tool arguments and small synthetic source. State whether the matching binary was rebuilt.
+    validations:
+      required: true
+  - type: textarea
+    id: behavior
+    attributes:
+      label: Expected and actual behavior
+      description: Include the error, empty or incomplete output, exit status and any truncation indicators.
+    validations:
+      required: true
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: Sanitized diagnostics
+      description: Separate stdout and stderr; omit secrets and private source.
+      render: text

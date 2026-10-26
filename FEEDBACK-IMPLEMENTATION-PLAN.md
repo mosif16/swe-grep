@@ -1,5 +1,10 @@
 # SWE-Grep Feedback Implementation Plan
 
+> Historical design/review record. Status, commands, measurements and licensing
+> descriptions may refer to an older revision or proposal. Use the
+> [documentation map](docs/README.md), [contributor guide](CONTRIBUTING.md) and
+> [LICENSE](LICENSE) for current guidance.
+
 **Generated:** 2025-12-10
 **Feedback Sources:** 6 feedback files (Dec 9-10, 2025)
 **Status:** Plan Only (No Implementation)

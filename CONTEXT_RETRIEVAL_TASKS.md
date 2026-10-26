@@ -1,5 +1,10 @@
 # Context Retrieval: Task Breakdown for Builders
 
+> Historical design/review record. Status, commands, measurements and licensing
+> descriptions may refer to an older revision or proposal. Use the
+> [documentation map](docs/README.md), [contributor guide](CONTRIBUTING.md) and
+> [LICENSE](LICENSE) for current guidance.
+
 **Goal**: Make swe-grep the #1 agent search tool by enabling **instant code understanding** in a single call.
 
 **Philosophy**: Agents don't search for text—they search for understanding. One query should return everything needed to reason about code.

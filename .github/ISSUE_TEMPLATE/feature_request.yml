@@ -1,0 +1,28 @@
+name: Improvement proposal
+description: Discuss a concrete workflow problem or compatibility improvement.
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Read CONTRIBUTING.md before proposing a code contribution. Do not include private source or routes.
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem and affected workflow
+      description: Explain the current limitation and the CLI or integration entry point involved.
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Evidence and example
+      description: Provide a small reproducible example or sanitized usage observations; distinguish measurements from assumptions.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed behavior and alternatives
+      description: Describe the expected result, compatibility concerns and alternatives considered.
+    validations:
+      required: true

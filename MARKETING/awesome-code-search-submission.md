@@ -1,5 +1,9 @@
 # Awesome Code Search - Submission
 
+> Historical marketing draft, not current product, benchmark or licensing guidance.
+> See the [README](../README.md), [documentation map](../docs/README.md) and
+> [LICENSE](../LICENSE).
+
 ## PR Title
 Add swe-grep - Rust-native semantic code search for AI agents
 

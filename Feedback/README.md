@@ -4,6 +4,14 @@ This folder stores structured feedback artifacts collected via `swe-grep feedbac
 
 ## Automated feedback → fix → verify workflow
 
+This is an experimental, credentialed workflow that invokes a model and mutates
+Git branches/commits; it may also push and open PRs. Use a separate clean checkout
+and reviewed, sanitized records. Its legacy verifier covers Rust tests/build and
+CLI smoke checks, not the full current integration matrix. Failures may require
+manual recovery. See [MAINTAINING.md](../MAINTAINING.md) before running it.
+Do not add inbox records merely to document a bug: a push to `master` can trigger
+the automation. Use the issue tracker for normal reports.
+
 This repo supports an automated pipeline driven by feedback records:
 
 - Drop new records into `Feedback/inbox/` (one JSON file per record).

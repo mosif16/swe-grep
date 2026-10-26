@@ -1,5 +1,10 @@
 # SWE-Grep Roadmap
 
+> Historical design/review record. Status, commands, measurements and licensing
+> descriptions may refer to an older revision or proposal. Use the
+> [documentation map](docs/README.md), [contributor guide](CONTRIBUTING.md) and
+> [LICENSE](LICENSE) for current guidance.
+
 ## Phase 1: Polish & Quick Wins (1-2 weeks)
 
 Foundation improvements that require minimal architectural changes.

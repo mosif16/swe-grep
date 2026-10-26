@@ -42,4 +42,4 @@ For direct CLI use, --timeout-secs applies per tool invocation. --cache-dir is a
 
 ## MCP client cannot connect
 
-Use the Node.js 22+ stdio command and absolute root/binary paths from the [plugin guide](<../integrations/harness/README.md>). MCP does not connect to the CLI serve HTTP/gRPC ports. Stdout is protocol-only; inspect stderr for startup diagnostics. Confirm dependencies were installed and the executable is current.
+Use the Node.js >=22.19 stdio command and absolute root/binary paths from the [plugin guide](<../integrations/harness/README.md>). MCP does not connect to the CLI serve HTTP/gRPC ports. Stdout is protocol-only; inspect stderr for startup diagnostics. Confirm dependencies were installed and the executable is current.
