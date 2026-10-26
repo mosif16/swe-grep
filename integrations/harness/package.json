@@ -15,7 +15,8 @@
     "./locale/*.json": "./locale/*.json",
     "./icon": "./icon.svg",
     "./dsh/locale/*.json": "./locale/*.json",
-    "./dsh/icon": "./icon.svg"
+    "./dsh/icon": "./icon.svg",
+    "./codex": "./src/codex.js"
   },
   "bin": {
     "swe-grep-mcp": "./src/mcp.js"
@@ -29,7 +30,7 @@
     "icon.svg"
   ],
   "engines": {
-    "node": ">=22.0.0",
+    "node": ">=22.19.0",
     "dsh": "0.2.1-rc.2"
   },
   "license": "SEE LICENSE IN LICENSE",
@@ -42,7 +43,7 @@
   },
   "scripts": {
     "test": "node --test tests/*.test.js",
-    "check": "node --check src/backend.js && node --check src/contracts.js && node --check src/dsh.js && node --check src/mcp.js"
+    "check": "node --check src/backend.js && node --check src/contracts.js && node --check src/dsh.js && node --check src/mcp.js && node --check src/codex.js && node --check ../codex/package.mjs && node --check ../codex/server.mjs"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "1.32.1"
@@ -84,8 +85,7 @@
     "@deepseek-ai/dsh-fs": "0.2.1-rc.2"
   },
   "overrides": {
-    "@modelcontextprotocol/sdk": {
-      "zod": "^4.6.6"
-    }
+    "undici": "8.12.3",
+    "zod": "^4.6.6"
   }
 }

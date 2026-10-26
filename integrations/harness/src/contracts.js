@@ -2,7 +2,10 @@
 const query = { type: 'string', description: 'Symbol, identifier, or search query. Maximum 256 UTF-8 bytes.' };
 const path = { type: 'string', default: '.', description: 'Path within the configured workspace. Relative to the workspace root; cannot escape it.' };
 const language = { type: 'string', description: 'Language hint such as rust, python, typescript, swift, or go.' };
-const patterns = (description) => ({ type: 'array', items: { type: 'string' }, description });
+const patterns = (description) => ({
+  type: 'array', items: { type: 'string' },
+  description: description + ' Pass an array even for one glob, for example ["src/**"]. At most 20 globs, each 1–512 UTF-8 bytes.',
+});
 const filters = {
   exclude: patterns('Exclude workspace-relative glob patterns.'),
   pathGlob: patterns('Limit results to workspace-relative glob patterns.'),
@@ -16,8 +19,8 @@ export const TOOLS = Object.freeze([
   },
   {
     name: 'swe_context',
-    description: 'Understand a symbol: definition and callers/callees in a workspace directory. Compact structured JSON by default. Read-only with respect to source files.',
-    inputSchema: schema({ query, path: { ...path, description: 'Workspace directory to analyze. Files are not accepted by this tool.' }, concise: { type: 'boolean', default: true } }),
+    description: 'Retrieve a symbol definition in a workspace directory. Use swe_refs for callers/callees; empty relationship arrays here do not establish absence. Compact structured JSON by default. Read-only with respect to source files.',
+    inputSchema: schema({ query, path: { ...path, description: 'Workspace directory to analyze. Files are not accepted: pass the containing directory explicitly, or use swe_search/swe_refs for file scope.' }, concise: { type: 'boolean', default: true } }),
   },
   {
     name: 'swe_refs',

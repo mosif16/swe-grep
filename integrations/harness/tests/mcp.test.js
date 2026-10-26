@@ -206,3 +206,49 @@ test('optional real backend fixture over official stdio transport', {
   assert.ok(result.structuredContent && typeof result.structuredContent === 'object');
   assert.match(JSON.stringify(result.structuredContent), /mcpFixtureSymbol/);
 });
+
+test('real agent workflow locates a definition and traces source-verified edges', {
+  skip: !process.env.SWE_GREP_BINARY, timeout: 60000,
+}, async t => {
+  const directory = await mkdtemp(join(tmpdir(), 'swe workflow '));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const source = [
+    'def workflow_helper(value):',
+    '    return value + 1',
+    '',
+    'def workflow_target(value):',
+    '    return workflow_helper(value)',
+    '',
+    'def workflow_caller():',
+    '    return workflow_target(3)',
+    '',
+  ].join('\n');
+  await writeFile(join(directory, 'workflow.py'), source);
+  const client = new Client({ name: 'workflow-test', version: '1.0.0' });
+  const transport = new StdioClientTransport({ command: process.execPath,
+    args: [entry, '--root', directory, '--binary', process.env.SWE_GREP_BINARY], stderr: 'pipe' });
+  t.after(() => client.close());
+  await client.connect(transport);
+  async function call(name, arguments_) {
+    const result = await client.callTool({ name, arguments: arguments_ });
+    assert.notEqual(result.isError, true, JSON.stringify(result));
+    assert.deepEqual(JSON.parse(result.content[0].text), result.structuredContent);
+    return result.structuredContent;
+  }
+  const search = await call('swe_search', {
+    query: 'workflow_target', definitionsOnly: true, pathGlob: ['*.py'],
+  });
+  assert.ok(search.hits.some(hit => hit.file === 'workflow.py' && hit.line === 4));
+  const context = await call('swe_context', { query: 'workflow_target', path: '.' });
+  assert.equal(context.def_location, 'workflow.py:4');
+  assert.equal(context.def, source.split('\n')[3]);
+  const refs = await call('swe_refs', { query: 'workflow_target', direction: 'both' });
+  assert.ok(refs.callers.some(edge => edge.file === 'workflow.py' && edge.line === 8 && edge.origin === 'callgraph'));
+  assert.ok(refs.callees.some(edge => edge.symbol === 'workflow_helper' && edge.line === 5));
+  const invalidPath = await client.callTool({ name: 'swe_context',
+    arguments: { query: 'workflow_target', path: 'workflow.py' } });
+  assert.equal(invalidPath.isError, true);
+  assert.equal(invalidPath.structuredContent.error.code, 'SWE_GREP_INVALID_PATH');
+  await assert.rejects(client.callTool({ name: 'swe_search',
+    arguments: { query: 'workflow_target', pathGlob: '*.py' } }), error => error.code === -32602);
+});

@@ -6,7 +6,7 @@ This is a **local, unpublished npm package**. The npm tarball contains ready-to-
 
 ## Requirements and supported integration paths
 
-- **Node.js 22 or newer**. Building the binary also requires the repository’s Rust toolchain.
+- **Node.js 22.19 or newer**. Building the binary also requires the repository’s Rust toolchain.
 - A release binary built from the **same source revision** as this adapter. Every call uses the global `--no-config` option; an older installed binary may not support it. No SWE-Grep configuration file is required.
 - Native adapter: **DSH 0.2.1-rc.2**, using its official tool, working-directory, filesystem, and subprocess SDK services.
 - MCP adapter: the official **`@modelcontextprotocol/sdk` 1.32.1**, using its standard stdio transport. Native DSH peer packages are optional and are not required for portable backend/MCP production installs.

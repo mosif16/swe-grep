@@ -4,7 +4,7 @@ Code search and static symbol analysis for coding agents. SWE-Grep exposes the s
 
 ## Start with the harness plugin
 
-Prerequisites: **Node.js 22 or newer** for the integration, and a **current stable Rust toolchain supporting edition 2024** to build the engine. Native integration is tested against **DSH 0.2.1-rc.2**; the MCP integration uses **SDK 1.32.1**.
+Prerequisites: **Node.js 22.19 or newer** for the integration, and a **current stable Rust toolchain supporting edition 2024** to build the engine. Native integration is tested against **DSH 0.2.1-rc.2**; the MCP integration uses **SDK 1.32.1**.
 
 From this checkout:
 
@@ -24,6 +24,10 @@ Follow the [plugin installation guide](<integrations/harness/README.md>) for bun
 | swe_refs | Find semantic callers/callees with scope-aware filters. |
 
 Model calls cannot supply arbitrary CLI arguments or environment variables. Requested paths are checked against the configured root; context rejects file paths. These controls complement, rather than replace, host execution policy. See [integration boundaries](<docs/integration.md>).
+
+## Codex node plugin
+
+The [Codex packaging guide](<integrations/codex/README.md>) builds a local marketplace with the routed MCP server, bundled skill and matching binary. The router and installed-package workflow are covered by the integration suite.
 
 ## Use the CLI
 
