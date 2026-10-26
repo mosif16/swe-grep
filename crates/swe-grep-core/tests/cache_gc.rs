@@ -3,9 +3,9 @@ use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::{Arc, Barrier};
-use std::time::{Duration, SystemTime};
+use std::time::{Duration, Instant, SystemTime};
 
-use swe_grep::cache_gc::{CacheLease, GcPolicy, collect};
+use swe_grep::cache_gc::{CacheLease, GcPolicy, GcReport, collect};
 
 #[test]
 fn lease_child() {
@@ -237,12 +237,8 @@ fn age_and_size_policies_use_last_use_not_payload_write_time() {
         max_bytes: u64::MAX,
         ..GcPolicy::default()
     };
-    assert_eq!(
-        collect(fixture.base(), &policy, false)
-            .unwrap()
-            .eligible_files,
-        0
-    );
+    let fresh = preview_quiescent_cache(fixture.base(), &policy);
+    assert_eq!(fresh.eligible_files, 0, "fresh collection: {fresh:#?}");
     let used = fixture.namespace.join(".swe-grep-last-used");
     fs::File::options()
         .write(true)
@@ -250,12 +246,8 @@ fn age_and_size_policies_use_last_use_not_payload_write_time() {
         .unwrap()
         .set_modified(SystemTime::now() - Duration::from_secs(31 * 86400))
         .unwrap();
-    assert_eq!(
-        collect(fixture.base(), &policy, false)
-            .unwrap()
-            .eligible_files,
-        1
-    );
+    let aged = preview_quiescent_cache(fixture.base(), &policy);
+    assert_eq!(aged.eligible_files, 1, "aged collection: {aged:#?}");
     fs::File::options()
         .write(true)
         .open(&used)
@@ -263,8 +255,32 @@ fn age_and_size_policies_use_last_use_not_payload_write_time() {
         .set_modified(SystemTime::now())
         .unwrap();
     policy.max_bytes = 1;
-    let report = collect(fixture.base(), &policy, false).unwrap();
-    assert_eq!(report.entries[0].reason, "size");
+    let report = preview_quiescent_cache(fixture.base(), &policy);
+    assert_eq!(
+        report.entries.len(),
+        1,
+        "size collection report: {report:#?}"
+    );
+    assert_eq!(report.entries.first().unwrap().reason, "size");
+}
+
+fn preview_quiescent_cache(base: &Path, policy: &GcPolicy) -> GcReport {
+    // Collection deliberately skips busy locks. Other tests spawn subprocesses
+    // concurrently; a fork can briefly inherit a flock descriptor until exec
+    // closes it, even after this process has finished its previous dry run.
+    // Retry only explicit contention, never missing/unknown/policy results.
+    let deadline = Instant::now() + Duration::from_secs(1);
+    loop {
+        let report = collect(base, policy, false).unwrap();
+        if !report.collector_busy && report.skipped_active == 0 {
+            return report;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "cache remained busy: {report:#?}"
+        );
+        std::thread::sleep(Duration::from_millis(1));
+    }
 }
 
 #[test]
