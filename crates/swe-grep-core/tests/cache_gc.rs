@@ -16,21 +16,46 @@ fn lease_child() {
         .canonicalize()
         .unwrap();
     let namespace = swe_grep::search::default_cache_dir_for_root(&root);
+    // Registration must not require an exclusive activity lock. A reader may
+    // already hold the activity inode when a stale initializer reaches it.
+    let _existing_reader = if mode == "shared_before_registration" {
+        fs::create_dir_all(&namespace).unwrap();
+        let reader = fs::File::options()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(namespace.join(".swe-grep-lease"))
+            .unwrap();
+        reader.lock_shared().unwrap();
+        Some(reader)
+    } else {
+        None
+    };
     if mode == "concurrent" {
-        let start = Arc::new(Barrier::new(8));
-        let acquired = Arc::new(Barrier::new(8));
-        std::thread::scope(|scope| {
-            for _ in 0..8 {
-                let (start, acquired, root, namespace) =
-                    (start.clone(), acquired.clone(), &root, &namespace);
-                scope.spawn(move || {
-                    start.wait();
-                    let lease = CacheLease::acquire(root, namespace);
-                    acquired.wait();
-                    let _lease = lease.unwrap();
-                });
-            }
-        });
+        for round in 0..16 {
+            let round_root = root.join(format!("round-{round}"));
+            fs::create_dir(&round_root).unwrap();
+            let round_namespace = swe_grep::search::default_cache_dir_for_root(&round_root);
+            let start = Arc::new(Barrier::new(8));
+            let acquired = Arc::new(Barrier::new(8));
+            std::thread::scope(|scope| {
+                for _ in 0..8 {
+                    let (start, acquired, root, namespace) = (
+                        start.clone(),
+                        acquired.clone(),
+                        &round_root,
+                        &round_namespace,
+                    );
+                    scope.spawn(move || {
+                        start.wait();
+                        let lease = CacheLease::acquire(root, namespace);
+                        acquired.wait();
+                        let _lease = lease.unwrap();
+                    });
+                }
+            });
+        }
     }
     let _lease = CacheLease::acquire(&root, &namespace).unwrap();
     println!("GC_READY={}", serde_json::to_string(&namespace).unwrap());
@@ -292,6 +317,19 @@ fn simultaneous_first_acquires_share_one_valid_namespace() {
     let (mut child, namespace) = spawn(&root, &home, "concurrent");
     assert!(child.wait().unwrap().success());
     assert!(namespace.join(".swe-grep-owner.json").exists());
+}
+
+#[test]
+fn registration_does_not_request_exclusive_activity_access() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("source");
+    let home = temp.path().join("cache");
+    fs::create_dir(&root).unwrap();
+    fs::create_dir(&home).unwrap();
+    let (mut child, namespace) = spawn(&root, &home, "shared_before_registration");
+    assert!(child.wait().unwrap().success());
+    assert!(namespace.join(".swe-grep-owner.json").exists());
+    assert!(namespace.join(".swe-grep-init").exists());
 }
 
 #[test]
